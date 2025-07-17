@@ -120,10 +120,42 @@ async function updateAsset(assetId, fieldsToUpdate) {
         console.error(`Failed to update asset ${assetId}:`, error.response ? error.response.data : error.message);
         throw new Error(`Failed to update asset: ${error.message}`);
     }
+
+/**
+ * Creates a new asset record in Zendesk.
+ * @param {object} assetData - Fields for the new asset (matching your schema).
+ * @returns {object} - The created asset record from Zendesk.
+ */
+async function createAsset(assetData) {
+    const customFields = {
+        asset_name: assetData.asset_name,
+        manufacturer: assetData.manufacturer,
+        model_number: assetData.model_number,
+        serial_number: assetData.serial_number,
+        warranty_expiration: assetData.warranty_expiration,
+        purchase_date: assetData.purchase_date,
+        approved_by: assetData.approved_by,
+        status: assetData.status
+        // Add any other custom fields here!
+    };
+
+    const assetPayload = {
+        custom_object_record: {
+            custom_object_fields: customFields
+        }
+    };
+
+    try {
+        const response = await zendeskApi.post(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`, assetPayload);
+        return response.data;
+    } catch (error) {
+        console.error("Error creating asset in Zend
+
 }
 
 module.exports = {
     createTicketAndAssets,
     getUserAssets,
-    updateAsset, // new
+    updateAsset,
+    createAsset // new
 };
