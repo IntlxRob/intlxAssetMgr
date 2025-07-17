@@ -1,0 +1,22 @@
+{
+  "name": "Intlx Asset Manager",
+  "author": {
+    "name": "Intlx Solutions",
+    "email": "rob.johnston@intlxsolutions.com"
+  },
+  "defaultLocale": "en",
+  "version": "2.0.0",
+  "frameworkVersion": "2.0",
+  "location": {
+    "support": {
+      "ticket_sidebar": "assets/index.html"
+    }
+  },
+  "domainWhitelist": [
+    "intlxassetmgr-proxy.onrender.com"
+  ],
+  "logo": {
+    "app": "assets/logo-small.png",
+    "brand": "assets/logo.png"
+  }
+}
