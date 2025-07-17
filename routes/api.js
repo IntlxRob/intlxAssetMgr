@@ -76,4 +76,19 @@ router.post('/assets', async (req, res) => {
     }
 });
 
+/**
+ * Endpoint to update an existing asset.
+ */
+router.patch('/assets/:id', async (req, res) => {
+    const assetId = req.params.id;
+    const fieldsToUpdate = req.body;
+    try {
+        const result = await zendeskService.updateAsset(assetId, fieldsToUpdate);
+        res.status(200).json(result);
+    } catch (error) {
+        console.error('Error in the /api/assets/:id PATCH endpoint:', error.message, error.response?.data);
+        res.status(500).json({ error: 'Failed to update asset.', details: error.message });
+    }
+});
+
 module.exports = router;
