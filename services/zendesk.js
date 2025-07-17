@@ -1,6 +1,6 @@
 // services/zendesk.js
 // This file contains all the logic for interacting with the Zendesk API.
-// FIX v22: Added key logging to debug asset assignment.
+// FIX v21: Using the correct API syntax for filtering on a lookup relationship field.
 
 const axios = require('axios');
 
@@ -46,31 +46,23 @@ async function createTicketAndAssets(body) {
     const ticketResponse = await zendeskApi.post('/tickets.json', ticketPayload);
     const ticket = ticketResponse.data.ticket;
     console.log(`Successfully created ticket ID: ${ticket.id}`);
-    console.log('Full ticket object:', JSON.stringify(ticket, null, 2));
 
     // 2. Create asset records
     const createdAssets = [];
     for (const asset of assets) {
         const customFields = {
-            asset_name: asset.Name,
-            manufacturer: asset.Manufacturer,
-            model_number: asset['Model Number'],
-            ticket_id: ticket.id.toString(),
-            approved_by: approved_by,
+            'asset_name': asset.Name,
+            'manufacturer': asset.Manufacturer,
+            'model_number': asset['Model Number'],
+            'ticket_id': ticket.id.toString(),
+            'approved_by': approved_by,
         };
         const assetPayload = {
             custom_object_record: {
                 custom_object_fields: customFields,
-                relationships: {
-                    assigned_to: { data: { id: ticket.requester_id } }
-                }
+                relationships: { assigned_to: { data: { id: ticket.requester_id } } }
             }
         };
-
-        // >>> LOGGING FOR DEBUGGING <<<
-        console.log('ticket.requester_id:', ticket.requester_id);
-        console.log('assetPayload:', JSON.stringify(assetPayload, null, 2));
-
         try {
             console.log(`Attempting to create asset record for: ${asset.Name}`);
             const assetResponse = await zendeskApi.post(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`, assetPayload);
@@ -92,21 +84,46 @@ async function createTicketAndAssets(body) {
  * @returns {Array} - A list of asset records.
  */
 async function getUserAssets(userId) {
-    const requestUrl = `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json?filter[field]=assigned_to&filter[value]=${userId}`;
+    // FIX: Using the correct syntax for filtering by a lookup relationship.
+    // The key of the filter is the relationship name itself.
+    const requestUrl = `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json?filter[assigned_to]=${userId}`;
     
-    // DEBUGGING: Log the exact URL we are about to request from Zendesk.
     console.log(`Fetching user assets from Zendesk with URL: ${zendeskApi.defaults.baseURL}${requestUrl}`);
 
     const response = await zendeskApi.get(requestUrl);
     const records = response.data.custom_object_records || [];
 
-    // DEBUGGING: Log how many records we received from Zendesk.
     console.log(`Received ${records.length} asset records from Zendesk for user ID ${userId}.`);
 
     return records;
 }
 
+/**
+ * Updates an asset record by ID.
+ * @param {string} assetId - The Zendesk asset record ID.
+ * @param {object} fieldsToUpdate - Object of fields to update (matching your schema).
+ * @returns {object} - The updated asset record from Zendesk.
+ */
+async function updateAsset(assetId, fieldsToUpdate) {
+    // Prepare the payload: only include fields being updated
+    const payload = {
+        custom_object_record: {
+            custom_object_fields: fieldsToUpdate
+            // relationships can also be updated here if/when supported
+        }
+    };
+
+    try {
+        const response = await zendeskApi.patch(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records/${assetId}.json`, payload);
+        return response.data;
+    } catch (error) {
+        console.error(`Failed to update asset ${assetId}:`, error.response ? error.response.data : error.message);
+        throw new Error(`Failed to update asset: ${error.message}`);
+    }
+}
+
 module.exports = {
     createTicketAndAssets,
     getUserAssets,
+    updateAsset, // new
 };

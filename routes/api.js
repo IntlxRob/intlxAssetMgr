@@ -62,4 +62,18 @@ router.get('/user-assets', async (req, res) => {
     }
 });
 
+/**
+ * Endpoint to create a new asset.
+ */
+router.post('/assets', async (req, res) => {
+    try {
+        const assetData = req.body;
+        const result = await zendeskService.createAsset(assetData);
+        res.status(201).json(result);
+    } catch (error) {
+        console.error('Error in the /api/assets POST endpoint:', error.message, error.response?.data);
+        res.status(500).json({ error: 'Failed to create asset.', details: error.message });
+    }
+});
+
 module.exports = router;
