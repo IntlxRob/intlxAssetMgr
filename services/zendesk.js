@@ -1,5 +1,6 @@
 // services/zendesk.js
 // This file contains all the logic for interacting with the Zendesk API.
+// FIX v22: Added key logging to debug asset assignment.
 
 const axios = require('axios');
 
@@ -17,16 +18,6 @@ const zendeskApi = axios.create({
     'Content-Type': 'application/json',
   },
 });
-
-/**
- * Tests the connection to the Zendesk API.
- */
-async function testConnection() {
-    console.log('Running Zendesk API connection test...');
-    const response = await zendeskApi.get('/users/me.json');
-    console.log('Zendesk API test successful!');
-    return response.data;
-}
 
 /**
  * Creates a ticket and then creates asset records for each item.
@@ -55,23 +46,31 @@ async function createTicketAndAssets(body) {
     const ticketResponse = await zendeskApi.post('/tickets.json', ticketPayload);
     const ticket = ticketResponse.data.ticket;
     console.log(`Successfully created ticket ID: ${ticket.id}`);
+    console.log('Full ticket object:', JSON.stringify(ticket, null, 2));
 
     // 2. Create asset records
     const createdAssets = [];
     for (const asset of assets) {
         const customFields = {
-            'asset_name': asset.Name,
-            'manufacturer': asset.Manufacturer,
-            'model_number': asset['Model Number'],
-            'ticket_id': ticket.id.toString(),
-            'approved_by': approved_by,
+            asset_name: asset.Name,
+            manufacturer: asset.Manufacturer,
+            model_number: asset['Model Number'],
+            ticket_id: ticket.id.toString(),
+            approved_by: approved_by,
         };
         const assetPayload = {
             custom_object_record: {
                 custom_object_fields: customFields,
-                relationships: { assigned_to: { data: { id: ticket.requester_id } } }
+                relationships: {
+                    assigned_to: { data: { id: ticket.requester_id } }
+                }
             }
         };
+
+        // >>> LOGGING FOR DEBUGGING <<<
+        console.log('ticket.requester_id:', ticket.requester_id);
+        console.log('assetPayload:', JSON.stringify(assetPayload, null, 2));
+
         try {
             console.log(`Attempting to create asset record for: ${asset.Name}`);
             const assetResponse = await zendeskApi.post(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`, assetPayload);
@@ -93,12 +92,21 @@ async function createTicketAndAssets(body) {
  * @returns {Array} - A list of asset records.
  */
 async function getUserAssets(userId) {
-    const response = await zendeskApi.get(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json?filter[field]=assigned_to&filter[value]=${userId}`);
-    return response.data.custom_object_records || [];
+    const requestUrl = `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json?filter[field]=assigned_to&filter[value]=${userId}`;
+    
+    // DEBUGGING: Log the exact URL we are about to request from Zendesk.
+    console.log(`Fetching user assets from Zendesk with URL: ${zendeskApi.defaults.baseURL}${requestUrl}`);
+
+    const response = await zendeskApi.get(requestUrl);
+    const records = response.data.custom_object_records || [];
+
+    // DEBUGGING: Log how many records we received from Zendesk.
+    console.log(`Received ${records.length} asset records from Zendesk for user ID ${userId}.`);
+
+    return records;
 }
 
 module.exports = {
-    testConnection,
     createTicketAndAssets,
     getUserAssets,
 };
