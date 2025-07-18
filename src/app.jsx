@@ -44,6 +44,13 @@ function App() {
   function handleAssetClick(asset) {
     setSelectedAsset(asset);
     setFormData(asset.custom_object_fields || {});
+
+    // Preselect assignment dropdown values based on current assignment
+    setFormData(prev => ({
+      ...prev,
+      assigned_to_user: asset.custom_object_fields?.assigned_to === asset.assigned_to ? asset.custom_object_fields?.assigned_to : '',
+      assigned_to_org: asset.custom_object_fields?.assigned_to_org === asset.assigned_to ? asset.custom_object_fields?.assigned_to_org : ''
+    }));
   }
 
   function handleInputChange(e) {
@@ -54,17 +61,20 @@ function App() {
   async function handleSave() {
     if (!selectedAsset) return;
     try {
-      // Build payload with reassignment logic
       let payload = { ...formData };
 
-      // If reassignment dropdown has value, use it (assuming field names: assigned_to and assigned_org)
+      // Reassignment logic: prefer user, else org, else keep current
       if (formData.assigned_to_user) {
         payload.assigned_to = formData.assigned_to_user;
-        delete payload.assigned_to_org; // clear org if user assigned
+        delete payload.assigned_to_org;
       } else if (formData.assigned_to_org) {
         payload.assigned_to = formData.assigned_to_org;
-        delete payload.assigned_to_user; // clear user if org assigned
+        delete payload.assigned_to_user;
       }
+
+      // Remove keys used only in UI but not part of custom_object_fields
+      delete payload.assigned_to_user;
+      delete payload.assigned_to_org;
 
       const res = await fetch(`${BACKEND_BASE_URL}/api/assets/${selectedAsset.id}`, {
         method: "PATCH",
@@ -74,7 +84,7 @@ function App() {
       if (!res.ok) throw new Error("Failed to update asset");
       const updatedAsset = await res.json();
       setAssets((prevAssets) =>
-        prevAssets.map((a) => (a.id === updatedAsset.custom_object_record.id ? updatedAsset.custom_object_record : a))
+        prevAssets.map((a) => (a.id === updatedAsset.id ? updatedAsset : a))
       );
       alert("Asset updated successfully!");
       setSelectedAsset(null);
@@ -87,9 +97,7 @@ function App() {
     setSelectedAsset(null);
   }
 
-  if (loading) {
-    return <div>Loading assets...</div>;
-  }
+  if (loading) return <div>Loading assets...</div>;
 
   return (
     <div style={{ fontFamily: "sans-serif", padding: 8 }}>
@@ -124,6 +132,7 @@ function App() {
             ← Back to Asset List
           </button>
           <h3>Edit Asset Details</h3>
+
           <label>
             Asset Tag: <b>{selectedAsset.name || "No Tag"}</b>
           </label>
@@ -164,7 +173,6 @@ function App() {
           </label>
           <br />
 
-          {/* Reassignment dropdown for users */}
           <label>
             Assigned To User:{" "}
             <select
@@ -182,7 +190,6 @@ function App() {
           </label>
           <br />
 
-          {/* Reassignment dropdown for organizations */}
           <label>
             Assigned To Organization:{" "}
             <select
