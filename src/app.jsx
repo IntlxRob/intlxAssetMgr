@@ -43,14 +43,12 @@ function App() {
 
   function handleAssetClick(asset) {
     setSelectedAsset(asset);
-    setFormData(asset.custom_object_fields || {});
 
-    // Preselect assignment dropdown values based on current assignment
-    setFormData(prev => ({
-      ...prev,
-      assigned_to_user: asset.custom_object_fields?.assigned_to === asset.assigned_to ? asset.custom_object_fields?.assigned_to : '',
-      assigned_to_org: asset.custom_object_fields?.assigned_to_org === asset.assigned_to ? asset.custom_object_fields?.assigned_to_org : ''
-    }));
+    setFormData({
+      ...asset.custom_object_fields,
+      assigned_to_user: asset.custom_object_fields?.assigned_to || '',
+      assigned_to_org: asset.custom_object_fields?.organization || ''
+    });
   }
 
   function handleInputChange(e) {
@@ -70,6 +68,9 @@ function App() {
       } else if (formData.assigned_to_org) {
         payload.assigned_to = formData.assigned_to_org;
         delete payload.assigned_to_user;
+      } else {
+        delete payload.assigned_to_user;
+        delete payload.assigned_to_org;
       }
 
       // Remove keys used only in UI but not part of custom_object_fields
@@ -191,7 +192,7 @@ function App() {
           <br />
 
           <label>
-            Assigned To Organization:{" "}
+            Organization:{" "}
             <select
               name="assigned_to_org"
               value={formData.assigned_to_org || ""}
