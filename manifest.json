@@ -9,7 +9,13 @@
   "frameworkVersion": "2.0",
   "location": {
     "support": {
-      "ticket_sidebar": "assets/index.html"
+      "ticket_sidebar": {
+        "url": "assets/index.html",
+        "size": {
+          "width": 400,
+          "height": 700
+        }
+      }
     }
   },
   "domainWhitelist": [

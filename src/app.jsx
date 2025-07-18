@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import ReactDOM from "react-dom";
+import ReactDOM from "react-dom/client";
 
 const BACKEND_BASE_URL = "https://intlxassetmgr-proxy.onrender.com";
 
@@ -7,6 +7,10 @@ function App() {
   const [assets, setAssets] = useState([]);
   const [requester, setRequester] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selectedAsset, setSelectedAsset] = useState(null);
+  const [formData, setFormData] = useState({});
+  const [users, setUsers] = useState([]);
+  const [organizations, setOrganizations] = useState([]);
 
   useEffect(() => {
     const ZAFClient = window.ZAFClient;
@@ -22,36 +26,188 @@ function App() {
           .then((data) => setAssets(data.assets || []))
           .finally(() => setLoading(false));
       }
+
+      // Fetch users and organizations for dropdowns
+      fetch(`${BACKEND_BASE_URL}/api/users`)
+        .then(res => res.json())
+        .then(data => setUsers(data.users || []))
+        .catch(() => setUsers([]));
+
+      fetch(`${BACKEND_BASE_URL}/api/organizations`)
+        .then(res => res.json())
+        .then(data => setOrganizations(data.organizations || []))
+        .catch(() => setOrganizations([]));
     }
     load();
   }, []);
 
+  function handleAssetClick(asset) {
+    setSelectedAsset(asset);
+    setFormData(asset.custom_object_fields || {});
+  }
+
+  function handleInputChange(e) {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  }
+
+  async function handleSave() {
+    if (!selectedAsset) return;
+    try {
+      // Build payload with reassignment logic
+      let payload = { ...formData };
+
+      // If reassignment dropdown has value, use it (assuming field names: assigned_to and assigned_org)
+      if (formData.assigned_to_user) {
+        payload.assigned_to = formData.assigned_to_user;
+        delete payload.assigned_to_org; // clear org if user assigned
+      } else if (formData.assigned_to_org) {
+        payload.assigned_to = formData.assigned_to_org;
+        delete payload.assigned_to_user; // clear user if org assigned
+      }
+
+      const res = await fetch(`${BACKEND_BASE_URL}/api/assets/${selectedAsset.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Failed to update asset");
+      const updatedAsset = await res.json();
+      setAssets((prevAssets) =>
+        prevAssets.map((a) => (a.id === updatedAsset.custom_object_record.id ? updatedAsset.custom_object_record : a))
+      );
+      alert("Asset updated successfully!");
+      setSelectedAsset(null);
+    } catch (err) {
+      alert("Error updating asset: " + err.message);
+    }
+  }
+
+  function handleBack() {
+    setSelectedAsset(null);
+  }
+
+  if (loading) {
+    return <div>Loading assets...</div>;
+  }
+
   return (
     <div style={{ fontFamily: "sans-serif", padding: 8 }}>
       <h2>Asset Manager (React)</h2>
-      {loading ? (
-        <p>Loading assets...</p>
-      ) : (
-        <>
-          <div>
-            <b>Requester:</b> {requester ? requester.name : "Unknown"}
-          </div>
-          <ul>
-            {assets.map((a) => (
-              <li key={a.id || a.name}>
-                <b>{a.custom_object_fields?.asset_name}</b>
-                {a.custom_object_fields?.serial_number &&
-                  ` — Serial: ${a.custom_object_fields.serial_number}`}
-                {a.custom_object_fields?.status &&
-                  ` — Status: ${a.custom_object_fields.status}`}
-              </li>
-            ))}
-          </ul>
-        </>
+      <div>
+        <b>Requester:</b> {requester ? requester.name : "Unknown"}
+      </div>
+
+      {!selectedAsset && (
+        <ul style={{ marginTop: 10 }}>
+          {assets.map((a) => (
+            <li
+              key={a.id || a.name}
+              onClick={() => handleAssetClick(a)}
+              style={{
+                cursor: "pointer",
+                padding: "4px",
+                borderRadius: "4px",
+                marginBottom: "2px",
+                border: "1px solid #ccc",
+              }}
+            >
+              {`${a.name || "No Tag"} - ${a.custom_object_fields?.asset_name || "Unnamed Asset"}`}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {selectedAsset && (
+        <div style={{ marginTop: 20 }}>
+          <button onClick={handleBack} style={{ marginBottom: 10 }}>
+            ← Back to Asset List
+          </button>
+          <h3>Edit Asset Details</h3>
+          <label>
+            Asset Tag: <b>{selectedAsset.name || "No Tag"}</b>
+          </label>
+          <br />
+
+          <label>
+            Asset Name:{" "}
+            <input
+              name="asset_name"
+              value={formData.asset_name || ""}
+              onChange={handleInputChange}
+            />
+          </label>
+          <br />
+
+          <label>
+            Serial Number:{" "}
+            <input
+              name="serial_number"
+              value={formData.serial_number || ""}
+              onChange={handleInputChange}
+            />
+          </label>
+          <br />
+
+          <label>
+            Status:{" "}
+            <select
+              name="status"
+              value={formData.status || ""}
+              onChange={handleInputChange}
+            >
+              <option value="">-- Select Status --</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+              <option value="retired">Retired</option>
+            </select>
+          </label>
+          <br />
+
+          {/* Reassignment dropdown for users */}
+          <label>
+            Assigned To User:{" "}
+            <select
+              name="assigned_to_user"
+              value={formData.assigned_to_user || ""}
+              onChange={handleInputChange}
+            >
+              <option value="">-- Select User --</option>
+              {users.map((user) => (
+                <option key={user.id} value={user.id}>
+                  {user.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <br />
+
+          {/* Reassignment dropdown for organizations */}
+          <label>
+            Assigned To Organization:{" "}
+            <select
+              name="assigned_to_org"
+              value={formData.assigned_to_org || ""}
+              onChange={handleInputChange}
+            >
+              <option value="">-- Select Organization --</option>
+              {organizations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <br />
+
+          <button onClick={handleSave} style={{ marginTop: 10 }}>
+            Save
+          </button>
+        </div>
       )}
     </div>
   );
 }
 
-// Render React to the sidebar
-ReactDOM.render(<App />, document.getElementById("root"));
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
