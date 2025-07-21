@@ -2,8 +2,9 @@
 // This file defines all the API endpoints and calls the appropriate service functions.
 
 const express = require('express');
-const router = express.Router();
 const axios = require('axios');
+const router = express.Router();
+const zendesk = require('../services/zendesk'); // Adjust path if needed
 
 /**
  * Endpoint to test the direct connection to the Zendesk API.
