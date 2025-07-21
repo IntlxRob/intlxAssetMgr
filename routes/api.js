@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const zendesk = require('../services/zendesk');
+const zendeskService = require('../services/zendesk');
 
 // Existing routes ...
 
 // Fetch all users
 router.get('/users', async (req, res) => {
   try {
-    const users = await zendesk.getUsers();
+    const users = await zendeskService.getUsers();
     res.json({ users });
   } catch (err) {
     console.error('Error fetching users:', err.message);
@@ -18,7 +18,7 @@ router.get('/users', async (req, res) => {
 // Fetch all organizations
 router.get('/organizations', async (req, res) => {
   try {
-    const organizations = await zendesk.getOrganizations();
+    const organizations = await zendeskService.getOrganizations();
     res.json({ organizations });
   } catch (err) {
     console.error('Error fetching organizations:', err.message);
