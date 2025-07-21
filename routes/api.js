@@ -3,8 +3,7 @@
 
 const express = require('express');
 const router = express.Router();
-const zendeskService = require('../services/zendesk');
-const googleSheetsService = require('../services/googleSheets');
+const axios = require('axios');
 
 /**
  * Endpoint to test the direct connection to the Zendesk API.

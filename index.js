@@ -1,6 +1,12 @@
 // index.js (Main Server File)
 // This file is now responsible for starting the server and loading middleware and routes.
 
+// Simple test route to verify server is running and routes work
+app.get('/api/test', (req, res) => {
+  console.log('Received request to /api/test');
+  res.json({ message: 'API is up and responding!' });
+});
+
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
