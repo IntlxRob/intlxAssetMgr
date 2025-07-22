@@ -2,20 +2,18 @@ const axios = require('axios');
 
 const ZENDESK_BASE_URL = 'https://intlxsolutions.zendesk.com/api/v2';
 
-// Use environment variables for security, set:
-
 const email = process.env.ZENDESK_EMAIL || 'rob.johnston@intlxsolutions.com';
-const apiToken = process.env.ZENDESK_API_TOKEN || 'your_token_here';
+const apiToken = process.env.ZENDESK_API_TOKEN || 'your_api_token_here';
 
 const axiosInstance = axios.create({
   baseURL: ZENDESK_BASE_URL,
   auth: {
-    username: `${email}/token`, // Note the '/token' suffix
-    password: apiToken
+    username: `${email}/token`, // Note the "/token"
+    password: apiToken,
   },
   headers: {
     'Content-Type': 'application/json',
-  }
+  },
 });
 
 async function getUsers() {
@@ -41,5 +39,4 @@ async function getOrganizations() {
 module.exports = {
   getUsers,
   getOrganizations,
-  // ...other exports
 };
