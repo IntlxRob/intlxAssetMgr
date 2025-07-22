@@ -1,6 +1,8 @@
 node_modules
-.git
-.DS_Store
-npm-debug.log
+node_modules_tmp
+webpack.config.js
+package.json
 package-lock.json
-
+README.md
+*.log
+.gitignore
