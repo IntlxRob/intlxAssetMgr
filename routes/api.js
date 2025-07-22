@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const zendeskService = require('../services/zendesk'); // ensure path is correct
-const googleSheetsService = require('../services/googleSheetsService');
+const googleSheetsService = require('../services/googleSheets');
 
 /**
  * Test Zendesk API connection
