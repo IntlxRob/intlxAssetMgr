@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const zendeskService = require('../services/zendesk');
+const zendeskService = require('../services/zendesk'); // Make sure path matches
 
-// Existing routes ...
+// Existing asset routes here...
 
 // Fetch all users
 router.get('/users', async (req, res) => {
@@ -10,7 +10,7 @@ router.get('/users', async (req, res) => {
     const users = await zendeskService.getUsers();
     res.json({ users });
   } catch (err) {
-    console.error('Error fetching users:', err.message);
+    console.error('Error fetching users:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to fetch users.', details: err.message });
   }
 });
@@ -21,7 +21,7 @@ router.get('/organizations', async (req, res) => {
     const organizations = await zendeskService.getOrganizations();
     res.json({ organizations });
   } catch (err) {
-    console.error('Error fetching organizations:', err.message);
+    console.error('Error fetching organizations:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to fetch organizations.', details: err.message });
   }
 });
