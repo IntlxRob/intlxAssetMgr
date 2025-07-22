@@ -17,6 +17,19 @@ router.get('/test-zendesk', async (req, res) => {
 });
 
 /**
+ * Endpoint to fetch the service catalog from Google Sheets.
+ */
+router.get('/catalog', async (req, res) => {
+    try {
+        const catalog = await googleSheetsService.getCatalog();
+        res.json(catalog);
+    } catch (error) {
+        console.error('Error fetching catalog:', error.message);
+        res.status(500).json({ error: 'Failed to fetch catalog from Google Sheets.', details: error.message });
+    }
+});
+
+/**
  * Fetch all users
  */
 router.get('/users', async (req, res) => {
