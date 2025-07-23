@@ -35,7 +35,7 @@ router.get('/catalog', async (req, res) => {
  */
 router.get('/users', async (req, res) => {
   try {
-    const users = await zendeskService.getUsers();
+    const users = await zendeskService.getAllUsers();
     res.json({ users });
   } catch (error) {
     console.error('Error fetching users:', error.message);
@@ -48,7 +48,7 @@ router.get('/users', async (req, res) => {
  */
 router.get('/organizations', async (req, res) => {
   try {
-    const organizations = await zendeskService.getOrganizations();
+    const organizations = await zendeskService.getAllOrganizations();
     res.json({ organizations });
   } catch (error) {
     console.error('Error fetching organizations:', error.message);
