@@ -1,7 +1,7 @@
 // routes/api.js
 const express = require('express');
 const router = express.Router();
-const zendeskService = require('../services/zendesk'); // ensure path is correct
+const zendeskService = require('../services/zendesk');
 const googleSheetsService = require('../services/googleSheets');
 
 /**
@@ -21,13 +21,13 @@ router.get('/test-zendesk', async (req, res) => {
  * Endpoint to fetch the service catalog from Google Sheets.
  */
 router.get('/catalog', async (req, res) => {
-    try {
-        const catalog = await googleSheetsService.getCatalog();
-        res.json(catalog);
-    } catch (error) {
-        console.error('Error fetching catalog:', error.message);
-        res.status(500).json({ error: 'Failed to fetch catalog from Google Sheets.', details: error.message });
-    }
+  try {
+    const catalog = await googleSheetsService.getCatalog();
+    res.json(catalog);
+  } catch (error) {
+    console.error('Error fetching catalog:', error.message);
+    res.status(500).json({ error: 'Failed to fetch catalog from Google Sheets.', details: error.message });
+  }
 });
 
 /**
@@ -107,10 +107,45 @@ router.patch('/assets/:id', async (req, res) => {
  */
 router.post('/ticket', async (req, res) => {
   try {
-    const result = await zendeskService.createTicketAndAssets(req.body);
-    res.status(201).json(result);
+    const { name, email, subject, assets = [], approved_by } = req.body;
+
+    if (!email || assets.length === 0) {
+      return res.status(400).json({ error: 'Missing email or assets.' });
+    }
+
+    // 1. Lookup requester
+    const users = await zendeskService.getAllUsers();
+    const requester = users.find((u) => u.email === email);
+    if (!requester) {
+      return res.status(404).json({ error: `Requester not found for email ${email}` });
+    }
+
+    // 2. Format assets for Zendesk custom object creation
+    const formattedAssets = assets.map((asset, index) => ({
+      name: asset.asset_name || `asset-${Date.now()}-${index}`,
+      custom_object_fields: {
+        asset_name: asset.asset_name || '',
+        manufacturer: asset.manufacturer || '',
+        model_number: asset.model_number || '',
+        serial_number: asset.serial_number || '',
+        status: asset.status || 'requested',
+        approved_by: approved_by || name,
+        assigned_to: requester.id,
+        organization: requester.organization_id || null,
+      }
+    }));
+
+    // 3. Create ticket and assets
+    const result = await zendeskService.createTicketAndAssets({
+      subject: subject || 'New Asset Catalog Request',
+      description: `Requested by ${name || email}`,
+      requester_id: requester.id,
+      assets: formattedAssets
+    });
+
+    res.status(201).json({ ticket: { id: result.ticket_id }, assets: result.assets });
   } catch (error) {
-    console.error('Error creating ticket and assets:', error.message);
+    console.error('Error creating ticket and assets:', error.response?.data || error.message);
     res.status(500).json({ error: 'Failed to create ticket and assets.', details: error.message });
   }
 });
