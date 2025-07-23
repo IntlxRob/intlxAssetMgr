@@ -107,6 +107,7 @@ router.patch('/assets/:id', async (req, res) => {
  */
 router.post('/ticket', async (req, res) => {
   try {
+    console.log("🔧 Incoming ticket request body:", req.body);
     const { name, email, subject, assets = [], approved_by } = req.body;
 
     if (!email || assets.length === 0) {
