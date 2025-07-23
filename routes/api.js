@@ -125,15 +125,18 @@ router.post('/ticket', async (req, res) => {
     const formattedAssets = assets.map((asset, index) => ({
       name: asset.asset_name || `asset-${Date.now()}-${index}`,
       custom_object_fields: {
-        asset_name: asset.asset_name || '',
-        manufacturer: asset.manufacturer || '',
-        model_number: asset.model_number || '',
-        serial_number: asset.serial_number || '',
-        status: asset.status || 'requested',
-        approved_by: approved_by || name,
-        assigned_to: requester.id,
-        organization: requester.organization_id || null,
-      }
+       asset_name: asset.asset_name || '',
+       manufacturer: asset.manufacturer || '',
+       model_number: asset.model_number || '',
+       description: asset.description || '',
+       url: asset.url || '',
+       serial_number: asset.serial_number || '',
+       status: asset.status || 'Pending',
+       approved_by: approved_by || name,
+       assigned_to: requester.id,
+       organization: requester.organization_id || null,
+    }
+
     }));
 
     // 3. Create ticket and assets
