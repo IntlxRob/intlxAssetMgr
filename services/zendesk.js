@@ -90,15 +90,24 @@ async function updateAsset(assetId, fieldsToUpdate) {
   return res.data;
 }
 
+// Create a standalone ticket
+async function createTicket(ticketPayload) {
+  const res = await zendeskApi.post('/tickets.json', ticketPayload);
+  return res.data;
+}
+
 // Create a ticket and associated asset records
-async function createTicketAndAssets({ subject, description, requester_id, approved_by, assets }) {
+async function createTicketAndAssets({ subject, description, name, email, approved_by, assets }) {
   try {
     // Step 1: Create Zendesk ticket
     const ticketPayload = {
       ticket: {
         subject: subject || "New Asset Request",
         description: description || "Requested via the asset catalog.",
-        requester_id
+        requester: {
+          name,
+          email,
+        },
       },
     };
 
@@ -117,7 +126,7 @@ async function createTicketAndAssets({ subject, description, requester_id, appro
           description: asset.Description || "",
           url: asset.URL || "",
           ticket_id: ticketId,
-          approved_by: approved_by || ""
+          approved_by: approved_by || name
         },
       };
 
@@ -146,5 +155,6 @@ module.exports = {
   getAllOrganizations,
   createAsset,
   updateAsset,
+  createTicket,
   createTicketAndAssets,
 };
