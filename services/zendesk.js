@@ -1,3 +1,5 @@
+// zendesk.js
+
 const axios = require("axios");
 
 const ZENDESK_SUBDOMAIN = "intlxsolutions";
@@ -13,13 +15,13 @@ const zendeskApi = axios.create({
   },
 });
 
-// Test function
+// ✅ Test connection
 async function testConnection() {
   const res = await zendeskApi.get("/users/me.json");
   return res.data;
 }
 
-// Pagination helper
+// ✅ Pagination helper
 async function paginate(endpoint) {
   let results = [];
   let url = endpoint;
@@ -32,23 +34,25 @@ async function paginate(endpoint) {
     else if (data.organizations) results.push(...data.organizations);
     else if (data.custom_object_records) results.push(...data.custom_object_records);
 
-    url = data.next_page ? data.next_page.replace(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`, "") : null;
+    url = data.next_page
+      ? data.next_page.replace(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`, "")
+      : null;
   }
 
   return results;
 }
 
-// Get all users
+// ✅ Get all users
 async function getAllUsers() {
   return await paginate("/users.json?page=1");
 }
 
-// Get all organizations
+// ✅ Get all organizations
 async function getAllOrganizations() {
   return await paginate("/organizations.json?page=1");
 }
 
-// Get all assets assigned to a user
+// ✅ Get all assets assigned to a specific user
 async function getUserAssets(userId) {
   const allRecords = await paginate(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`);
   const filtered = allRecords.filter(
@@ -58,22 +62,24 @@ async function getUserAssets(userId) {
   return filtered;
 }
 
-// Create a new asset
+// ✅ Create a new asset
 async function createAsset(assetData) {
   const payload = {
-    name: assetData.name || `asset-${Date.now()}`,
-    custom_object_fields: assetData.custom_object_fields || {},
+    custom_object_record: {
+      custom_object_fields: assetData.custom_object_fields || {},
+      relationships: assetData.relationships || {},
+    },
   };
 
   const res = await zendeskApi.post(
-    `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records`,
+    `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`,
     payload
   );
 
   return res.data;
 }
 
-// Update an existing asset
+// ✅ Update an existing asset
 async function updateAsset(assetId, fieldsToUpdate) {
   const payload = {
     custom_object_fields: fieldsToUpdate,
@@ -87,9 +93,10 @@ async function updateAsset(assetId, fieldsToUpdate) {
   return res.data;
 }
 
-// Create a ticket and associated asset records
+// ✅ Create a ticket and associated assets
 async function createTicketAndAssets({ subject, description, requester_id, assets }) {
   try {
+    // Step 1: Create ticket
     const ticketPayload = {
       ticket: {
         subject,
@@ -100,19 +107,31 @@ async function createTicketAndAssets({ subject, description, requester_id, asset
 
     const ticketRes = await zendeskApi.post("/tickets.json", ticketPayload);
     const ticketId = ticketRes.data.ticket.id;
+    console.log(`Ticket created: ${ticketId}`);
 
+    // Step 2: Create associated asset records
     const createdAssets = [];
     for (const asset of assets) {
       const assetPayload = {
-        name: asset.name || `asset-${Date.now()}`,
-        custom_object_fields: {
-          ...asset.custom_object_fields,
-          ticket_id: ticketId,
+        custom_object_record: {
+          custom_object_fields: {
+            ...asset.custom_object_fields,
+            ticket_id: ticketId.toString(),
+          },
+          relationships: {
+            assigned_to: {
+              data: {
+                id: requester_id,
+              },
+            },
+          },
         },
       };
 
+      console.log("Creating asset with payload:", JSON.stringify(assetPayload, null, 2));
+
       const res = await zendeskApi.post(
-        `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records`,
+        `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`,
         assetPayload
       );
       createdAssets.push(res.data);
@@ -120,7 +139,10 @@ async function createTicketAndAssets({ subject, description, requester_id, asset
 
     return { ticket_id: ticketId, assets: createdAssets };
   } catch (error) {
-    console.error("createTicketAndAssets failed:", error.response?.data || error.message);
+    console.error(
+      "createTicketAndAssets failed:",
+      JSON.stringify(error.response?.data || error.message, null, 2)
+    );
     throw error;
   }
 }
