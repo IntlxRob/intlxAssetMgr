@@ -1,3 +1,4 @@
+// services/zendesk.js
 const axios = require("axios");
 
 const ZENDESK_SUBDOMAIN = "intlxsolutions";
@@ -90,27 +91,36 @@ async function updateAsset(assetId, fieldsToUpdate) {
 }
 
 // Create a ticket and associated asset records
-async function createTicketAndAssets({ subject, description, requester_id, assets }) {
+async function createTicketAndAssets({ subject, description, name, email, approved_by, assets }) {
   try {
+    // Step 1: Create Zendesk ticket
     const ticketPayload = {
       ticket: {
         subject: subject || "New Asset Request",
         description: description || "Requested via the asset catalog.",
-        requester_id,
+        requester: {
+          name,
+          email,
+        },
       },
     };
 
     const ticketRes = await zendeskApi.post("/tickets.json", ticketPayload);
     const ticketId = ticketRes.data.ticket.id;
-
     const createdAssets = [];
 
+    // Step 2: Create associated custom object records
     for (const asset of assets) {
       const assetPayload = {
-        name: asset.name || `asset-${Date.now()}`,
+        name: asset.Name || `asset-${Date.now()}`,
         custom_object_fields: {
-          ...asset.custom_object_fields,
+          asset_name: asset.Name || "",
+          manufacturer: asset.Manufacturer || "",
+          model_number: asset["Model Number"] || "",
+          description: asset.Description || "",
+          url: asset.URL || "",
           ticket_id: ticketId,
+          approved_by: approved_by || name
         },
       };
 
@@ -122,7 +132,10 @@ async function createTicketAndAssets({ subject, description, requester_id, asset
       createdAssets.push(res.data);
     }
 
-    return { ticket_id: ticketId, assets: createdAssets };
+    return {
+      ticket_id: ticketId,
+      assets: createdAssets,
+    };
   } catch (error) {
     console.error("createTicketAndAssets failed:", error.response?.data || error.message);
     throw error;
