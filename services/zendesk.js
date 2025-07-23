@@ -1,4 +1,3 @@
-// services/zendesk.js
 const axios = require("axios");
 
 const ZENDESK_SUBDOMAIN = "intlxsolutions";
@@ -90,16 +89,15 @@ async function updateAsset(assetId, fieldsToUpdate) {
   return res.data;
 }
 
-// Create a standalone ticket
-async function createTicket(ticketPayload) {
-  const res = await zendeskApi.post('/tickets.json', ticketPayload);
+// Create ticket only
+async function createTicket(payload) {
+  const res = await zendeskApi.post("/tickets.json", payload);
   return res.data;
 }
 
-// Create a ticket and associated asset records
+// Create ticket and assets (if needed)
 async function createTicketAndAssets({ subject, description, name, email, approved_by, assets }) {
   try {
-    // Step 1: Create Zendesk ticket
     const ticketPayload = {
       ticket: {
         subject: subject || "New Asset Request",
@@ -111,11 +109,10 @@ async function createTicketAndAssets({ subject, description, name, email, approv
       },
     };
 
-    const ticketRes = await zendeskApi.post("/tickets.json", ticketPayload);
-    const ticketId = ticketRes.data.ticket.id;
+    const ticketRes = await createTicket(ticketPayload);
+    const ticketId = ticketRes.ticket.id;
     const createdAssets = [];
 
-    // Step 2: Create associated custom object records
     for (const asset of assets) {
       const assetPayload = {
         name: asset.Name || `asset-${Date.now()}`,
@@ -126,7 +123,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
           description: asset.Description || "",
           url: asset.URL || "",
           ticket_id: ticketId,
-          approved_by: approved_by || name
+          approved_by: approved_by || name,
         },
       };
 
