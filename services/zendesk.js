@@ -149,6 +149,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
 }
 
 module.exports = {
+  zendeskApi,
   testConnection,
   getUserAssets,
   getAllUsers,
