@@ -11,6 +11,7 @@ function App() {
   const [formData, setFormData] = useState({});
   const [users, setUsers] = useState([]);
   const [organizations, setOrganizations] = useState([]);
+  const [newAssetForm, setNewAssetForm] = useState({});
   const [newAssetRequest, setNewAssetRequest] = useState([]);
 
   useEffect(() => {
@@ -61,9 +62,9 @@ function App() {
     });
   }
 
-  function handleInputChange(e) {
+  function handleInputChange(e, setTargetState) {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    setTargetState((prev) => ({ ...prev, [name]: value }));
   }
 
   async function handleSave() {
@@ -90,8 +91,10 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+
       if (!res.ok) throw new Error("Failed to update asset");
       const updatedAsset = await res.json();
+
       setAssets((prevAssets) =>
         prevAssets.map((a) => (a.id === updatedAsset.id ? updatedAsset : a))
       );
@@ -121,9 +124,23 @@ function App() {
       if (!res.ok) throw new Error("Request failed: " + res.status);
       alert("Request submitted!");
       setNewAssetRequest([]);
+      setNewAssetForm({});
     } catch (err) {
       alert("Submission failed: " + err.message);
     }
+  }
+
+  function handleAddNewAsset() {
+    const requiredFields = ["asset_name", "manufacturer", "model_number"];
+    const isValid = requiredFields.every((field) => newAssetForm[field]?.trim());
+
+    if (!isValid) {
+      alert("Please fill in required fields: Asset Name, Manufacturer, and Model Number.");
+      return;
+    }
+
+    setNewAssetRequest((prev) => [...prev, { ...newAssetForm }]);
+    setNewAssetForm({});
   }
 
   function handleBack() {
@@ -137,6 +154,7 @@ function App() {
       <h2>Asset Manager (React)</h2>
       <div><b>Requester:</b> {requester ? requester.name : "Unknown"}</div>
 
+      {/* Existing assets list */}
       {!selectedAsset && (
         <ul style={{ marginTop: 10 }}>
           {assets.map((a) => (
@@ -157,6 +175,7 @@ function App() {
         </ul>
       )}
 
+      {/* Edit asset */}
       {selectedAsset && (
         <div style={{ marginTop: 20 }}>
           <button onClick={handleBack} style={{ marginBottom: 10 }}>
@@ -167,16 +186,16 @@ function App() {
           <label>Asset Tag: <b>{selectedAsset.name || "No Tag"}</b></label><br />
 
           <label>
-            Asset Name: <input name="asset_name" value={formData.asset_name || ""} onChange={handleInputChange} />
+            Asset Name: <input name="asset_name" value={formData.asset_name || ""} onChange={(e) => handleInputChange(e, setFormData)} />
           </label><br />
 
           <label>
-            Serial Number: <input name="serial_number" value={formData.serial_number || ""} onChange={handleInputChange} />
+            Serial Number: <input name="serial_number" value={formData.serial_number || ""} onChange={(e) => handleInputChange(e, setFormData)} />
           </label><br />
 
           <label>
             Status:
-            <select name="status" value={formData.status || ""} onChange={handleInputChange}>
+            <select name="status" value={formData.status || ""} onChange={(e) => handleInputChange(e, setFormData)}>
               <option value="">-- Select Status --</option>
               <option value="active">Active</option>
               <option value="inactive">Inactive</option>
@@ -186,7 +205,7 @@ function App() {
 
           <label>
             Assigned To User:
-            <select name="assigned_to_user" value={formData.assigned_to_user || ""} onChange={handleInputChange}>
+            <select name="assigned_to_user" value={formData.assigned_to_user || ""} onChange={(e) => handleInputChange(e, setFormData)}>
               <option value="">-- Select User --</option>
               {users.map((user) => (
                 <option key={user.id} value={user.id}>{user.name}</option>
@@ -196,7 +215,7 @@ function App() {
 
           <label>
             Organization:
-            <select name="assigned_to_org" value={formData.assigned_to_org || ""} onChange={handleInputChange}>
+            <select name="assigned_to_org" value={formData.assigned_to_org || ""} onChange={(e) => handleInputChange(e, setFormData)}>
               <option value="">-- Select Organization --</option>
               {organizations.map((org) => (
                 <option key={org.id} value={org.id}>{org.name}</option>
@@ -208,16 +227,49 @@ function App() {
         </div>
       )}
 
+      {/* New Catalog Request */}
       <div style={{ marginTop: 30 }}>
         <h3>Catalog Request (Submit)</h3>
-        <button onClick={() => setNewAssetRequest([{ Name: "Example Asset", Manufacturer: "Dell", "Model Number": "XPS 15" }])}>
-          + Request New Asset
-        </button>
+
+        <label>
+          Asset Name:{" "}
+          <input name="asset_name" value={newAssetForm.asset_name || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+        </label><br />
+
+        <label>
+          Manufacturer:{" "}
+          <input name="manufacturer" value={newAssetForm.manufacturer || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+        </label><br />
+
+        <label>
+          Model Number:{" "}
+          <input name="model_number" value={newAssetForm.model_number || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+        </label><br />
+
+        <label>
+          Serial Number:{" "}
+          <input name="serial_number" value={newAssetForm.serial_number || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+        </label><br />
+
+        <label>
+          Status:
+          <select name="status" value={newAssetForm.status || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)}>
+            <option value="">-- Select Status --</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+            <option value="retired">Retired</option>
+          </select>
+        </label><br />
+
+        <button onClick={handleAddNewAsset} style={{ marginTop: 10 }}>+ Add to Request</button>
+
         {newAssetRequest.length > 0 && (
           <div style={{ marginTop: 10 }}>
             <ul>
               {newAssetRequest.map((item, idx) => (
-                <li key={idx}><b>{item.Name}</b> - {item.Manufacturer} / {item["Model Number"]}</li>
+                <li key={idx}>
+                  <b>{item.asset_name}</b> - {item.manufacturer} / {item.model_number}
+                </li>
               ))}
             </ul>
             <button onClick={handleSubmitNewRequest}>Submit Request</button>
