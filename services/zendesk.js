@@ -91,17 +91,14 @@ async function updateAsset(assetId, fieldsToUpdate) {
 }
 
 // Create a ticket and associated asset records
-async function createTicketAndAssets({ subject, description, name, email, approved_by, assets }) {
+async function createTicketAndAssets({ subject, description, requester_id, approved_by, assets }) {
   try {
     // Step 1: Create Zendesk ticket
     const ticketPayload = {
       ticket: {
         subject: subject || "New Asset Request",
         description: description || "Requested via the asset catalog.",
-        requester: {
-          name,
-          email,
-        },
+        requester_id
       },
     };
 
@@ -120,7 +117,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
           description: asset.Description || "",
           url: asset.URL || "",
           ticket_id: ticketId,
-          approved_by: approved_by || name
+          approved_by: approved_by || ""
         },
       };
 
