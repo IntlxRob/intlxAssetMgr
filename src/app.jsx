@@ -11,39 +11,49 @@ function App() {
   const [formData, setFormData] = useState({});
   const [users, setUsers] = useState([]);
   const [organizations, setOrganizations] = useState([]);
+  const [newAssetRequest, setNewAssetRequest] = useState([]);
 
   useEffect(() => {
-    const ZAFClient = window.ZAFClient;
-    const client = ZAFClient.init();
+    if (!window.ZAFClient) {
+      console.warn("ZAFClient not available");
+      return;
+    }
+
+    const client = window.ZAFClient.init();
+    client.invoke("resize");
 
     async function load() {
-      const ticketData = await client.get("ticket.requester");
-      setRequester(ticketData["ticket.requester"]);
-      const userId = ticketData["ticket.requester"]?.id;
-      if (userId) {
-        fetch(`${BACKEND_BASE_URL}/api/user-assets?user_id=${userId}`)
+      try {
+        const ticketData = await client.get("ticket.requester");
+        setRequester(ticketData["ticket.requester"]);
+
+        const userId = ticketData["ticket.requester"]?.id;
+        if (userId) {
+          fetch(`${BACKEND_BASE_URL}/api/user-assets?user_id=${userId}`)
+            .then((res) => res.json())
+            .then((data) => setAssets(data.assets || []))
+            .finally(() => setLoading(false));
+        }
+
+        fetch(`${BACKEND_BASE_URL}/api/users`)
           .then((res) => res.json())
-          .then((data) => setAssets(data.assets || []))
-          .finally(() => setLoading(false));
+          .then((data) => setUsers(data.users || []))
+          .catch(() => setUsers([]));
+
+        fetch(`${BACKEND_BASE_URL}/api/organizations`)
+          .then((res) => res.json())
+          .then((data) => setOrganizations(data.organizations || []))
+          .catch(() => setOrganizations([]));
+      } catch (err) {
+        console.error("Error loading data:", err);
       }
-
-      // Fetch users and organizations for dropdowns
-      fetch(`${BACKEND_BASE_URL}/api/users`)
-        .then(res => res.json())
-        .then(data => setUsers(data.users || []))
-        .catch(() => setUsers([]));
-
-      fetch(`${BACKEND_BASE_URL}/api/organizations`)
-        .then(res => res.json())
-        .then(data => setOrganizations(data.organizations || []))
-        .catch(() => setOrganizations([]));
     }
+
     load();
   }, []);
 
   function handleAssetClick(asset) {
     setSelectedAsset(asset);
-
     setFormData({
       ...asset.custom_object_fields,
       assigned_to_user: asset.custom_object_fields?.assigned_to || '',
@@ -61,7 +71,6 @@ function App() {
     try {
       let payload = { ...formData };
 
-      // Reassignment logic: prefer user, else org, else keep current
       if (formData.assigned_to_user) {
         payload.assigned_to = formData.assigned_to_user;
         delete payload.assigned_to_org;
@@ -73,7 +82,6 @@ function App() {
         delete payload.assigned_to_org;
       }
 
-      // Remove keys used only in UI but not part of custom_object_fields
       delete payload.assigned_to_user;
       delete payload.assigned_to_org;
 
@@ -94,6 +102,30 @@ function App() {
     }
   }
 
+  async function handleSubmitNewRequest() {
+    try {
+      if (!newAssetRequest.length || !requester) return;
+      const payload = {
+        subject: "New Asset Catalog Request",
+        description: "Catalog request submission",
+        name: requester.name,
+        email: requester.email,
+        approved_by: requester.name,
+        assets: newAssetRequest,
+      };
+      const res = await fetch(`${BACKEND_BASE_URL}/api/ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Request failed: " + res.status);
+      alert("Request submitted!");
+      setNewAssetRequest([]);
+    } catch (err) {
+      alert("Submission failed: " + err.message);
+    }
+  }
+
   function handleBack() {
     setSelectedAsset(null);
   }
@@ -103,9 +135,7 @@ function App() {
   return (
     <div style={{ fontFamily: "sans-serif", padding: 8 }}>
       <h2>Asset Manager (React)</h2>
-      <div>
-        <b>Requester:</b> {requester ? requester.name : "Unknown"}
-      </div>
+      <div><b>Requester:</b> {requester ? requester.name : "Unknown"}</div>
 
       {!selectedAsset && (
         <ul style={{ marginTop: 10 }}>
@@ -134,88 +164,71 @@ function App() {
           </button>
           <h3>Edit Asset Details</h3>
 
-          <label>
-            Asset Tag: <b>{selectedAsset.name || "No Tag"}</b>
-          </label>
-          <br />
+          <label>Asset Tag: <b>{selectedAsset.name || "No Tag"}</b></label><br />
 
           <label>
-            Asset Name:{" "}
-            <input
-              name="asset_name"
-              value={formData.asset_name || ""}
-              onChange={handleInputChange}
-            />
-          </label>
-          <br />
+            Asset Name: <input name="asset_name" value={formData.asset_name || ""} onChange={handleInputChange} />
+          </label><br />
 
           <label>
-            Serial Number:{" "}
-            <input
-              name="serial_number"
-              value={formData.serial_number || ""}
-              onChange={handleInputChange}
-            />
-          </label>
-          <br />
+            Serial Number: <input name="serial_number" value={formData.serial_number || ""} onChange={handleInputChange} />
+          </label><br />
 
           <label>
-            Status:{" "}
-            <select
-              name="status"
-              value={formData.status || ""}
-              onChange={handleInputChange}
-            >
+            Status:
+            <select name="status" value={formData.status || ""} onChange={handleInputChange}>
               <option value="">-- Select Status --</option>
               <option value="active">Active</option>
               <option value="inactive">Inactive</option>
               <option value="retired">Retired</option>
             </select>
-          </label>
-          <br />
+          </label><br />
 
           <label>
-            Assigned To User:{" "}
-            <select
-              name="assigned_to_user"
-              value={formData.assigned_to_user || ""}
-              onChange={handleInputChange}
-            >
+            Assigned To User:
+            <select name="assigned_to_user" value={formData.assigned_to_user || ""} onChange={handleInputChange}>
               <option value="">-- Select User --</option>
               {users.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.name}
-                </option>
+                <option key={user.id} value={user.id}>{user.name}</option>
               ))}
             </select>
-          </label>
-          <br />
+          </label><br />
 
           <label>
-            Organization:{" "}
-            <select
-              name="assigned_to_org"
-              value={formData.assigned_to_org || ""}
-              onChange={handleInputChange}
-            >
+            Organization:
+            <select name="assigned_to_org" value={formData.assigned_to_org || ""} onChange={handleInputChange}>
               <option value="">-- Select Organization --</option>
               {organizations.map((org) => (
-                <option key={org.id} value={org.id}>
-                  {org.name}
-                </option>
+                <option key={org.id} value={org.id}>{org.name}</option>
               ))}
             </select>
-          </label>
-          <br />
+          </label><br />
 
-          <button onClick={handleSave} style={{ marginTop: 10 }}>
-            Save
-          </button>
+          <button onClick={handleSave} style={{ marginTop: 10 }}>Save</button>
         </div>
       )}
+
+      <div style={{ marginTop: 30 }}>
+        <h3>Catalog Request (Submit)</h3>
+        <button onClick={() => setNewAssetRequest([{ Name: "Example Asset", Manufacturer: "Dell", "Model Number": "XPS 15" }])}>
+          + Request New Asset
+        </button>
+        {newAssetRequest.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <ul>
+              {newAssetRequest.map((item, idx) => (
+                <li key={idx}><b>{item.Name}</b> - {item.Manufacturer} / {item["Model Number"]}</li>
+              ))}
+            </ul>
+            <button onClick={handleSubmitNewRequest}>Submit Request</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
+
+export default App;
