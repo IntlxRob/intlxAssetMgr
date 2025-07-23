@@ -154,7 +154,6 @@ function App() {
       <h2>Asset Manager (React)</h2>
       <div><b>Requester:</b> {requester ? requester.name : "Unknown"}</div>
 
-      {/* Existing assets list */}
       {!selectedAsset && (
         <ul style={{ marginTop: 10 }}>
           {assets.map((a) => (
@@ -175,7 +174,6 @@ function App() {
         </ul>
       )}
 
-      {/* Edit asset */}
       {selectedAsset && (
         <div style={{ marginTop: 20 }}>
           <button onClick={handleBack} style={{ marginBottom: 10 }}>
@@ -232,23 +230,19 @@ function App() {
         <h3>Catalog Request (Submit)</h3>
 
         <label>
-          Asset Name:{" "}
-          <input name="asset_name" value={newAssetForm.asset_name || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+          Asset Name: <input name="asset_name" value={newAssetForm.asset_name || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
         </label><br />
 
         <label>
-          Manufacturer:{" "}
-          <input name="manufacturer" value={newAssetForm.manufacturer || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+          Manufacturer: <input name="manufacturer" value={newAssetForm.manufacturer || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
         </label><br />
 
         <label>
-          Model Number:{" "}
-          <input name="model_number" value={newAssetForm.model_number || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+          Model Number: <input name="model_number" value={newAssetForm.model_number || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
         </label><br />
 
         <label>
-          Serial Number:{" "}
-          <input name="serial_number" value={newAssetForm.serial_number || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
+          Serial Number: <input name="serial_number" value={newAssetForm.serial_number || ""} onChange={(e) => handleInputChange(e, setNewAssetForm)} />
         </label><br />
 
         <label>
