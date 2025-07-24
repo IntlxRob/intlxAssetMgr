@@ -123,12 +123,14 @@ router.post('/ticket', async (req, res) => {
 
     // Create ticket
     const ticketPayload = {
-      ticket: {
-        subject: subject || 'New Service Catalog Request',
-        description: body,
-        requester_id: requester.id,
-      },
-    };
+  ticket: {
+    subject: subject || 'New Service Catalog Request',
+    comment: {
+      html_body: body, // This tells Zendesk to render HTML
+    },
+    requester_id: requester.id,
+  },
+};
 
     const ticketRes = await zendeskService.zendeskApi.post('/tickets.json', ticketPayload);
     const ticketId = ticketRes.data.ticket.id;
