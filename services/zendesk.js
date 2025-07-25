@@ -95,13 +95,33 @@ async function createTicket(payload) {
   return res.data;
 }
 
-// Create ticket and assets (if needed)
-async function createTicketAndAssets({ subject, description, name, email, approved_by, assets }) {
+// Create ticket and assets (with org + timestamp in HTML)
+async function createTicketAndAssets({ subject, description, name, email, approved_by, organization, assets }) {
   try {
+    const now = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+
+    const assetsHtml = assets.map(asset => `
+      <li>
+        <strong>Name:</strong> ${asset.Name || ''}<br/>
+        <strong>Manufacturer:</strong> ${asset.Manufacturer || ''}<br/>
+        <strong>Model:</strong> ${asset["Model Number"] || ''}
+      </li>
+    `).join('');
+
+    const htmlBody = `
+      <p><strong>Requested by:</strong> ${approved_by || name} (${email})</p>
+      <p><strong>Organization:</strong> ${organization || 'N/A'}</p>
+      <p><strong>Timestamp:</strong> ${now}</p>
+      <p><strong>Assets Requested:</strong></p>
+      <ul>${assetsHtml}</ul>
+    `;
+
     const ticketPayload = {
       ticket: {
         subject: subject || "New Asset Request",
-        description: description || "Requested via the asset catalog.",
+        comment: {
+          html_body: htmlBody,
+        },
         requester: {
           name,
           email,
