@@ -13,13 +13,12 @@ const zendeskApi = axios.create({
   },
 });
 
-// Test Zendesk API
+// --- Utilities ---
 async function testConnection() {
   const res = await zendeskApi.get("/users/me.json");
   return res.data;
 }
 
-// Generic paginator
 async function paginate(endpoint) {
   let results = [];
   let url = endpoint;
@@ -40,27 +39,35 @@ async function paginate(endpoint) {
   return results;
 }
 
-// Get all Zendesk users
+// --- Data Fetch ---
 async function getAllUsers() {
   return await paginate("/users.json?page=1");
 }
 
-// Get all Zendesk organizations
 async function getAllOrganizations() {
   return await paginate("/organizations.json?page=1");
 }
 
-// Get all assets assigned to a specific user
 async function getUserAssets(userId) {
   const allRecords = await paginate(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`);
-  const filtered = allRecords.filter(
+  return allRecords.filter(
     (r) => String(r.custom_object_fields?.assigned_to) === String(userId)
   );
-  console.log(`Found ${filtered.length} assets for user ID ${userId}`);
-  return filtered;
 }
 
-// Create an individual asset
+async function getOrganizationName(orgId) {
+  if (!orgId) return null;
+
+  try {
+    const res = await zendeskApi.get(`/organizations/${orgId}.json`);
+    return res.data.organization?.name || `Org ${orgId}`;
+  } catch (err) {
+    console.warn(`Failed to fetch org name for ID ${orgId}:`, err.message);
+    return `Org ${orgId}`;
+  }
+}
+
+// --- Asset Operations ---
 async function createAsset(assetData) {
   const payload = {
     name: assetData.name || `asset-${Date.now()}`,
@@ -75,7 +82,6 @@ async function createAsset(assetData) {
   return res.data;
 }
 
-// Update a specific asset
 async function updateAsset(assetId, fieldsToUpdate) {
   const payload = {
     custom_object_fields: fieldsToUpdate,
@@ -89,43 +95,35 @@ async function updateAsset(assetId, fieldsToUpdate) {
   return res.data;
 }
 
-// Create ticket only
+// --- Ticket Operations ---
 async function createTicket(payload) {
   const res = await zendeskApi.post("/tickets.json", payload);
   return res.data;
 }
 
-// Create ticket and assets (with org + timestamp in HTML)
+// --- Create Ticket & Asset Records ---
 async function createTicketAndAssets({ subject, description, name, email, approved_by, organization, assets }) {
   try {
-    const now = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+    const orgName = organization ? await getOrganizationName(organization) : "N/A";
+    const timestamp = new Date().toLocaleString();
 
-    const assetsHtml = assets.map(asset => `
-      <li>
-        <strong>Name:</strong> ${asset.Name || ''}<br/>
-        <strong>Manufacturer:</strong> ${asset.Manufacturer || ''}<br/>
-        <strong>Model:</strong> ${asset["Model Number"] || ''}
-      </li>
-    `).join('');
+    const itemsHtml = assets.map((a) =>
+      `<li><strong>${a.Name}</strong><br/><small>${a.Manufacturer} / ${a["Model Number"]}</small></li>`
+    ).join("");
 
     const htmlBody = `
-      <p><strong>Requested by:</strong> ${approved_by || name} (${email})</p>
-      <p><strong>Organization:</strong> ${organization || 'N/A'}</p>
-      <p><strong>Timestamp:</strong> ${now}</p>
-      <p><strong>Assets Requested:</strong></p>
-      <ul>${assetsHtml}</ul>
+      <p><strong>Requested items:</strong></p>
+      <ul>${itemsHtml}</ul>
+      <p><strong>Requested by:</strong> ${approved_by || name}</p>
+      <p><strong>Organization:</strong> ${orgName}</p>
+      <p><strong>Timestamp:</strong> ${timestamp}</p>
     `;
 
     const ticketPayload = {
       ticket: {
         subject: subject || "New Asset Request",
-        comment: {
-          html_body: htmlBody,
-        },
-        requester: {
-          name,
-          email,
-        },
+        comment: { html_body: htmlBody },
+        requester: { name, email },
       },
     };
 
@@ -144,6 +142,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
           url: asset.URL || "",
           ticket_id: ticketId,
           approved_by: approved_by || name,
+          organization: organization || null,
         },
       };
 
