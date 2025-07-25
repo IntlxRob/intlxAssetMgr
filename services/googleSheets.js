@@ -13,7 +13,7 @@ const GOOGLE_CREDS_JSON = process.env.GOOGLE_CREDS_JSON;
  * @returns {string} - Spreadsheet ID
  */
 function getSheetIdFromUrl(url) {
-  const match = url.match(/\/d\/(.+?)\//);
+  const match = url.match(/\/d\/([a-zA-Z0-9-_]+)\//);
   if (!match || !match[1]) {
     throw new Error('Invalid Google Sheet URL. Could not extract Sheet ID.');
   }
@@ -29,16 +29,22 @@ async function getSheetDoc() {
     throw new Error('Google Sheets environment variables are not configured.');
   }
 
-  const creds = JSON.parse(GOOGLE_CREDS_JSON);
-  const auth = new JWT({
-    email: creds.client_email,
-    key: creds.private_key,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-  });
+  try {
+    const creds = JSON.parse(GOOGLE_CREDS_JSON);
+    const auth = new JWT({
+      email: creds.client_email,
+      key: creds.private_key.replace(/\\n/g, '\n'),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
 
-  const doc = new GoogleSpreadsheet(getSheetIdFromUrl(GOOGLE_SHEET_URL), auth);
-  await doc.loadInfo();
-  return doc;
+    const doc = new GoogleSpreadsheet(getSheetIdFromUrl(GOOGLE_SHEET_URL), auth);
+    await doc.loadInfo();
+    console.log(`✅ Loaded spreadsheet: ${doc.title}`);
+    return doc;
+  } catch (err) {
+    console.error('❌ Error loading Google Sheet:', err.message);
+    throw err;
+  }
 }
 
 /**
@@ -65,7 +71,6 @@ async function getUserAssets(userId) {
   }
 
   const rows = await sheet.getRows();
-
   return rows
     .filter(row => `${row.assigned_user_id}` === `${userId}`)
     .map(row => row.toObject());
