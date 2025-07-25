@@ -115,7 +115,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
       <p><strong>Requested items:</strong></p>
       <ul>${itemsHtml}</ul>
       <p><strong>Requested by:</strong> ${approved_by || name}</p>
-      <p><strong>Organization:</strong> ${orgName}</p>
+      <p><strong>Organization:</strong> ${orgName} (ID ${organization || "null"})</p>
       <p><strong>Timestamp:</strong> ${timestamp}</p>
     `;
 
@@ -164,12 +164,14 @@ async function createTicketAndAssets({ subject, description, name, email, approv
   }
 }
 
+// --- Export Everything ---
 module.exports = {
   zendeskApi,
   testConnection,
   getUserAssets,
   getAllUsers,
   getAllOrganizations,
+  getOrganizationName,
   createAsset,
   updateAsset,
   createTicket,
