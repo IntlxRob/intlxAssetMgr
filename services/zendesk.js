@@ -56,13 +56,19 @@ async function getUserAssets(userId) {
 }
 
 async function getOrganizationName(orgId) {
-  if (!orgId) return null;
+  if (!orgId) {
+    console.warn("No organization ID provided.");
+    return null;
+  }
 
   try {
+    console.log(`Fetching organization name for ID: ${orgId}`);
     const res = await zendeskApi.get(`/organizations/${orgId}.json`);
-    return res.data.organization?.name || `Org ${orgId}`;
+    const name = res.data.organization?.name || `Org ${orgId}`;
+    console.log(`Resolved organization name: ${name}`);
+    return name;
   } catch (err) {
-    console.warn(`Failed to fetch org name for ID ${orgId}:`, err.message);
+    console.error(`Failed to fetch org name for ID ${orgId}:`, err.message);
     return `Org ${orgId}`;
   }
 }
@@ -104,6 +110,9 @@ async function createTicket(payload) {
 // --- Create Ticket & Asset Records ---
 async function createTicketAndAssets({ subject, description, name, email, approved_by, organization, assets }) {
   try {
+    console.log("=== Begin createTicketAndAssets ===");
+    console.log("Incoming payload:", { subject, name, email, approved_by, organization, assets });
+
     const orgName = organization ? await getOrganizationName(organization) : "N/A";
     const timestamp = new Date().toLocaleString();
 
@@ -115,7 +124,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
       <p><strong>Requested items:</strong></p>
       <ul>${itemsHtml}</ul>
       <p><strong>Requested by:</strong> ${approved_by || name}</p>
-      <p><strong>Organization:</strong> ${orgName} (ID ${organization || "null"})</p>
+      <p><strong>Organization:</strong> ${orgName}</p>
       <p><strong>Timestamp:</strong> ${timestamp}</p>
     `;
 
@@ -129,6 +138,8 @@ async function createTicketAndAssets({ subject, description, name, email, approv
 
     const ticketRes = await createTicket(ticketPayload);
     const ticketId = ticketRes.ticket.id;
+    console.log(`Ticket created with ID: ${ticketId}`);
+
     const createdAssets = [];
 
     for (const asset of assets) {
@@ -154,6 +165,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
       createdAssets.push(res.data);
     }
 
+    console.log("Assets created:", createdAssets.length);
     return {
       ticket_id: ticketId,
       assets: createdAssets,
@@ -164,13 +176,13 @@ async function createTicketAndAssets({ subject, description, name, email, approv
   }
 }
 
-// --- Export Everything ---
 module.exports = {
   zendeskApi,
   testConnection,
-  getUserAssets,
+  paginate,
   getAllUsers,
   getAllOrganizations,
+  getUserAssets,
   getOrganizationName,
   createAsset,
   updateAsset,
