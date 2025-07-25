@@ -22,20 +22,27 @@ async function testConnection() {
 async function paginate(endpoint) {
   let results = [];
   let url = endpoint;
+  console.log(`Paginating ${endpoint}...`);
 
   while (url) {
-    const res = await zendeskApi.get(url);
-    const data = res.data;
+    try {
+      const res = await zendeskApi.get(url);
+      const data = res.data;
 
-    if (data.users) results.push(...data.users);
-    else if (data.organizations) results.push(...data.organizations);
-    else if (data.custom_object_records) results.push(...data.custom_object_records);
+      if (data.users) results.push(...data.users);
+      else if (data.organizations) results.push(...data.organizations);
+      else if (data.custom_object_records) results.push(...data.custom_object_records);
 
-    url = data.next_page
-      ? data.next_page.replace(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`, "")
-      : null;
+      url = data.next_page
+        ? data.next_page.replace(`https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`, "")
+        : null;
+    } catch (err) {
+      console.error(`Pagination failed at ${url}:`, err.message);
+      break;
+    }
   }
 
+  console.log(`Retrieved ${results.length} results from ${endpoint}`);
   return results;
 }
 
@@ -50,15 +57,17 @@ async function getAllOrganizations() {
 
 async function getUserAssets(userId) {
   const allRecords = await paginate(`/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records.json`);
-  return allRecords.filter(
+  const userAssets = allRecords.filter(
     (r) => String(r.custom_object_fields?.assigned_to) === String(userId)
   );
+  console.log(`Found ${userAssets.length} assets assigned to user ${userId}`);
+  return userAssets;
 }
 
 async function getOrganizationName(orgId) {
   if (!orgId) {
     console.warn("No organization ID provided.");
-    return null;
+    return "N/A";
   }
 
   try {
@@ -80,6 +89,7 @@ async function createAsset(assetData) {
     custom_object_fields: assetData.custom_object_fields || {},
   };
 
+  console.log("Creating asset:", payload);
   const res = await zendeskApi.post(
     `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records`,
     payload
@@ -93,6 +103,7 @@ async function updateAsset(assetId, fieldsToUpdate) {
     custom_object_fields: fieldsToUpdate,
   };
 
+  console.log(`Updating asset ${assetId}:`, payload);
   const res = await zendeskApi.patch(
     `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records/${assetId}`,
     payload
@@ -103,6 +114,7 @@ async function updateAsset(assetId, fieldsToUpdate) {
 
 // --- Ticket Operations ---
 async function createTicket(payload) {
+  console.log("Creating ticket with payload:", payload);
   const res = await zendeskApi.post("/tickets.json", payload);
   return res.data;
 }
@@ -111,14 +123,22 @@ async function createTicket(payload) {
 async function createTicketAndAssets({ subject, description, name, email, approved_by, organization, assets }) {
   try {
     console.log("=== Begin createTicketAndAssets ===");
-    console.log("Incoming payload:", { subject, name, email, approved_by, organization, assets });
+    console.log("Incoming payload:", {
+      subject,
+      name,
+      email,
+      approved_by,
+      organization,
+      assetCount: assets.length,
+    });
 
     const orgName = organization ? await getOrganizationName(organization) : "N/A";
     const timestamp = new Date().toLocaleString();
 
-    const itemsHtml = assets.map((a) =>
-      `<li><strong>${a.Name}</strong><br/><small>${a.Manufacturer} / ${a["Model Number"]}</small></li>`
-    ).join("");
+    const itemsHtml = assets.map((a) => {
+      const label = `<strong>${a.Name}</strong><br/><small>${a.Manufacturer} / ${a["Model Number"]}</small>`;
+      return `<li>${label}</li>`;
+    }).join("");
 
     const htmlBody = `
       <p><strong>Requested items:</strong></p>
@@ -138,7 +158,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
 
     const ticketRes = await createTicket(ticketPayload);
     const ticketId = ticketRes.ticket.id;
-    console.log(`Ticket created with ID: ${ticketId}`);
+    console.log(`Ticket created: ID ${ticketId}`);
 
     const createdAssets = [];
 
@@ -157,6 +177,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
         },
       };
 
+      console.log("Creating asset for ticket:", assetPayload);
       const res = await zendeskApi.post(
         `/custom_objects/${ZENDESK_ASSET_OBJECT_KEY}/records`,
         assetPayload
@@ -165,7 +186,7 @@ async function createTicketAndAssets({ subject, description, name, email, approv
       createdAssets.push(res.data);
     }
 
-    console.log("Assets created:", createdAssets.length);
+    console.log("Assets successfully created:", createdAssets.length);
     return {
       ticket_id: ticketId,
       assets: createdAssets,
