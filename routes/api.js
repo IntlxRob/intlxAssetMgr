@@ -2,7 +2,10 @@ const express = require('express');
 const router = express.Router();
 const zendeskService = require('../services/zendesk');
 const googleSheetsService = require('../services/googleSheets');
-const verifyZendeskToken = require('../middleware/verifyZendeskToken'); // ⬅️ Add this line
+const verifyZendeskToken = require('../middleware/verifyZendeskToken');
+
+// ✅ Apply middleware to all /api/* routes
+router.use(verifyZendeskToken);
 
 /**
  * Test Zendesk API connection
@@ -57,7 +60,7 @@ router.get('/organizations', async (req, res) => {
 });
 
 /**
- * Get assets assigned to a specific user (query param)
+ * Get assets assigned to a specific user (user_id via query param)
  */
 router.get('/user-assets', async (req, res) => {
   const { user_id } = req.query;
@@ -70,23 +73,6 @@ router.get('/user-assets', async (req, res) => {
   } catch (error) {
     console.error('Error fetching user assets:', error.message);
     res.status(500).json({ error: 'Failed to fetch user assets.', details: error.message });
-  }
-});
-
-/**
- * Get assets assigned to a specific user (route param + secured)
- */
-router.get('/assets/assigned/:user_id', verifyZendeskToken, async (req, res) => {
-  const { user_id } = req.params;
-  if (!user_id) {
-    return res.status(400).json({ error: 'Missing user_id in route parameter.' });
-  }
-  try {
-    const assets = await zendeskService.getUserAssets(user_id);
-    res.json({ assets });
-  } catch (error) {
-    console.error('Error fetching assigned assets:', error.message);
-    res.status(500).json({ error: 'Failed to fetch assigned assets.', details: error.message });
   }
 });
 
@@ -144,7 +130,7 @@ router.post('/ticket', async (req, res) => {
       ticket: {
         subject: subject || 'New Service Catalog Request',
         comment: {
-          html_body: body,
+          html_body: body, // Render as HTML
         },
         requester_id: requester.id,
       },
