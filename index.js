@@ -1,3 +1,5 @@
+require('dotenv').config(); // ✅ Loads environment variables from .env
+
 const express = require('express');
 const cors = require('cors');
 const apiRoutes = require('./routes/api');
