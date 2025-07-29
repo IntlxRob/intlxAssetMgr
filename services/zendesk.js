@@ -1,86 +1,80 @@
-// /services/zendesk.js
-const axios = require('axios');
+const axios = require("axios");
 
-const ZENDESK_DOMAIN = process.env.ZENDESK_DOMAIN;
+const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
 const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
 
 const zendeskApi = axios.create({
-  baseURL: `https://${ZENDESK_DOMAIN}/api/v2`,
+  baseURL: `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`,
   auth: {
     username: `${ZENDESK_EMAIL}/token`,
     password: ZENDESK_API_TOKEN,
   },
 });
 
-// ✅ Test Zendesk connectivity
-async function testConnection() {
-  const response = await zendeskApi.get('/users/me.json');
-  return response.data;
+// 🔍 Search for users by query
+async function searchUsers(query) {
+  const res = await zendeskApi.get(`/users/search`, {
+    params: { query },
+  });
+  return res.data.users;
 }
 
-// ✅ Get all Zendesk users
-async function getAllUsers() {
-  const response = await zendeskApi.get('/users.json');
-  return response.data.users;
+// 🔍 Get all organizations
+async function getOrganizations() {
+  const res = await zendeskApi.get(`/organizations`);
+  return res.data.organizations;
 }
 
-// ✅ Get all Zendesk organizations
-async function getAllOrganizations() {
-  const response = await zendeskApi.get('/organizations.json');
-  return response.data.organizations;
+// ✅ Get assets assigned to a user by name (used for matching)
+async function getUserAssetsByName(userName) {
+  const response = await zendeskApi.get('/custom_objects/asset/records');
+  const allAssets = response.data.data;
+
+  const matched = allAssets.filter(record =>
+    record.custom_object_fields?.assigned_to?.toLowerCase() === userName.toLowerCase()
+  );
+
+  return matched;
 }
 
-// ✅ Get user by ID
-async function getUserById(userId) {
-  const response = await zendeskApi.get(`/users/${userId}.json`);
-  return response.data.user;
+// 🧾 Get all asset records
+async function getAllAssets() {
+  const res = await zendeskApi.get('/custom_objects/asset/records');
+  return res.data.data;
 }
 
-// ✅ Get organization by ID
-async function getOrganizationById(orgId) {
-  const response = await zendeskApi.get(`/organizations/${orgId}.json`);
-  return response.data.organization;
+// ✏️ Update a specific asset
+async function updateAsset(id, fields) {
+  const res = await zendeskApi.patch(`/custom_objects/asset/records/${id}`, {
+    custom_object_fields: fields,
+  });
+  return res.data.data;
 }
 
-// ✅ Get user-assigned assets (Zendesk custom object query)
-async function getUserAssets(userId) {
-  const response = await zendeskApi.get(`/custom_objects/asset/records`, {
-    params: {
-      query: `assigned_to:${userId}`,
+// 🆕 Create a Zendesk ticket with asset request info
+async function createTicket(ticketData) {
+  const res = await zendeskApi.post(`/tickets`, {
+    ticket: {
+      subject: ticketData.subject,
+      comment: { body: ticketData.description },
+      requester: {
+        name: ticketData.name,
+        email: ticketData.email,
+      },
+      custom_fields: [
+        { id: 360053267191, value: ticketData.approved_by },
+      ],
     },
   });
-  return response.data.data;
-}
-
-// ✅ Create a new asset (custom object record)
-async function createAsset(assetData) {
-  const response = await zendeskApi.post('/custom_objects/asset/records', {
-    record: {
-      custom_object_fields: assetData,
-    },
-  });
-  return response.data.record;
-}
-
-// ✅ Update existing asset
-async function updateAsset(assetId, updatedFields) {
-  const response = await zendeskApi.patch(`/custom_objects/asset/records/${assetId}`, {
-    record: {
-      custom_object_fields: updatedFields,
-    },
-  });
-  return response.data.record;
+  return res.data.ticket;
 }
 
 module.exports = {
-  zendeskApi,
-  testConnection,
-  getAllUsers,
-  getAllOrganizations,
-  getUserById,
-  getOrganizationById,
-  getUserAssets,
-  createAsset,
+  searchUsers,
+  getOrganizations,
+  getUserAssetsByName,
+  getAllAssets,
   updateAsset,
+  createTicket,
 };
