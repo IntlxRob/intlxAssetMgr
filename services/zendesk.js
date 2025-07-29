@@ -29,7 +29,12 @@ async function getOrganizations() {
 // ✅ Get assets assigned to a user by name (used for matching)
 async function getUserAssetsByName(userName) {
   const response = await zendeskApi.get('/custom_objects/asset/records');
-  const allAssets = response.data.data;
+
+  const allAssets = response?.data?.data;
+  if (!Array.isArray(allAssets)) {
+    console.error("Unexpected asset response:", response.data);
+    throw new Error("Failed to fetch assets from Zendesk.");
+  }
 
   const matched = allAssets.filter(record =>
     record.custom_object_fields?.assigned_to?.toLowerCase() === userName.toLowerCase()
