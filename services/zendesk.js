@@ -1,85 +1,47 @@
-const axios = require("axios");
+const axios = require('axios');
 
-const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
+const ZENDESK_DOMAIN = process.env.ZENDESK_DOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
 const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
 
-const zendeskApi = axios.create({
-  baseURL: `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`,
+const zendeskClient = axios.create({
+  baseURL: `https://${ZENDESK_DOMAIN}/api/v2`,
   auth: {
     username: `${ZENDESK_EMAIL}/token`,
     password: ZENDESK_API_TOKEN,
   },
 });
 
-// 🔍 Search for users by query
-async function searchUsers(query) {
-  const res = await zendeskApi.get(`/users/search`, {
-    params: { query },
-  });
-  return res.data.users;
-}
+async function getUserAssetsByName(user_name) {
+  try {
+    console.log(`[DEBUG] 🔍 Looking for assets assigned to: "${user_name}"`);
 
-// 🔍 Get all organizations
-async function getOrganizations() {
-  const res = await zendeskApi.get(`/organizations`);
-  return res.data.organizations;
-}
-
-// ✅ Get assets assigned to a user by name (used for matching)
-async function getUserAssetsByName(userName) {
-  const response = await zendeskApi.get('/custom_objects/asset/records');
-
-  const allAssets = response?.data?.data;
-  if (!Array.isArray(allAssets)) {
-    console.error("Unexpected asset response:", response.data);
-    throw new Error("Failed to fetch assets from Zendesk.");
-  }
-
-  const matched = allAssets.filter(record =>
-    record.custom_object_fields?.assigned_to?.toLowerCase() === userName.toLowerCase()
-  );
-
-  return matched;
-}
-
-// 🧾 Get all asset records
-async function getAllAssets() {
-  const res = await zendeskApi.get('/custom_objects/asset/records');
-  return res.data.data;
-}
-
-// ✏️ Update a specific asset
-async function updateAsset(id, fields) {
-  const res = await zendeskApi.patch(`/custom_objects/asset/records/${id}`, {
-    custom_object_fields: fields,
-  });
-  return res.data.data;
-}
-
-// 🆕 Create a Zendesk ticket with asset request info
-async function createTicket(ticketData) {
-  const res = await zendeskApi.post(`/tickets`, {
-    ticket: {
-      subject: ticketData.subject,
-      comment: { body: ticketData.description },
-      requester: {
-        name: ticketData.name,
-        email: ticketData.email,
+    const response = await zendeskClient.get(`/custom_objects/records`, {
+      params: {
+        type: 'asset',
+        page: 1,
+        per_page: 100,
       },
-      custom_fields: [
-        { id: 360053267191, value: ticketData.approved_by },
-      ],
-    },
-  });
-  return res.data.ticket;
-}
+    });
 
-module.exports = {
-  searchUsers,
-  getOrganizations,
-  getUserAssetsByName,
-  getAllAssets,
-  updateAsset,
-  createTicket,
-};
+    const assets = response?.data?.data;
+
+    console.log(`[DEBUG] ✅ Raw asset data from Zendesk:`, JSON.stringify(assets, null, 2));
+
+    if (!Array.isArray(assets)) {
+      console.error('[ERROR] 🔥 Asset response is not an array. Something went wrong.');
+      return [];
+    }
+
+    const matched = assets.filter(asset => {
+      const assignedTo = asset?.custom_object_fields?.assigned_to;
+      return assignedTo?.toLowerCase() === user_name.toLowerCase();
+    });
+
+    console.log(`[DEBUG] ✅ Matched ${matched.length} assets for "${user_name}"`);
+    return matched;
+  } catch (error) {
+    console.error('[ERROR] 💥 Failed to fetch user assets:', error?.response?.data || error.message);
+    return [];
+  }
+}
