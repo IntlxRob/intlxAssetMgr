@@ -1,79 +1,72 @@
+// zendesk.js
+
 const axios = require('axios');
 
-// Load env variables
-const ZENDESK_DOMAIN = process.env.ZENDESK_DOMAIN;
+// Load environment variables
+const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN = process.env.ZENDESK_TOKEN;
+const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
 
-const zendesk = axios.create({
-  baseURL: `https://${ZENDESK_DOMAIN}/api/v2`,
-  auth: {
-    username: `${ZENDESK_EMAIL}/token`,
-    password: ZENDESK_TOKEN,
-  }
-});
+const zendeskBaseUrl = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 
-// 🔍 Search users by name or email
-async function searchUsers(query) {
-  const res = await zendesk.get(`/users/search.json?query=${encodeURIComponent(query)}`);
-  return res.data.users;
+// Basic auth string
+const auth = {
+  username: `${ZENDESK_EMAIL}/token`,
+  password: ZENDESK_API_TOKEN
+};
+
+// ========== API Functions ==========
+
+async function searchUsers(name) {
+  const url = `${zendeskBaseUrl}/users/search.json?query=${encodeURIComponent(name)}`;
+  const response = await axios.get(url, { auth });
+  return response.data.users;
 }
 
-// 🔍 Get all organizations
 async function getOrganizations() {
-  const res = await zendesk.get(`/organizations.json`);
-  return res.data.organizations;
+  const url = `${zendeskBaseUrl}/organizations.json`;
+  const response = await axios.get(url, { auth });
+  return response.data.organizations;
 }
 
-// ✅ Get assets assigned to a user (filter by user_name)
-async function getUserAssetsByName(user_name) {
-  const allAssets = await getAllAssets();
-  if (!Array.isArray(allAssets)) throw new Error("Asset list is not an array");
-  return allAssets.filter(asset => asset.custom_object_fields?.assigned_to === user_name);
-}
-
-// 🧾 Get all assets
 async function getAllAssets() {
-  const res = await zendesk.get(`/custom_objects/asset/records`);
-  return res.data.data || [];
+  const url = `${zendeskBaseUrl}/custom_objects/asset/records`;
+  const response = await axios.get(url, { auth });
+  return response.data.records;
 }
 
-// ✏️ Update a specific asset record
-async function updateAsset(id, updates) {
-  const res = await zendesk.patch(`/custom_objects/asset/records/${id}`, {
-    custom_object_fields: updates
-  });
-  return res.data;
+async function getUserAssetsByName(userName) {
+  const allAssets = await getAllAssets();
+  return allAssets.filter(asset => asset.fields.assigned_to_name === userName);
 }
 
-// 🆕 Create a ticket from asset request
-async function createTicket({ subject, comment, requester, organization_id }) {
-  const res = await zendesk.post('/tickets.json', {
+async function updateAsset(assetId, updateFields) {
+  const url = `${zendeskBaseUrl}/custom_objects/asset/records/${assetId}`;
+  const response = await axios.patch(url, {
+    fields: updateFields
+  }, { auth });
+  return response.data;
+}
+
+async function createTicket(subject, description, requesterId) {
+  const url = `${zendeskBaseUrl}/tickets.json`;
+  const response = await axios.post(url, {
     ticket: {
       subject,
-      comment: { body: comment },
-      requester,
-      organization_id
+      comment: { body: description },
+      requester_id: requesterId
     }
-  });
-  return res.data.ticket;
+  }, { auth });
+  return response.data.ticket;
 }
 
-// 🧪 DEBUG LOG (optional during development)
-console.log('[DEBUG] zendeskService loaded with functions: ', {
-  searchUsers: typeof searchUsers,
-  getOrganizations: typeof getOrganizations,
-  getUserAssetsByName: typeof getUserAssetsByName,
-  getAllAssets: typeof getAllAssets,
-  updateAsset: typeof updateAsset,
-  createTicket: typeof createTicket,
-});
+// ========== Export ==========
 
 module.exports = {
   searchUsers,
   getOrganizations,
-  getUserAssetsByName,
   getAllAssets,
+  getUserAssetsByName,
   updateAsset,
   createTicket
 };
