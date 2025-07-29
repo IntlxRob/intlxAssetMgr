@@ -34,8 +34,20 @@ router.get("/user-assets", async (req, res) => {
   }
 
   try {
-    const assets = await zendeskService.getUserAssetsByName(user_name);
-    res.json({ assets });
+    console.log(`[DEBUG] Requested user_name: "${user_name}"`);
+
+    const assets = await zendeskService.getAllAssets(); // Get full list
+    const normalizedName = user_name.trim().toLowerCase();
+
+    const matchedAssets = assets.filter((record) => {
+      const assignedTo = record.custom_object_fields?.assigned_to?.trim().toLowerCase();
+      const isMatch = assignedTo === normalizedName;
+      console.log(`[DEBUG] Checking asset "${record.id}" → assigned_to: "${assignedTo}" → match: ${isMatch}`);
+      return isMatch;
+    });
+
+    console.log(`[DEBUG] Matched ${matchedAssets.length} assets for: "${user_name}"`);
+    res.json({ assets: matchedAssets });
   } catch (error) {
     console.error("Error fetching user assets:", error.message);
     res.status(500).json({ error: "Failed to fetch user assets.", details: error.message });
