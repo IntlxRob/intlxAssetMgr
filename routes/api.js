@@ -8,7 +8,7 @@ const verifyZendeskToken = require("../middleware/verifyZendeskToken");
 // 🔐 Zendesk Auth Setup
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN = process.env.ZENDESK_TOKEN;
+const ZENDESK_TOKEN = process.env.ZENDESK_API_TOKEN; // ✅ Corrected
 const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 
 const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
@@ -44,8 +44,14 @@ router.get("/auth-check", async (req, res) => {
 
 // 🔍 Search for users
 router.get("/users", async (req, res) => {
+  const query = req.query.query?.trim();
+  if (!query) {
+    console.warn("[WARN] /users endpoint called with empty or missing query param");
+    return res.status(400).json({ error: "Missing or empty 'query' parameter." });
+  }
+
   try {
-    const users = await zendeskService.searchUsers(req.query.query || "");
+    const users = await zendeskService.searchUsers(query);
     res.json({ users });
   } catch (error) {
     console.error("Error fetching users:", error.message);
@@ -74,7 +80,7 @@ router.get("/user-assets", async (req, res) => {
   try {
     console.log(`[DEBUG] Requested user_name: "${user_name}"`);
 
-    const assets = await zendeskService.getAllAssets(); // Get full list
+    const assets = await zendeskService.getAllAssets();
     const normalizedName = user_name.trim().toLowerCase();
 
     const matchedAssets = assets.filter((record) => {
