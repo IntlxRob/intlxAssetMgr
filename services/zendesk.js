@@ -1,117 +1,97 @@
 const axios = require('axios');
 
-// Use console in place of logger
-const logger = console;
-
-// Env variables
+// 🔐 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
 const ZENDESK_TOKEN = process.env.ZENDESK_TOKEN;
 
-// Helper to build Zendesk API headers
-const zendeskHeaders = {
-  headers: {
-    Authorization: `Basic ${Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64')}`,
-    'Content-Type': 'application/json',
-  },
+const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const CUSTOM_OBJECT_KEY = 'asset'; // defaulting to 'asset'
+
+// 🛡️ Auth Header
+const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
+const headers = {
+  Authorization: `Basic ${auth}`,
+  'Content-Type': 'application/json',
 };
 
-// GET /users/search?query=name
+// 🔍 Search Users
 async function searchUsers(name) {
-  logger.debug(`searchUsers() called with name: ${name}`);
+  console.debug(`[DEBUG] searchUsers() called with name: "${name}"`);
+  if (!name) return [];
   try {
-    const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/search.json?query=${encodeURIComponent(name)}`;
-    const res = await axios.get(url, zendeskHeaders);
-    return res.data.users;
-  } catch (err) {
-    logger.error('searchUsers: Request failed with status code', err?.response?.status);
+    const res = await axios.get(`${BASE_URL}/users/search.json?query=${encodeURIComponent(name)}`, { headers });
+    return res.data.users || [];
+  } catch (error) {
+    console.error('searchUsers: Request failed', error.response?.status);
     return [];
   }
 }
 
-// GET /organizations
+// 🏢 Get Organizations
 async function getOrganizations() {
-  logger.debug('getOrganizations() called');
+  console.debug('[DEBUG] getOrganizations() called');
   try {
-    const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/organizations.json`;
-    const res = await axios.get(url, zendeskHeaders);
-    return res.data.organizations;
-  } catch (err) {
-    logger.error('getOrganizations: Request failed with status code', err?.response?.status);
+    const res = await axios.get(`${BASE_URL}/organizations`, { headers });
+    return res.data.organizations || [];
+  } catch (error) {
+    console.error('getOrganizations: Request failed', error.response?.status);
     return [];
   }
 }
 
-// GET /custom_objects/asset/records
+// 📦 Get All Assets
 async function getAllAssets() {
-  logger.debug('getAllAssets() called');
+  console.debug('[DEBUG] getAllAssets() called');
   try {
-    const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/custom_objects/asset/records`;
-    const res = await axios.get(url, zendeskHeaders);
-    return res.data.data || [];
-  } catch (err) {
-    logger.error('getAllAssets: Request failed with status code', err?.response?.status);
+    const res = await axios.get(`${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records`, { headers });
+    return res.data?.data || [];
+  } catch (error) {
+    console.error('getAllAssets: Request failed', error.response?.status);
     return [];
   }
 }
 
-// Match user name to assets
-async function getUserAssetsByName(userName) {
-  logger.debug(`Requested user_name: "${userName}"`);
-  const [assets, organizations, users] = await Promise.all([
-    getAllAssets(),
-    getOrganizations(),
-    searchUsers(userName),
-  ]);
-
-  const user = users?.[0];
-  const org = organizations?.find(o => o.id === user?.organization_id);
-  const userId = user?.id;
-  const orgId = org?.id;
-
-  if (!userId && !orgId) {
-    logger.warn(`No matching user or organization found for: "${userName}"`);
-    return [];
-  }
-
-  const matchedAssets = assets.filter(asset =>
-    asset.custom_fields?.assigned_to_user_id === userId ||
-    asset.custom_fields?.organization_id === orgId
+// 🧩 Get User's Assets by Name
+async function getUserAssetsByName(user_name) {
+  console.debug(`[DEBUG] Requested user_name: "${user_name}"`);
+  const allAssets = await getAllAssets();
+  const userAssets = allAssets.filter(
+    (asset) => asset.attributes?.assigned_to?.toLowerCase() === user_name.toLowerCase()
   );
-
-  logger.debug(`Matched ${matchedAssets.length} assets for: "${userName}"`);
-  return matchedAssets;
+  console.debug(`[DEBUG] Matched ${userAssets.length} assets for: "${user_name}"`);
+  return userAssets;
 }
 
-// PATCH /custom_objects/asset/records/{id}
-async function updateAsset(assetId, fieldsToUpdate) {
-  logger.debug(`updateAsset(${assetId}) with fields: ${JSON.stringify(fieldsToUpdate)}`);
+// ✏️ Update Asset Record
+async function updateAsset(assetId, updatedFields) {
+  console.debug(`[DEBUG] updateAsset() called for ID: ${assetId}`);
   try {
-    const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/custom_objects/asset/records/${assetId}`;
-    await axios.patch(url, { custom_fields: fieldsToUpdate }, zendeskHeaders);
-    logger.info(`Asset ${assetId} updated successfully.`);
-    return true;
-  } catch (err) {
-    logger.error(`Failed to update asset ${assetId}:`, err?.response?.data || err.message);
-    return false;
+    const res = await axios.patch(
+      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records/${assetId}`,
+      { attributes: updatedFields },
+      { headers }
+    );
+    return res.data;
+  } catch (error) {
+    console.error('updateAsset: Request failed', error.response?.status);
+    throw error;
   }
 }
 
-// POST /tickets
+// 🎫 Create Zendesk Ticket
 async function createTicket(ticketData) {
-  logger.debug('createTicket() called with:', ticketData?.subject);
+  console.debug('[DEBUG] createTicket() called');
   try {
-    const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json`;
-    const res = await axios.post(url, { ticket: ticketData }, zendeskHeaders);
-    logger.info(`Ticket created with ID: ${res?.data?.ticket?.id}`);
+    const res = await axios.post(`${BASE_URL}/tickets`, { ticket: ticketData }, { headers });
     return res.data.ticket;
-  } catch (err) {
-    logger.error('createTicket failed:', err?.response?.data || err.message);
-    return null;
+  } catch (error) {
+    console.error('createTicket: Request failed', error.response?.status, error.response?.data);
+    throw error;
   }
 }
 
-// Exports
+// ✅ Export all
 module.exports = {
   searchUsers,
   getOrganizations,
