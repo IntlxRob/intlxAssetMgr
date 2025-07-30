@@ -1,132 +1,150 @@
 const axios = require('axios');
 
+// 🔐 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
-const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
-const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
-const OBJECT_TYPE = 'asset';
+const ZENDESK_TOKEN = process.env.ZENDESK_API_TOKEN;
 
+const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const CUSTOM_OBJECT_KEY = 'asset';
+
+// 🛡️ Auth Header
+const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
 const headers = {
-  Authorization: `Basic ${Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_API_TOKEN}`).toString('base64')}`,
+  Authorization: `Basic ${auth}`,
   'Content-Type': 'application/json',
 };
 
-// 🔍 Search Zendesk users by name
-async function searchUsers(name) {
-  try {
-    console.log('searchUsers() called with name:', name);
-    const response = await axios.get(`${BASE_URL}/users/search.json?query=${encodeURIComponent(name)}`, { headers });
-    return response.data.users;
-  } catch (error) {
-    console.error('Error searching users:', error.message);
-    return [];
-  }
-}
-
-// 👥 Get all organizations
-async function getOrganizations() {
-  try {
-    console.log('getOrganizations() called');
-    const response = await axios.get(`${BASE_URL}/organizations.json`, { headers });
-    return response.data.organizations;
-  } catch (error) {
-    console.error('Error fetching organizations:', error.message);
-    return [];
-  }
-}
-
-// 📦 Get all assets
-async function getAllAssets() {
-  try {
-    const response = await axios.get(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records`, { headers });
-    return response.data.custom_object_records;
-  } catch (error) {
-    console.error('Error fetching all assets:', error.message);
-    return [];
-  }
-}
-
-// 📦 Get assets assigned to a user by user ID
-async function getUserAssetsById(userId) {
-  try {
-    console.log('getUserAssets() called for user:', userId);
-    const response = await axios.post(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records/search`, {
-      query: {
-        field: 'assigned_to',
-        operator: 'is',
-        value: userId
-      }
-    }, { headers });
-    return response.data.custom_object_records;
-  } catch (error) {
-    console.error('Error fetching user assets:', error.message);
-    return [];
-  }
-}
-
-// 👤 Get user details by user ID
+// 🔍 Get a single user by ID
 async function getUserById(userId) {
   try {
-    console.log('getUserById() called with ID:', userId);
-    const response = await axios.get(`${BASE_URL}/users/${userId}.json`, { headers });
-    return response.data.user;
+    const res = await axios.get(
+      `${BASE_URL}/users/${userId}.json`,
+      { headers }
+    );
+    return res.data.user;
   } catch (error) {
-    console.error('Error in getUserById():', error.message);
-    return null;
+    console.error('[getUserById] Failed:', error.response?.status, error.message);
+    throw error;
   }
 }
 
-// 🛠️ Update an asset record
-async function updateAsset(id, fields) {
+// 🔍 Search for users by name or email
+async function searchUsers(query) {
+  if (!query) return [];
   try {
-    const response = await axios.patch(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records/${id}`, {
-      custom_object_record: { fields }
-    }, { headers });
-    return response.data.custom_object_record;
+    const res = await axios.get(
+      `${BASE_URL}/users/search.json?query=${encodeURIComponent(query)}`,
+      { headers }
+    );
+    return res.data.users || [];
   } catch (error) {
-    console.error('Error updating asset:', error.message);
-    return null;
+    console.error('[searchUsers] Failed:', error.response?.status, error.message);
+    return [];
   }
 }
 
-// ➕ Create a new asset
-async function createAsset(fields) {
+// 🏢 Get all organizations
+async function getOrganizations() {
   try {
-    const response = await axios.post(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records`, {
-      custom_object_record: { fields }
-    }, { headers });
-    return response.data.custom_object_record;
+    const res = await axios.get(
+      `${BASE_URL}/organizations.json`,
+      { headers }
+    );
+    return res.data.organizations || [];
   } catch (error) {
-    console.error('Error creating asset:', error.message);
-    return null;
+    console.error('[getOrganizations] Failed:', error.response?.status, error.message);
+    return [];
+  }
+}
+
+// 📦 Get all asset records (unfiltered)
+async function getAllAssets() {
+  try {
+    const res = await axios.get(
+      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`,
+      { headers }
+    );
+    return res.data.data || [];
+  } catch (error) {
+    console.error('[getAllAssets] Failed:', error.response?.status, error.message);
+    return [];
+  }
+}
+
+// 🧩 Filter assets by assigned user ID using filtered search
+async function getUserAssetsById(userId) {
+  try {
+    const payload = {
+      filter: {
+        conditions: [
+          { field: 'assigned_to', operator: 'is', value: String(userId) }
+        ]
+      }
+    };
+    const res = await axios.post(
+      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records/search.json`,
+      payload,
+      { headers }
+    );
+    return res.data.results || [];
+  } catch (error) {
+    console.error('[getUserAssetsById] Failed:', error.response?.status, error.message);
+    return [];
+  }
+}
+
+// ✏️ Update an asset record
+async function updateAsset(assetId, updatedFields) {
+  try {
+    const res = await axios.patch(
+      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records/${assetId}.json`,
+      { attributes: updatedFields },
+      { headers }
+    );
+    return res.data;
+  } catch (error) {
+    console.error('[updateAsset] Failed:', error.response?.status, error.message);
+    throw error;
+  }
+}
+
+// ➕ Create a new asset record
+async function createAsset(assetData) {
+  try {
+    const res = await axios.post(
+      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`,
+      { record: { attributes: assetData } },
+      { headers }
+    );
+    return res.data;
+  } catch (error) {
+    console.error('[createAsset] Failed:', error.response?.status, error.message);
+    throw error;
   }
 }
 
 // 🎫 Create a Zendesk ticket
-async function createTicket(subject, comment, requester_id) {
+async function createTicket(ticketData) {
   try {
-    const response = await axios.post(`${BASE_URL}/tickets.json`, {
-      ticket: {
-        subject,
-        comment: { body: comment },
-        requester_id
-      }
-    }, { headers });
-    return response.data.ticket;
+    const res = await axios.post(
+      `${BASE_URL}/tickets.json`,
+      { ticket: ticketData },
+      { headers }
+    );
+    return res.data.ticket;
   } catch (error) {
-    console.error('Error creating ticket:', error.message);
-    return null;
+    console.error('[createTicket] Failed:', error.response?.status, error.message);
+    throw error;
   }
 }
 
-// ✅ Export all functions
 module.exports = {
+  getUserById,
   searchUsers,
   getOrganizations,
   getAllAssets,
   getUserAssetsById,
-  getUserAssets: getUserAssetsById, // alias for frontend
-  getUserById,
   updateAsset,
   createAsset,
   createTicket,
