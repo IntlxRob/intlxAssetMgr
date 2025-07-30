@@ -1,101 +1,104 @@
 // zendesk.js
+
 const axios = require("axios");
 
-const ZENDESK_DOMAIN = process.env.ZENDESK_SUBDOMAIN;
-const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
-const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
+const {
+  ZENDESK_SUBDOMAIN,
+  ZENDESK_EMAIL,
+  ZENDESK_API_TOKEN,
+} = process.env;
 
 const zendesk = axios.create({
-  baseURL: `https://${ZENDESK_DOMAIN}.zendesk.com/api/v2`,
+  baseURL: `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`,
   auth: {
     username: `${ZENDESK_EMAIL}/token`,
     password: ZENDESK_API_TOKEN,
   },
 });
 
-// 🔍 Get full user details by ID
-async function getUserById(userId) {
-  console.debug(`getUserById() called with ID: ${userId}`);
-  try {
-    const response = await zendesk.get(`/users/${userId}.json`);
-    return response.data.user;
-  } catch (error) {
-    console.error("Error in getUserById():", error.message);
-    throw error;
-  }
+async function getTicket(ticketId) {
+  console.debug(`getTicket() called with ID: ${ticketId}`);
+  const response = await zendesk.get(`/tickets/${ticketId}`);
+  return response.data.ticket;
 }
 
-// 🔍 Get assets assigned to a specific user
+async function getRequester(requesterId) {
+  console.debug(`getRequester() called with ID: ${requesterId}`);
+  const response = await zendesk.get(`/users/${requesterId}`);
+  return response.data.user;
+}
+
+async function getUserById(userId) {
+  console.debug(`getUserById() called with ID: ${userId}`);
+  const response = await zendesk.get(`/users/${userId}`);
+  return response.data.user;
+}
+
+async function getOrganization(orgId) {
+  console.debug(`getOrganization() called with ID: ${orgId}`);
+  const response = await zendesk.get(`/organizations/${orgId}`);
+  return response.data.organization;
+}
+
+async function getOrganizations() {
+  console.debug("getOrganizations() called");
+  const response = await zendesk.get(`/organizations`);
+  return response.data.organizations;
+}
+
+async function searchUsers(name) {
+  console.debug(`searchUsers() called with name: "${name}"`);
+  const response = await zendesk.get(`/users/search?query=${encodeURIComponent(name)}`);
+  return response.data.users;
+}
+
 async function getUserAssets(userId) {
   console.debug(`getUserAssets() called for user: ${userId}`);
   try {
-    const response = await zendesk.get(`/custom_objects/records?type=asset`);
-    const allAssets = response.data.custom_object_records || [];
-    const assigned = allAssets.filter(
-      (record) => record.custom_object_fields?.assigned_to?.id === userId
-    );
-    return assigned.map((asset) => ({
-      id: asset.id,
-      ...asset.custom_object_fields,
-    }));
+    const response = await zendesk.post(`/custom_objects/records/search`, {
+      type: "asset",
+      query: {
+        field: "assigned_to",
+        operator: "is",
+        value: userId,
+      },
+    });
+    return response.data.custom_object_records || [];
   } catch (error) {
     console.error("Error fetching user assets:", error.message);
     throw error;
   }
 }
 
-// 🔍 Get ticket details
-async function getTicket(ticketId) {
+async function parseAssetsFromComment(comment) {
   try {
-    const response = await zendesk.get(`/tickets/${ticketId}.json`);
-    return response.data.ticket;
+    const lines = comment.split("\n").filter((line) => line.includes(":"));
+    const assets = [];
+    let asset = {};
+    for (const line of lines) {
+      const [keyRaw, valueRaw] = line.split(":");
+      const key = keyRaw.trim().toLowerCase().replace(/ /g, "_");
+      const value = valueRaw.trim();
+      if (key === "asset_name" && Object.keys(asset).length > 0) {
+        assets.push(asset);
+        asset = {};
+      }
+      asset[key] = value;
+    }
+    if (Object.keys(asset).length > 0) assets.push(asset);
+    return assets;
   } catch (error) {
-    console.error("Error fetching ticket:", error.message);
-    throw error;
-  }
-}
-
-// 🔍 Get requester details (wrapper)
-async function getRequester(userId) {
-  return await getUserById(userId);
-}
-
-// 📦 Get all organizations
-async function getOrganizations() {
-  console.debug("getOrganizations() called");
-  try {
-    const response = await zendesk.get("/organizations.json");
-    return response.data.organizations || [];
-  } catch (error) {
-    console.error("Error fetching organizations:", error.message);
-    throw error;
-  }
-}
-
-// 🔍 Search users by name or email
-async function searchUsers(query) {
-  console.debug(`searchUsers() called with name: "${query}"`);
-  if (!query || !query.trim()) {
-    console.warn("/users endpoint called with empty or missing query param");
+    console.error("Error parsing assets from comment:", error);
     return [];
   }
-
-  try {
-    const response = await zendesk.get(`/users/search.json?query=${encodeURIComponent(query)}`);
-    return response.data.users || [];
-  } catch (error) {
-    console.error("Error searching users:", error.message);
-    throw error;
-  }
 }
 
-// ➕ Create a new asset record
-async function createAsset(assetData) {
+async function createAsset(data) {
   try {
     const response = await zendesk.post("/custom_objects/records", {
       custom_object_record: {
         type: "asset",
-        custom_object_fields: assetData,
+        attributes: data,
       },
     });
     return response.data.custom_object_record;
@@ -105,38 +108,15 @@ async function createAsset(assetData) {
   }
 }
 
-// 🧾 Parse asset info from ticket comment (if needed for parsing HTML)
-function parseAssetsFromComment(commentHtml) {
-  const container = document.createElement("div");
-  container.innerHTML = commentHtml;
-  const listItems = container.querySelectorAll("ul li");
-  const parsed = [];
-
-  listItems.forEach((li) => {
-    const asset = {};
-    const lines = li.innerHTML.split("<br>");
-    lines.forEach((line) => {
-      const match = line.match(/<strong>([^<]+):<\/strong>\s*(.*)/);
-      if (match) {
-        const key = match[1].toLowerCase().replace(/\s+/g, "_");
-        const value = match[2].replace(/<[^>]+>/g, "");
-        asset[key] = value;
-      }
-    });
-    parsed.push(asset);
-  });
-
-  return parsed;
-}
-
-// ✅ Export all functions
+// Export all functions
 module.exports = {
-  getUserById,
-  getUserAssets,
   getTicket,
   getRequester,
+  getUserById,
+  getOrganization,
   getOrganizations,
   searchUsers,
-  createAsset,
+  getUserAssets,
   parseAssetsFromComment,
+  createAsset,
 };
