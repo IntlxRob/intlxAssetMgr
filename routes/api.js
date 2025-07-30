@@ -1,14 +1,14 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const axios = require("axios");
-const zendeskService = require("../services/zendesk");
-const googleSheetsService = require("../services/googleSheets");
-const verifyZendeskToken = require("../middleware/verifyZendeskToken");
+const axios = require('axios');
+const zendeskService = require('../services/zendesk');
+const googleSheetsService = require('../services/googleSheets');
+const verifyZendeskToken = require('../middleware/verifyZendeskToken');
 
 // 🔐 Zendesk Auth Setup
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN = process.env.ZENDESK_API_TOKEN; // ✅ Corrected
+const ZENDESK_TOKEN = process.env.ZENDESK_API_TOKEN; // ✅ Corrected variable name
 const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 
 const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
@@ -17,10 +17,9 @@ const headers = {
   'Content-Type': 'application/json',
 };
 
-// 🔐 Auth Check - confirms Zendesk token works
+// 🔐 Auth Check
 router.get("/auth-check", async (req, res) => {
   console.debug("[DEBUG] /auth-check called");
-  console.debug("[DEBUG] Auth header:", headers.Authorization);
 
   try {
     const response = await axios.get(`${BASE_URL}/users/me.json`, { headers });
@@ -42,16 +41,10 @@ router.get("/auth-check", async (req, res) => {
   }
 });
 
-// 🔍 Search for users
+// 🔍 Get all users
 router.get("/users", async (req, res) => {
-  const query = req.query.query?.trim();
-  if (!query) {
-    console.warn("[WARN] /users endpoint called with empty or missing query param");
-    return res.status(400).json({ error: "Missing or empty 'query' parameter." });
-  }
-
   try {
-    const users = await zendeskService.searchUsers(query);
+    const users = await zendeskService.searchUsers(req.query.query || "");
     res.json({ users });
   } catch (error) {
     console.error("Error fetching users:", error.message);
@@ -70,42 +63,43 @@ router.get("/organizations", async (req, res) => {
   }
 });
 
-// ✅ Get user assets by assigned_to = user_name
+// ✅ Get user assets by assigned_to = user_id
 router.get("/user-assets", async (req, res) => {
-  const { user_name } = req.query;
-  if (!user_name) {
-    return res.status(400).json({ error: "Missing user_name query parameter." });
+  const { user_id } = req.query;
+  if (!user_id) {
+    return res.status(400).json({ error: "Missing user_id query parameter." });
   }
 
   try {
-    console.log(`[DEBUG] Requested user_name: "${user_name}"`);
-
-    const assets = await zendeskService.getAllAssets();
-    const normalizedName = user_name.trim().toLowerCase();
-
-    const matchedAssets = assets.filter((record) => {
-      const assignedTo = record.custom_object_fields?.assigned_to?.trim().toLowerCase();
-      const isMatch = assignedTo === normalizedName;
-      console.log(`[DEBUG] Checking asset "${record.id}" → assigned_to: "${assignedTo}" → match: ${isMatch}`);
-      return isMatch;
-    });
-
-    console.log(`[DEBUG] Matched ${matchedAssets.length} assets for: "${user_name}"`);
-    res.json({ assets: matchedAssets });
+    console.log(`[DEBUG] Looking up assets for user_id: "${user_id}"`);
+    const assets = await zendeskService.getUserAssets(user_id);
+    console.log(`[DEBUG] Found ${assets.length} assets for user_id: ${user_id}`);
+    res.json({ assets });
   } catch (error) {
     console.error("Error fetching user assets:", error.message);
     res.status(500).json({ error: "Failed to fetch user assets.", details: error.message });
   }
 });
 
-// 🧾 Get all assets
-router.get("/assets", async (req, res) => {
+// 📦 Catalog route
+router.get("/catalog", async (req, res) => {
   try {
-    const assets = await zendeskService.getAllAssets();
-    res.json({ assets });
+    const catalog = await googleSheetsService.getCatalog();
+    res.json(catalog);
   } catch (error) {
-    console.error("Error fetching assets:", error.message);
-    res.status(500).json({ error: "Failed to fetch assets." });
+    console.error("Error fetching catalog:", error.message);
+    res.status(500).json({ error: "Failed to fetch catalog from Google Sheets.", details: error.message });
+  }
+});
+
+// 🆕 Create ticket with asset info
+router.post("/ticket", verifyZendeskToken, async (req, res) => {
+  try {
+    const ticket = await zendeskService.createTicket(req.body);
+    res.json({ ticket });
+  } catch (error) {
+    console.error("Error creating ticket:", error.message);
+    res.status(500).json({ error: "Failed to create ticket." });
   }
 });
 
@@ -120,25 +114,14 @@ router.patch("/assets/:id", async (req, res) => {
   }
 });
 
-// 🆕 Create a ticket with asset request info
-router.post("/ticket", verifyZendeskToken, async (req, res) => {
+// ➕ Create new asset
+router.post("/assets", async (req, res) => {
   try {
-    const ticket = await zendeskService.createTicket(req.body);
-    res.json({ ticket });
+    const result = await zendeskService.createAsset(req.body);
+    res.status(201).json(result);
   } catch (error) {
-    console.error("Error creating ticket:", error.message);
-    res.status(500).json({ error: "Failed to create ticket." });
-  }
-});
-
-// 📦 Catalog route for loading from Google Sheets
-router.get("/catalog", async (req, res) => {
-  try {
-    const catalog = await googleSheetsService.getCatalog();
-    res.json(catalog);
-  } catch (error) {
-    console.error("Error fetching catalog:", error.message);
-    res.status(500).json({ error: "Failed to fetch catalog from Google Sheets.", details: error.message });
+    console.error('Error creating asset:', error.message);
+    res.status(500).json({ error: 'Failed to create asset.', details: error.message });
   }
 });
 
