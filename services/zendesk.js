@@ -1,28 +1,23 @@
+// zendesk.js
 const axios = require("axios");
 
-const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
+const ZENDESK_DOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
 const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
 
-const authHeader = {
-  Authorization:
-    "Basic " +
-    Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_API_TOKEN}`).toString("base64"),
-};
+const zendesk = axios.create({
+  baseURL: `https://${ZENDESK_DOMAIN}.zendesk.com/api/v2`,
+  auth: {
+    username: `${ZENDESK_EMAIL}/token`,
+    password: ZENDESK_API_TOKEN,
+  },
+});
 
-// 🔹 Get the current ticket
-async function getTicket(ticketId) {
-  const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/${ticketId}.json`;
-  const response = await axios.get(url, { headers: authHeader });
-  return response.data.ticket;
-}
-
-// 🔹 Get the user by ID (used for requester and assignee info)
+// 🔍 Get full user details by ID
 async function getUserById(userId) {
-  console.debug("getUserById() called with ID:", userId);
-  const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/${userId}.json`;
+  console.debug(`getUserById() called with ID: ${userId}`);
   try {
-    const response = await axios.get(url, { headers: authHeader });
+    const response = await zendesk.get(`/users/${userId}.json`);
     return response.data.user;
   } catch (error) {
     console.error("Error in getUserById():", error.message);
@@ -30,64 +25,118 @@ async function getUserById(userId) {
   }
 }
 
-// 🔹 Get user assets (Zendesk custom object records)
+// 🔍 Get assets assigned to a specific user
 async function getUserAssets(userId) {
-  console.debug("getUserAssets() called for user:", userId);
-  const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/custom_objects/asset/records?filter[assigned_to]=${userId}`;
+  console.debug(`getUserAssets() called for user: ${userId}`);
   try {
-    const response = await axios.get(url, { headers: authHeader });
-    return response.data.records || [];
+    const response = await zendesk.get(`/custom_objects/records?type=asset`);
+    const allAssets = response.data.custom_object_records || [];
+    const assigned = allAssets.filter(
+      (record) => record.custom_object_fields?.assigned_to?.id === userId
+    );
+    return assigned.map((asset) => ({
+      id: asset.id,
+      ...asset.custom_object_fields,
+    }));
   } catch (error) {
     console.error("Error fetching user assets:", error.message);
     throw error;
   }
 }
 
-// 🔹 Get organization name by ID
-async function getOrganization(orgId) {
-  const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/organizations/${orgId}.json`;
+// 🔍 Get ticket details
+async function getTicket(ticketId) {
   try {
-    const response = await axios.get(url, { headers: authHeader });
-    return response.data.organization.name;
+    const response = await zendesk.get(`/tickets/${ticketId}.json`);
+    return response.data.ticket;
   } catch (error) {
-    console.error("Error fetching organization:", error.message);
-    return null;
+    console.error("Error fetching ticket:", error.message);
+    throw error;
   }
 }
 
-// 🔹 Get all organizations
+// 🔍 Get requester details (wrapper)
+async function getRequester(userId) {
+  return await getUserById(userId);
+}
+
+// 📦 Get all organizations
 async function getOrganizations() {
   console.debug("getOrganizations() called");
-  const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/organizations.json`;
   try {
-    const response = await axios.get(url, { headers: authHeader });
-    return response.data.organizations;
+    const response = await zendesk.get("/organizations.json");
+    return response.data.organizations || [];
   } catch (error) {
     console.error("Error fetching organizations:", error.message);
-    return [];
+    throw error;
   }
 }
 
-// 🔹 Search users by query
+// 🔍 Search users by name or email
 async function searchUsers(query) {
-  console.debug("searchUsers() called with name:", query);
-  const url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/search.json?query=${encodeURIComponent(
-    query
-  )}`;
+  console.debug(`searchUsers() called with name: "${query}"`);
+  if (!query || !query.trim()) {
+    console.warn("/users endpoint called with empty or missing query param");
+    return [];
+  }
+
   try {
-    const response = await axios.get(url, { headers: authHeader });
+    const response = await zendesk.get(`/users/search.json?query=${encodeURIComponent(query)}`);
     return response.data.users || [];
   } catch (error) {
     console.error("Error searching users:", error.message);
-    return [];
+    throw error;
   }
 }
 
+// ➕ Create a new asset record
+async function createAsset(assetData) {
+  try {
+    const response = await zendesk.post("/custom_objects/records", {
+      custom_object_record: {
+        type: "asset",
+        custom_object_fields: assetData,
+      },
+    });
+    return response.data.custom_object_record;
+  } catch (error) {
+    console.error("Error creating asset:", error.message);
+    throw error;
+  }
+}
+
+// 🧾 Parse asset info from ticket comment (if needed for parsing HTML)
+function parseAssetsFromComment(commentHtml) {
+  const container = document.createElement("div");
+  container.innerHTML = commentHtml;
+  const listItems = container.querySelectorAll("ul li");
+  const parsed = [];
+
+  listItems.forEach((li) => {
+    const asset = {};
+    const lines = li.innerHTML.split("<br>");
+    lines.forEach((line) => {
+      const match = line.match(/<strong>([^<]+):<\/strong>\s*(.*)/);
+      if (match) {
+        const key = match[1].toLowerCase().replace(/\s+/g, "_");
+        const value = match[2].replace(/<[^>]+>/g, "");
+        asset[key] = value;
+      }
+    });
+    parsed.push(asset);
+  });
+
+  return parsed;
+}
+
+// ✅ Export all functions
 module.exports = {
-  getTicket,
   getUserById,
   getUserAssets,
-  getOrganization,
+  getTicket,
+  getRequester,
   getOrganizations,
   searchUsers,
+  createAsset,
+  parseAssetsFromComment,
 };
