@@ -1,106 +1,118 @@
-const axios = require('axios');
 require('dotenv').config();
+const axios = require('axios');
+const logger = require('./logger');
 
-const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN = process.env.ZENDESK_API_TOKEN;
+// Load environment variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
+const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
+const ZENDESK_TOKEN = process.env.ZENDESK_TOKEN;
 
-const zendeskBaseURL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
-
-const encodedToken = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
-const authHeader = {
-  headers: {
-    Authorization: `Basic ${encodedToken}`,
-    'Content-Type': 'application/json'
-  }
+const zendeskBaseUrl = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const zendeskAuth = {
+  username: `${ZENDESK_EMAIL}/token`,
+  password: ZENDESK_TOKEN,
 };
 
+logger.debug(`[INIT] zendesk.js loaded with domain: ${ZENDESK_SUBDOMAIN}`);
+
 async function searchUsers(name) {
-  console.debug('[DEBUG] searchUsers() called with name:', name);
+  logger.debug(`searchUsers() called with name: ${name}`);
   try {
-    const res = await axios.get(`${zendeskBaseURL}/users/search.json?query=${encodeURIComponent(name)}`, authHeader);
-    return res.data.users;
-  } catch (err) {
-    console.error('[ERROR] searchUsers:', err.message);
-    if (err.response) console.error(err.response.data);
+    const response = await axios.get(`${zendeskBaseUrl}/users/search.json?query=${encodeURIComponent(name)}`, {
+      auth: zendeskAuth,
+    });
+    return response.data.users;
+  } catch (error) {
+    logger.error("searchUsers: Request failed with status code", error.response?.status);
     return [];
   }
 }
 
 async function getOrganizations() {
-  console.debug('[DEBUG] getOrganizations() called');
+  logger.debug("getOrganizations() called");
   try {
-    const res = await axios.get(`${zendeskBaseURL}/organizations.json`, authHeader);
-    return res.data.organizations;
-  } catch (err) {
-    console.error('[ERROR] getOrganizations:', err.message);
-    if (err.response) console.error(err.response.data);
+    const response = await axios.get(`${zendeskBaseUrl}/organizations.json`, {
+      auth: zendeskAuth,
+    });
+    return response.data.organizations;
+  } catch (error) {
+    logger.error("getOrganizations: Request failed with status code", error.response?.status);
     return [];
   }
 }
 
 async function getAllAssets() {
-  console.debug('[DEBUG] getAllAssets() called');
+  logger.debug("getAllAssets() called");
   try {
-    const res = await axios.get(`${zendeskBaseURL}/custom_objects/asset/records`, authHeader);
-    return res.data.data;
-  } catch (err) {
-    console.error('[ERROR] getAllAssets:', err.message);
-    if (err.response) console.error(err.response.data);
+    const response = await axios.get(`${zendeskBaseUrl}/custom_objects/asset/records`, {
+      auth: zendeskAuth,
+    });
+    return response.data.records || [];
+  } catch (error) {
+    logger.error("getAllAssets: Request failed with status code", error.response?.status);
     return [];
   }
 }
 
 async function getUserAssetsByName(userName) {
-  console.debug('[DEBUG] Requested user_name:', JSON.stringify(userName));
-  const allAssets = await getAllAssets();
+  logger.debug(`Requested user_name: "${userName}"`);
   try {
-    const matched = allAssets.filter(
-      (record) => record?.attributes?.assigned_user === userName
-    );
-    console.debug(`[DEBUG] Matched ${matched.length} assets for:`, JSON.stringify(userName));
-    return matched;
-  } catch (err) {
-    console.error('Error fetching user assets:', err.message);
+    const [users, assets, organizations] = await Promise.all([
+      searchUsers(userName),
+      getAllAssets(),
+      getOrganizations(),
+    ]);
+
+    if (!users || !assets || !organizations) {
+      logger.error("Missing data in getUserAssetsByName:", {
+        usersExists: !!users,
+        assetsExists: !!assets,
+        orgsExists: !!organizations,
+      });
+      return [];
+    }
+
+    const user = users.find(u => u.name === userName);
+    if (!user) {
+      logger.warn(`No matching user found for: ${userName}`);
+      return [];
+    }
+
+    const userAssets = assets.filter(a => a.assignee_id === user.id);
+    const orgMap = Object.fromEntries(organizations.map(o => [o.id, o.name]));
+
+    return userAssets.map(asset => ({
+      ...asset,
+      organization_name: orgMap[asset.organization_id] || 'Unknown',
+    }));
+  } catch (error) {
+    logger.error("Error fetching user assets:", error.message || error);
     return [];
   }
 }
 
-async function updateAsset(assetId, updateData) {
-  console.debug('[DEBUG] updateAsset() called for ID:', assetId);
+async function updateAsset(assetId, data) {
+  logger.debug(`updateAsset() called for ID: ${assetId} with data:`, data);
   try {
-    const res = await axios.patch(
-      `${zendeskBaseURL}/custom_objects/asset/records/${assetId}`,
-      { data: { attributes: updateData } },
-      authHeader
-    );
-    return res.data;
-  } catch (err) {
-    console.error(`[ERROR] updateAsset (${assetId}):`, err.message);
-    if (err.response) console.error(err.response.data);
+    const response = await axios.patch(`${zendeskBaseUrl}/custom_objects/asset/records/${assetId}`, data, {
+      auth: zendeskAuth,
+    });
+    return response.data.record;
+  } catch (error) {
+    logger.error("updateAsset failed:", error.message || error);
     return null;
   }
 }
 
-async function createTicket(subject, body, requester_id) {
-  console.debug('[DEBUG] createTicket() called');
+async function createTicket(ticketData) {
+  logger.debug("createTicket() called with data:", ticketData);
   try {
-    const res = await axios.post(
-      `${zendeskBaseURL}/tickets.json`,
-      {
-        ticket: {
-          subject,
-          comment: { body },
-          requester_id
-        }
-      },
-      authHeader
-    );
-    console.debug('[DEBUG] Ticket created with ID:', res.data.ticket.id);
-    return res.data.ticket;
-  } catch (err) {
-    console.error('[ERROR] createTicket:', err.message);
-    if (err.response) console.error(err.response.data);
+    const response = await axios.post(`${zendeskBaseUrl}/tickets.json`, { ticket: ticketData }, {
+      auth: zendeskAuth,
+    });
+    return response.data.ticket;
+  } catch (error) {
+    logger.error("createTicket failed:", error.message || error);
     return null;
   }
 }
