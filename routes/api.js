@@ -1,8 +1,46 @@
 const express = require("express");
 const router = express.Router();
+const axios = require("axios");
 const zendeskService = require("../services/zendesk");
 const googleSheetsService = require("../services/googleSheets");
 const verifyZendeskToken = require("../middleware/verifyZendeskToken");
+
+// 🔐 Zendesk Auth Setup
+const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
+const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
+const ZENDESK_TOKEN = process.env.ZENDESK_TOKEN;
+const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+
+const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
+const headers = {
+  Authorization: `Basic ${auth}`,
+  'Content-Type': 'application/json',
+};
+
+// 🔐 Auth Check - confirms Zendesk token works
+router.get("/auth-check", async (req, res) => {
+  console.debug("[DEBUG] /auth-check called");
+  console.debug("[DEBUG] Auth header:", headers.Authorization);
+
+  try {
+    const response = await axios.get(`${BASE_URL}/users/me.json`, { headers });
+    const user = response.data.user;
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    console.error("[AUTH-CHECK] Failed:", error.response?.status, error.response?.data);
+    res.status(error.response?.status || 500).json({
+      success: false,
+      error: error.response?.data || error.message,
+    });
+  }
+});
 
 // 🔍 Search for users
 router.get("/users", async (req, res) => {
