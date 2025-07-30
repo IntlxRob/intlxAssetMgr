@@ -1,118 +1,132 @@
 const axios = require('axios');
 
-// 🔐 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN = process.env.ZENDESK_API_TOKEN;
-
+const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
 const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
-const CUSTOM_OBJECT_KEY = 'asset';
+const OBJECT_TYPE = 'asset';
 
-// 🛡️ Auth Header
-const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
 const headers = {
-  Authorization: `Basic ${auth}`,
+  Authorization: `Basic ${Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_API_TOKEN}`).toString('base64')}`,
   'Content-Type': 'application/json',
 };
 
-// 🔍 Search for users by name
+// 🔍 Search Zendesk users by name
 async function searchUsers(name) {
-  if (!name) return [];
   try {
+    console.log('searchUsers() called with name:', name);
     const response = await axios.get(`${BASE_URL}/users/search.json?query=${encodeURIComponent(name)}`, { headers });
-    return response.data.users || [];
+    return response.data.users;
   } catch (error) {
-    console.error('[searchUsers] Error:', error.response?.status, error.message);
+    console.error('Error searching users:', error.message);
     return [];
   }
 }
 
-// 🏢 Get all organizations
+// 👥 Get all organizations
 async function getOrganizations() {
   try {
-    const response = await axios.get(`${BASE_URL}/organizations`, { headers });
-    return response.data.organizations || [];
+    console.log('getOrganizations() called');
+    const response = await axios.get(`${BASE_URL}/organizations.json`, { headers });
+    return response.data.organizations;
   } catch (error) {
-    console.error('[getOrganizations] Error:', error.response?.status, error.message);
+    console.error('Error fetching organizations:', error.message);
     return [];
   }
 }
 
-// 📦 Get all asset records
+// 📦 Get all assets
 async function getAllAssets() {
   try {
-    const response = await axios.get(`${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records`, { headers });
-    return response.data.custom_object_records || [];
+    const response = await axios.get(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records`, { headers });
+    return response.data.custom_object_records;
   } catch (error) {
-    console.error('[getAllAssets] Error:', error.response?.status, error.message);
+    console.error('Error fetching all assets:', error.message);
     return [];
   }
 }
 
-// 🔍 Filter assets by assigned user ID
+// 📦 Get assets assigned to a user by user ID
 async function getUserAssetsById(userId) {
-  console.debug(`[DEBUG] Filtering assets by user_id: ${userId}`);
   try {
-    const allAssets = await getAllAssets();
-    const filtered = allAssets.filter((asset) => {
-      const assignedTo = asset.custom_object_fields?.assigned_to;
-      return String(assignedTo) === String(userId);
-    });
-    console.debug(`[DEBUG] Matched ${filtered.length} assets for user_id: ${userId}`);
-    return filtered;
+    console.log('getUserAssets() called for user:', userId);
+    const response = await axios.post(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records/search`, {
+      query: {
+        field: 'assigned_to',
+        operator: 'is',
+        value: userId
+      }
+    }, { headers });
+    return response.data.custom_object_records;
   } catch (error) {
-    console.error('[getUserAssetsById] Error:', error.message);
+    console.error('Error fetching user assets:', error.message);
     return [];
   }
 }
 
-// ✏️ Update asset record
-async function updateAsset(assetId, updatedFields) {
+// 👤 Get user details by user ID
+async function getUserById(userId) {
   try {
-    const response = await axios.patch(
-      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records/${assetId}`,
-      { attributes: updatedFields },
-      { headers }
-    );
-    return response.data;
+    console.log('getUserById() called with ID:', userId);
+    const response = await axios.get(`${BASE_URL}/users/${userId}.json`, { headers });
+    return response.data.user;
   } catch (error) {
-    console.error('[updateAsset] Error:', error.response?.status, error.message);
-    throw error;
+    console.error('Error in getUserById():', error.message);
+    return null;
   }
 }
 
-// ➕ Create a new asset record
-async function createAsset(assetData) {
+// 🛠️ Update an asset record
+async function updateAsset(id, fields) {
   try {
-    const response = await axios.post(
-      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records`,
-      { record: { attributes: assetData } },
-      { headers }
-    );
-    return response.data;
+    const response = await axios.patch(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records/${id}`, {
+      custom_object_record: { fields }
+    }, { headers });
+    return response.data.custom_object_record;
   } catch (error) {
-    console.error('[createAsset] Error:', error.response?.status, error.response?.data || error.message);
-    throw error;
+    console.error('Error updating asset:', error.message);
+    return null;
+  }
+}
+
+// ➕ Create a new asset
+async function createAsset(fields) {
+  try {
+    const response = await axios.post(`${BASE_URL}/custom_objects/${OBJECT_TYPE}/records`, {
+      custom_object_record: { fields }
+    }, { headers });
+    return response.data.custom_object_record;
+  } catch (error) {
+    console.error('Error creating asset:', error.message);
+    return null;
   }
 }
 
 // 🎫 Create a Zendesk ticket
-async function createTicket(ticketData) {
+async function createTicket(subject, comment, requester_id) {
   try {
-    const response = await axios.post(`${BASE_URL}/tickets`, { ticket: ticketData }, { headers });
+    const response = await axios.post(`${BASE_URL}/tickets.json`, {
+      ticket: {
+        subject,
+        comment: { body: comment },
+        requester_id
+      }
+    }, { headers });
     return response.data.ticket;
   } catch (error) {
-    console.error('[createTicket] Error:', error.response?.status, error.response?.data || error.message);
-    throw error;
+    console.error('Error creating ticket:', error.message);
+    return null;
   }
 }
 
-// ✅ Export everything
+// ✅ Export all functions
 module.exports = {
   searchUsers,
   getOrganizations,
   getAllAssets,
   getUserAssetsById,
+  getUserAssets: getUserAssetsById, // alias for frontend
+  getUserById,
   updateAsset,
   createAsset,
   createTicket,
