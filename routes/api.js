@@ -1,63 +1,61 @@
 // routes/api.js
-
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const zendeskService = require("../services/zendesk");
-const verifyZendeskToken = require("../middleware/verifyZendeskToken");
+const zendesk = require('../services/zendesk');
 
-// ✅ GET specific user by ID
-router.get("/users/:id", async (req, res) => {
-  const userId = req.params.id;
+/**
+ * Search users by name or email
+ * GET /api/users?query=
+ */
+router.get('/users', async (req, res) => {
+  const q = (req.query.query || '').trim();
+  if (!q) return res.json({ users: [] });
   try {
-    const user = await zendeskService.getUserById(userId);
-    res.json({ user });
-  } catch (error) {
-    console.error("Error fetching user:", error.message);
-    res.status(500).json({ error: "Failed to fetch user." });
-  }
-});
-
-// 🔍 Search users
-router.get("/users", async (req, res) => {
-  const query = req.query.query || "";
-  if (!query.trim()) {
-    console.warn("/users endpoint called with empty or missing query param");
-    return res.status(400).json({ error: "Missing query parameter" });
-  }
-
-  try {
-    const users = await zendeskService.searchUsers(query);
+    const users = await zendesk.searchUsers(q);
     res.json({ users });
-  } catch (error) {
-    console.error("Error searching users:", error.message);
-    res.status(500).json({ error: "Failed to search users." });
+  } catch (e) {
+    console.error('[API] /users error', e);
+    res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
 
-// 🏢 Get all organizations
-router.get("/organizations", async (req, res) => {
+/**
+ * Get all organizations
+ * GET /api/organizations
+ */
+router.get('/organizations', async (req, res) => {
   try {
-    const orgs = await zendeskService.getOrganizations();
-    res.json({ organizations: orgs });
-  } catch (error) {
-    console.error("Error fetching organizations:", error.message);
-    res.status(500).json({ error: "Failed to fetch organizations." });
+    const organizations = await zendesk.getOrganizations();
+    res.json({ organizations });
+  } catch (e) {
+    console.error('[API] /organizations error', e);
+    res.status(500).json({ error: 'Failed to fetch organizations' });
   }
 });
 
-// 📦 Get user assets by user ID
-router.get("/user-assets", async (req, res) => {
-  const userId = req.query.user_id;
-  if (!userId) {
-    return res.status(400).json({ error: "Missing user_id parameter" });
-  }
-
+/**
+ * Get all asset records, optionally filtered by assigned_to (user_id)
+ * GET /api/assets?user_id=
+ */
+router.get('/assets', async (req, res) => {
   try {
-    const assets = await zendeskService.getUserAssets(userId);
+    // Fetch from Zendesk custom_objects
+    const allRecords = await zendesk.getAllAssets(); // returns array of records
+
+    // If user_id provided, filter by assigned_to field
+    const { user_id } = req.query;
+    let assets = allRecords;
+    if (user_id) {
+      assets = allRecords.filter(record => {
+        const assignedTo = record.custom_object_fields?.assigned_to || record.attributes?.assigned_to;
+        return String(assignedTo) === String(user_id);
+      });
+    }
+
     res.json({ assets });
-  } catch (error) {
-    console.error("Error fetching user assets:", error.message);
-    res.status(500).json({ error: "Failed to fetch user assets." });
+  } catch (e) {
+    console.error('[API] /assets error', e);
+    res.status(500).json({ error: 'Failed to fetch assets' });
   }
 });
 
