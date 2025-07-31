@@ -3,7 +3,7 @@ const axios = require('axios');
 // 🔐 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN     = process.env.ZENDESK_TOKEN; // or process.env.ZENDESK_API_TOKEN
+const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN; // or process.env.ZENDESK_API_TOKEN
 
 const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 const ASSET_KEY = 'asset';
