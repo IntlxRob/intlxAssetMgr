@@ -1,21 +1,14 @@
 // routes/api.js
 const express = require("express");
-const router = express.Router();
-const zendeskService       = require("../services/zendesk");
-const googleSheetsService  = require("../services/googleSheets"); // if you still need it
-const verifyZendeskToken   = require("../middleware/verifyZendeskToken"); // optional, only on write routes
+const router  = express.Router();
+const zendesk = require("../services/zendesk");
 
-/**
- * Search users by free‐text query.
- * GET /api/users?query=Bob
- */
+// 🔍 Search for users by name (already existed)
 router.get("/users", async (req, res) => {
-  const q = (req.query.query || "").trim();
-  if (!q) {
-    return res.json({ users: [] });
-  }
+  const query = req.query.query || "";
+  if (!query.trim()) return res.json({ users: [] });
   try {
-    const users = await zendeskService.searchUsers(q);
+    const users = await zendesk.searchUsers(query);
     res.json({ users });
   } catch (err) {
     console.error("Error fetching users:", err);
@@ -23,29 +16,21 @@ router.get("/users", async (req, res) => {
   }
 });
 
-/**
- * Fetch exactly one user by ID.
- * GET /api/users/:id
- */
+// ➡️ Get a single user by ID
 router.get("/users/:id", async (req, res) => {
-  const id = req.params.id;
   try {
-    const user = await zendeskService.getUserById(id);
-    if (!user) return res.status(404).json({ error: "User not found." });
+    const user = await zendesk.getUserById(req.params.id);
     res.json({ user });
   } catch (err) {
-    console.error(`Error fetching user ${id}:`, err);
+    console.error(`[GET /users/${req.params.id}]`, err);
     res.status(500).json({ error: "Failed to fetch user." });
   }
 });
 
-/**
- * List all organizations.
- * GET /api/organizations
- */
+// 🏢 List all organizations (already existed)
 router.get("/organizations", async (req, res) => {
   try {
-    const orgs = await zendeskService.getOrganizations();
+    const orgs = await zendesk.getOrganizations();
     res.json({ organizations: orgs });
   } catch (err) {
     console.error("Error fetching organizations:", err);
@@ -53,68 +38,51 @@ router.get("/organizations", async (req, res) => {
   }
 });
 
-/**
- * Fetch one organization by ID.
- * GET /api/organizations/:id
- */
+// ➡️ Get a single organization by ID
 router.get("/organizations/:id", async (req, res) => {
-  const id = req.params.id;
   try {
-    const org = await zendeskService.getOrganizationById(id);
-    if (!org) return res.status(404).json({ error: "Organization not found." });
-    res.json({ organization: org });
+    const organization = await zendesk.getOrganizationById(req.params.id);
+    res.json({ organization });
   } catch (err) {
-    console.error(`Error fetching organization ${id}:`, err);
+    console.error(`[GET /organizations/${req.params.id}]`, err);
     res.status(500).json({ error: "Failed to fetch organization." });
   }
 });
 
-/**
- * List all asset records assigned to a given user.
- * GET /api/assets?user_id=12345
- */
+// 📦 List assets assigned to a user
 router.get("/assets", async (req, res) => {
-  const userId = req.query.user_id;
-  if (!userId) {
+  const user_id = req.query.user_id;
+  if (!user_id) {
     return res.status(400).json({ error: "Missing 'user_id' parameter." });
   }
   try {
-    const assets = await zendeskService.getUserAssetsById(userId);
+    const assets = await zendesk.getUserAssetsById(user_id);
     res.json({ assets });
   } catch (err) {
-    console.error("Error fetching user assets:", err);
-    res.status(500).json({ error: "Failed to fetch user assets." });
+    console.error("Error fetching assets:", err);
+    res.status(500).json({ error: "Failed to fetch assets." });
   }
 });
 
-/**
- * Update a single asset record.
- * PATCH /api/assets/:id
- */
-router.patch("/assets/:id", /* verifyZendeskToken, */ async (req, res) => {
-  const id = req.params.id;
-  const updates = req.body;
+// ✏️ Update an asset
+router.patch("/assets/:id", async (req, res) => {
   try {
-    const updated = await zendeskService.updateAsset(id, updates);
+    const updated = await zendesk.updateAsset(req.params.id, req.body);
     res.json(updated);
   } catch (err) {
-    console.error(`Error updating asset ${id}:`, err);
+    console.error(`[PATCH /assets/${req.params.id}]`, err);
     res.status(500).json({ error: "Failed to update asset." });
   }
 });
 
-/**
- * Return the Custom Object definition for "asset", including
- * field enumerations (e.g. your status dropdown list).
- * GET /api/asset-definition
- */
+// 🔧 Expose your custom‐object schema so the front end can build the Status dropdown
 router.get("/asset-definition", async (req, res) => {
   try {
-    const def = await zendeskService.getObjectDefinition("asset");
-    res.json(def);
+    const def = await zendesk.getAssetDefinition();
+    res.json({ custom_object_definition: def });
   } catch (err) {
     console.error("Error fetching asset definition:", err);
-    res.status(500).json({ error: "Definition lookup failed." });
+    res.status(500).json({ error: "Failed to fetch asset definition." });
   }
 });
 
