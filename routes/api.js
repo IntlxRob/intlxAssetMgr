@@ -3,64 +3,95 @@ const express = require('express');
 const router = express.Router();
 const zendesk = require('../services/zendesk');
 const googleSheets = require('../services/googleSheets');
-const verifyZendeskToken = require('../middleware/verifyZendeskToken');
 
-// 🔍 Fetch a single user by ID
-router.get('/users/:id', async (req, res) => {
+// Health‐check / debug
+router.get('/test-zendesk', async (req, res) => {
   try {
-    const user = await zendesk.searchUserById(req.params.id);
-    res.json({ user });
+    const me = await zendesk.getCurrentUser();
+    res.json({ success: true, me });
   } catch (err) {
-    console.error('[GET /api/users/:id]', err.message);
-    res.status(500).json({ error: 'Failed to fetch user.' });
+    console.error('Zendesk test failed', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 🏢 Fetch a single organization by ID
+// Fetch catalog from Google Sheets
+router.get('/catalog', async (req, res) => {
+  try {
+    const catalog = await googleSheets.getCatalog();
+    res.json(catalog);
+  } catch (err) {
+    console.error('Google Sheets error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch a single user’s details by Zendesk ID
+router.get('/users/:id', async (req, res) => {
+  try {
+    const user = await zendesk.getUserById(req.params.id);
+    res.json({ user });
+  } catch (err) {
+    console.error(`GET /api/users/${req.params.id} failed`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch a single organization by Zendesk ID
 router.get('/organizations/:id', async (req, res) => {
   try {
     const organization = await zendesk.getOrganizationById(req.params.id);
     res.json({ organization });
   } catch (err) {
-    console.error('[GET /api/organizations/:id]', err.message);
-    res.status(500).json({ error: 'Failed to fetch organization.' });
+    console.error(`GET /api/organizations/${req.params.id} failed`, err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// 📦 List assets assigned to a user
+// Fetch all assets assigned to a user
 router.get('/user-assets', async (req, res) => {
   const userId = req.query.user_id;
-  if (!userId) {
-    return res.status(400).json({ error: 'Missing user_id query parameter.' });
-  }
+  if (!userId) return res.status(400).json({ error: 'Missing user_id' });
+
   try {
     const assets = await zendesk.getUserAssetsById(userId);
     res.json({ assets });
   } catch (err) {
-    console.error('[GET /api/user-assets]', err.message);
-    res.status(500).json({ error: 'Failed to fetch user assets.' });
+    console.error('Error fetching user assets', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// 🗂️ Return asset schema (for dropdown/enums)
+// Fetch raw asset schema (for your “status” dropdown, etc.)
 router.get('/assets/schema', async (req, res) => {
   try {
     const schema = await zendesk.getAssetSchema();
-    res.json({ schema });
+    res.json(schema);
   } catch (err) {
-    console.error('[GET /api/assets/schema]', err.message);
-    res.status(500).json({ error: 'Failed to fetch asset schema.' });
+    console.error('Error fetching asset schema', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ✏️ Update a single asset record
-router.patch('/assets/:id', verifyZendeskToken, async (req, res) => {
+// Create a brand‐new asset
+router.post('/assets', async (req, res) => {
+  try {
+    const newAsset = await zendesk.createAsset(req.body);
+    res.status(201).json(newAsset);
+  } catch (err) {
+    console.error('Error POST /api/assets', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update an existing asset’s fields
+router.patch('/assets/:id', async (req, res) => {
   try {
     const updated = await zendesk.updateAsset(req.params.id, req.body);
     res.json(updated);
   } catch (err) {
-    console.error('[PATCH /api/assets/:id]', err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to update asset.' });
+    console.error(`Error PATCH /api/assets/${req.params.id}`, err);
+    res.status(500).json({ error: err.message });
   }
 });
 
