@@ -1,14 +1,14 @@
-// services/zendesk.js
+// src/services/zendesk.js
 
 const axios = require('axios');
 
 // 🔐 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN; // or ZENDESK_API_TOKEN
+const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN; // or process.env.ZENDESK_API_TOKEN
 
-const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
-const ASSET_KEY = 'asset'; // your custom object key
+const BASE_URL  = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const ASSET_KEY = 'asset';  // your custom object key
 
 // 🛡️ Auth Header
 const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
@@ -17,9 +17,9 @@ const headers = {
   'Content-Type': 'application/json',
 };
 
-// — User lookups —
-
-// 🔍 Search users by name or email
+/**
+ * Search Zendesk users by name or email.
+ */
 async function searchUsers(query) {
   if (!query) return [];
   try {
@@ -34,26 +34,9 @@ async function searchUsers(query) {
   }
 }
 
-// 🔍 Get single user by ID
-async function getUserById(userId) {
-  try {
-    const res = await axios.get(
-      `${BASE_URL}/users/${userId}.json`,
-      { headers }
-    );
-    return res.data.user || null;
-  } catch (err) {
-    console.error('[getUserById] Failed:', err.response?.status);
-    return null;
-  }
-}
-
-// alias for clarity if you need it
-const searchUserById = getUserById;
-
-// — Organization lookups —
-
-// 🏢 List all organizations
+/**
+ * Get all Zendesk organizations.
+ */
 async function getOrganizations() {
   try {
     const res = await axios.get(
@@ -67,29 +50,16 @@ async function getOrganizations() {
   }
 }
 
-// 🏢 Get single organization by ID
-async function getOrganizationById(orgId) {
-  try {
-    const res = await axios.get(
-      `${BASE_URL}/organizations/${orgId}.json`,
-      { headers }
-    );
-    return res.data.organization || null;
-  } catch (err) {
-    console.error('[getOrganizationById] Failed:', err.response?.status);
-    return null;
-  }
-}
-
-// — Asset CRUD —
-
-// 📦 Fetch all asset records
+/**
+ * Get all records of the custom object.
+ */
 async function getAllAssets() {
   try {
     const res = await axios.get(
       `${BASE_URL}/custom_objects/${ASSET_KEY}/records.json`,
       { headers }
     );
+    // adjust this key if your API returns a different one
     return res.data.custom_object_records || [];
   } catch (err) {
     console.error('[getAllAssets] Failed:', err.response?.status);
@@ -97,12 +67,14 @@ async function getAllAssets() {
   }
 }
 
-// 🧩 Fetch assets assigned to a specific user ID
+/**
+ * Filter those assets by assigned_to user ID.
+ */
 async function getUserAssetsById(userId) {
   try {
     const all = await getAllAssets();
-    return all.filter(rec =>
-      String(rec.custom_object_fields?.assigned_to) === String(userId)
+    return all.filter(r =>
+      String(r.custom_object_fields?.assigned_to) === String(userId)
     );
   } catch (err) {
     console.error('[getUserAssetsById] Failed:', err.message);
@@ -110,43 +82,9 @@ async function getUserAssetsById(userId) {
   }
 }
 
-// 🏗️ Get the schema/definition for the asset custom object
-async function getAssetSchema() {
-  try {
-    const listRes = await axios.get(
-      `${BASE_URL}/custom_object_definitions.json`,
-      { headers }
-    );
-    const def = listRes.data.custom_object_definitions.find(d =>
-      d.object_type === ASSET_KEY || d.title.toLowerCase() === ASSET_KEY
-    );
-    if (!def) throw new Error(`Definition for "${ASSET_KEY}" not found`);
-    const defRes = await axios.get(
-      `${BASE_URL}/custom_object_definitions/${def.id}.json`,
-      { headers }
-    );
-    return defRes.data.custom_object_definition;
-  } catch (err) {
-    console.error('[getAssetSchema] Failed:', err.response?.status, err.response?.data);
-    throw err;
-  }
-}
-
-// 🛠️ Fetch all field definitions (to get dropdown options, etc.)
-async function getAssetFields() {
-  try {
-    const res = await axios.get(
-      `${BASE_URL}/custom_objects/${ASSET_KEY}/fields.json`,
-      { headers }
-    );
-    return res.data.custom_object_fields || [];
-  } catch (err) {
-    console.error('[getAssetFields] Failed:', err.response?.status, err.response?.data);
-    return [];
-  }
-}
-
-// ✏️ Update a custom‐object record
+/**
+ * Patch a specific asset record.
+ */
 async function updateAsset(assetId, updatedFields) {
   try {
     const res = await axios.patch(
@@ -161,7 +99,9 @@ async function updateAsset(assetId, updatedFields) {
   }
 }
 
-// ➕ Create a new custom‐object record
+/**
+ * Create a new asset record.
+ */
 async function createAsset(assetData) {
   try {
     const res = await axios.post(
@@ -176,9 +116,26 @@ async function createAsset(assetData) {
   }
 }
 
-// — Tickets —
+/**
+ * Fetch the fields (schema) for that custom object,
+ * including enum options for dropdowns like `status`.
+ */
+async function getAssetFields() {
+  try {
+    const res = await axios.get(
+      `${BASE_URL}/custom_objects/${ASSET_KEY}/fields.json`,
+      { headers }
+    );
+    return res.data.custom_object_fields || [];
+  } catch (err) {
+    console.error('[getAssetFields] Failed:', err.response?.status, err.response?.data);
+    throw err;
+  }
+}
 
-// 🎫 Create a Zendesk ticket
+/**
+ * Create a Zendesk ticket.
+ */
 async function createTicket(ticketData) {
   try {
     const res = await axios.post(
@@ -196,20 +153,16 @@ async function createTicket(ticketData) {
 module.exports = {
   // user lookups
   searchUsers,
-  getUserById,
-  searchUserById,
 
   // organization lookups
   getOrganizations,
-  getOrganizationById,
 
   // asset CRUD
   getAllAssets,
   getUserAssetsById,
-  getAssetSchema,
-  getAssetFields,
   updateAsset,
   createAsset,
+  getAssetFields,
 
   // tickets
   createTicket,
