@@ -3,8 +3,9 @@ const router  = express.Router();
 const zendesk = require('../services/zendesk');
 
 // ————————————————————————————————
-// /api/users?query=ROB
-// /api/users/:id
+// User endpoints
+// GET  /api/users?query=<name>
+// GET  /api/users/:id
 router.get('/users', async (req, res) => {
   const q = req.query.query || '';
   try {
@@ -25,8 +26,9 @@ router.get('/users/:id', async (req, res) => {
 });
 
 // ————————————————————————————————
-// /api/organizations
-// /api/organizations/:id
+// Organization endpoints
+// GET  /api/organizations
+// GET  /api/organizations/:id
 router.get('/organizations', async (req, res) => {
   try {
     const orgs = await zendesk.getOrganizations();
@@ -46,7 +48,10 @@ router.get('/organizations/:id', async (req, res) => {
 });
 
 // ————————————————————————————————
-// /api/assets?user_id=123
+// Asset endpoints
+// GET  /api/assets?user_id=<ZendeskUserID>
+// POST /api/assets
+// PATCH /api/assets/:id
 router.get('/assets', async (req, res) => {
   const userId = req.query.user_id;
   if (!userId) return res.status(400).json({ error: 'Missing user_id param.' });
@@ -58,12 +63,11 @@ router.get('/assets', async (req, res) => {
   }
 });
 
-// Create / Update asset
 router.post('/assets', async (req, res) => {
   try {
     const created = await zendesk.createAsset(req.body);
     res.status(201).json(created);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Failed to create asset.' });
   }
 });
@@ -78,7 +82,8 @@ router.patch('/assets/:id', async (req, res) => {
 });
 
 // ————————————————————————————————
-// /api/ticket
+// Ticket creation
+// POST /api/ticket
 router.post('/ticket', async (req, res) => {
   try {
     const ticket = await zendesk.createTicket(req.body);

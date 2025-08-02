@@ -23,7 +23,7 @@ async function searchUsers(query) {
     const res = await axios.get(url, { headers });
     return res.data.users || [];
   } catch (err) {
-    console.error('[zendesk.searchUsers] ', err.response?.status, err.message);
+    console.error('[zendesk.searchUsers]', err.response?.status, err.message);
     return [];
   }
 }
@@ -34,7 +34,7 @@ async function getUserById(userId) {
     const res = await axios.get(`${BASE_URL}/users/${userId}.json`, { headers });
     return res.data.user || null;
   } catch (err) {
-    console.error('[zendesk.getUserById] ', err.response?.status, err.message);
+    console.error('[zendesk.getUserById]', err.response?.status, err.message);
     return null;
   }
 }
@@ -45,7 +45,7 @@ async function getOrganizations() {
     const res = await axios.get(`${BASE_URL}/organizations.json`, { headers });
     return res.data.organizations || [];
   } catch (err) {
-    console.error('[zendesk.getOrganizations] ', err.response?.status, err.message);
+    console.error('[zendesk.getOrganizations]', err.response?.status, err.message);
     return [];
   }
 }
@@ -56,7 +56,7 @@ async function getOrganizationById(orgId) {
     const res = await axios.get(`${BASE_URL}/organizations/${orgId}.json`, { headers });
     return res.data.organization || null;
   } catch (err) {
-    console.error('[zendesk.getOrganizationById] ', err.response?.status, err.message);
+    console.error('[zendesk.getOrganizationById]', err.response?.status, err.message);
     return null;
   }
 }
@@ -71,7 +71,7 @@ async function getAllAssets() {
     // some APIs return `data` or `custom_object_records`
     return res.data.data || res.data.custom_object_records || [];
   } catch (err) {
-    console.error('[zendesk.getAllAssets] ', err.response?.status, err.message);
+    console.error('[zendesk.getAllAssets]', err.response?.status, err.message);
     return [];
   }
 }
@@ -84,7 +84,7 @@ async function getUserAssetsById(userId) {
       String(rec.custom_object_fields?.assigned_to) === String(userId)
     );
   } catch (err) {
-    console.error('[zendesk.getUserAssetsById] ', err.message);
+    console.error('[zendesk.getUserAssetsById]', err.message);
     return [];
   }
 }
@@ -99,7 +99,7 @@ async function createAsset(fields) {
     );
     return res.data;
   } catch (err) {
-    console.error('[zendesk.createAsset] ', err.response?.status, err.message);
+    console.error('[zendesk.createAsset]', err.response?.status, err.message);
     throw err;
   }
 }
@@ -114,7 +114,7 @@ async function updateAsset(assetId, fields) {
     );
     return res.data;
   } catch (err) {
-    console.error('[zendesk.updateAsset] ', err.response?.status, err.message);
+    console.error('[zendesk.updateAsset]', err.response?.status, err.message);
     throw err;
   }
 }
@@ -129,7 +129,7 @@ async function createTicket(ticketData) {
     );
     return res.data.ticket;
   } catch (err) {
-    console.error('[zendesk.createTicket] ', err.response?.status, err.message);
+    console.error('[zendesk.createTicket]', err.response?.status, err.message);
     throw err;
   }
 }
