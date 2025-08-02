@@ -1,95 +1,78 @@
+// src/routes/api.js
 const express = require('express');
 const router  = express.Router();
 const zendesk = require('../services/zendesk');
 
-// ————————————————————————————————
-// User endpoints
-// GET  /api/users?query=<name>
-// GET  /api/users/:id
+// 🔍 Search users
 router.get('/users', async (req, res) => {
-  const q = req.query.query || '';
+  const query = req.query.query || '';
   try {
-    const users = await zendesk.searchUsers(q);
+    const users = await zendesk.searchUsers(query);
     res.json({ users });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to search users.' });
+    res.status(500).json({ error: err.message });
   }
 });
 
+// 👤 Lookup a single user by ID
 router.get('/users/:id', async (req, res) => {
   try {
     const user = await zendesk.getUserById(req.params.id);
     res.json({ user });
-  } catch {
-    res.status(500).json({ error: 'Failed to fetch user.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ————————————————————————————————
-// Organization endpoints
-// GET  /api/organizations
-// GET  /api/organizations/:id
+// 🏢 List all orgs
 router.get('/organizations', async (req, res) => {
   try {
     const orgs = await zendesk.getOrganizations();
     res.json({ organizations: orgs });
-  } catch {
-    res.status(500).json({ error: 'Failed to list organizations.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
+// 🏷️ Lookup single org by ID
 router.get('/organizations/:id', async (req, res) => {
   try {
-    const org = await zendesk.getOrganizationById(req.params.id);
-    res.json({ organization: org });
-  } catch {
-    res.status(500).json({ error: 'Failed to fetch organization.' });
+    const organization = await zendesk.getOrganizationById(req.params.id);
+    res.json({ organization });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ————————————————————————————————
-// Asset endpoints
-// GET  /api/assets?user_id=<ZendeskUserID>
-// POST /api/assets
-// PATCH /api/assets/:id
+// 📦 Get assets for a user
 router.get('/assets', async (req, res) => {
-  const userId = req.query.user_id;
-  if (!userId) return res.status(400).json({ error: 'Missing user_id param.' });
+  const user_id = req.query.user_id;
+  if (!user_id) return res.status(400).json({ error: 'Missing user_id' });
   try {
-    const assets = await zendesk.getUserAssetsById(userId);
+    const assets = await zendesk.getUserAssetsById(user_id);
     res.json({ assets });
-  } catch {
-    res.status(500).json({ error: 'Failed to fetch assets.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-router.post('/assets', async (req, res) => {
+// 🔧 Get asset-field schema (for building your Status dropdown)
+router.get('/assets/schema', async (req, res) => {
   try {
-    const created = await zendesk.createAsset(req.body);
-    res.status(201).json(created);
-  } catch {
-    res.status(500).json({ error: 'Failed to create asset.' });
+    const fields = await zendesk.getAssetFields();
+    res.json({ fields });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
+// ✏️ Update an asset
 router.patch('/assets/:id', async (req, res) => {
   try {
     const updated = await zendesk.updateAsset(req.params.id, req.body);
     res.json(updated);
-  } catch {
-    res.status(500).json({ error: 'Failed to update asset.' });
-  }
-});
-
-// ————————————————————————————————
-// Ticket creation
-// POST /api/ticket
-router.post('/ticket', async (req, res) => {
-  try {
-    const ticket = await zendesk.createTicket(req.body);
-    res.status(201).json({ ticket });
-  } catch {
-    res.status(500).json({ error: 'Failed to create ticket.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -1,153 +1,111 @@
+// src/services/zendesk.js
 const axios = require('axios');
 
-// 🔐 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
 const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN;
+const BASE_URL          = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const ASSET_KEY         = 'asset';
 
-const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
-const CUSTOM_OBJECT_KEY = 'asset';
-
-// 🛡️ Auth Header
-const authHeader = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
+const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
 const headers = {
-  Authorization: `Basic ${authHeader}`,
+  Authorization: `Basic ${auth}`,
   'Content-Type': 'application/json',
 };
 
-// 🔍 Search users by name/email
+// — Users —
+
 async function searchUsers(query) {
-  if (!query) return [];
-  const url = `${BASE_URL}/users/search.json?query=${encodeURIComponent(query)}`;
-  try {
-    const res = await axios.get(url, { headers });
-    return res.data.users || [];
-  } catch (err) {
-    console.error('[zendesk.searchUsers]', err.response?.status, err.message);
-    return [];
-  }
+  const res = await axios.get(
+    `${BASE_URL}/users/search.json?query=${encodeURIComponent(query)}`,
+    { headers }
+  );
+  return res.data.users || [];
 }
 
-// 🔍 Get a single user by ID
-async function getUserById(userId) {
-  try {
-    const res = await axios.get(`${BASE_URL}/users/${userId}.json`, { headers });
-    return res.data.user || null;
-  } catch (err) {
-    console.error('[zendesk.getUserById]', err.response?.status, err.message);
-    return null;
-  }
+async function getUserById(id) {
+  const res = await axios.get(`${BASE_URL}/users/${id}.json`, { headers });
+  return res.data.user || null;
 }
 
-// 🏢 List all organizations
+// — Organizations —
+
 async function getOrganizations() {
-  try {
-    const res = await axios.get(`${BASE_URL}/organizations.json`, { headers });
-    return res.data.organizations || [];
-  } catch (err) {
-    console.error('[zendesk.getOrganizations]', err.response?.status, err.message);
-    return [];
-  }
+  const res = await axios.get(`${BASE_URL}/organizations.json`, { headers });
+  return res.data.organizations || [];
 }
 
-// 🏢 Get a single organization by ID
-async function getOrganizationById(orgId) {
-  try {
-    const res = await axios.get(`${BASE_URL}/organizations/${orgId}.json`, { headers });
-    return res.data.organization || null;
-  } catch (err) {
-    console.error('[zendesk.getOrganizationById]', err.response?.status, err.message);
-    return null;
-  }
+async function getOrganizationById(id) {
+  const res = await axios.get(`${BASE_URL}/organizations/${id}.json`, { headers });
+  return res.data.organization || null;
 }
 
-// 📦 Fetch all asset records
+// — Assets —
+
 async function getAllAssets() {
-  try {
-    const res = await axios.get(
-      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`,
-      { headers }
-    );
-    // some APIs return `data` or `custom_object_records`
-    return res.data.data || res.data.custom_object_records || [];
-  } catch (err) {
-    console.error('[zendesk.getAllAssets]', err.response?.status, err.message);
-    return [];
-  }
+  const res = await axios.get(
+    `${BASE_URL}/custom_objects/${ASSET_KEY}/records.json`,
+    { headers }
+  );
+  return res.data.custom_object_records || [];
 }
 
-// 🔍 Filter assets by assigned_to = userId
 async function getUserAssetsById(userId) {
-  try {
-    const all = await getAllAssets();
-    return all.filter((rec) =>
-      String(rec.custom_object_fields?.assigned_to) === String(userId)
-    );
-  } catch (err) {
-    console.error('[zendesk.getUserAssetsById]', err.message);
-    return [];
-  }
+  const all = await getAllAssets();
+  return all.filter(r => String(r.custom_object_fields?.assigned_to) === String(userId));
 }
 
-// ✏️ Create a new asset record
-async function createAsset(fields) {
-  try {
-    const res = await axios.post(
-      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`,
-      { record: { attributes: fields } },
-      { headers }
-    );
-    return res.data;
-  } catch (err) {
-    console.error('[zendesk.createAsset]', err.response?.status, err.message);
-    throw err;
-  }
+async function updateAsset(assetId, attrs) {
+  const res = await axios.patch(
+    `${BASE_URL}/custom_objects/${ASSET_KEY}/records/${assetId}.json`,
+    { record: { attributes: attrs } },
+    { headers }
+  );
+  return res.data;
 }
 
-// ✏️ Update an existing asset record
-async function updateAsset(assetId, fields) {
-  try {
-    const res = await axios.patch(
-      `${BASE_URL}/custom_objects/${CUSTOM_OBJECT_KEY}/records/${assetId}.json`,
-      { attributes: fields },
-      { headers }
-    );
-    return res.data;
-  } catch (err) {
-    console.error('[zendesk.updateAsset]', err.response?.status, err.message);
-    throw err;
-  }
+async function createAsset(data) {
+  const res = await axios.post(
+    `${BASE_URL}/custom_objects/${ASSET_KEY}/records.json`,
+    { record: { attributes: data } },
+    { headers }
+  );
+  return res.data;
 }
 
-// 🎫 Create a Zendesk ticket
+// fetch field‐definitions (so we can pull out status options)
+async function getAssetFields() {
+  const res = await axios.get(
+    `${BASE_URL}/custom_objects/${ASSET_KEY}/fields.json`,
+    { headers }
+  );
+  return res.data.custom_object_fields || [];
+}
+
 async function createTicket(ticketData) {
-  try {
-    const res = await axios.post(
-      `${BASE_URL}/tickets.json`,
-      { ticket: ticketData },
-      { headers }
-    );
-    return res.data.ticket;
-  } catch (err) {
-    console.error('[zendesk.createTicket]', err.response?.status, err.message);
-    throw err;
-  }
+  const res = await axios.post(
+    `${BASE_URL}/tickets.json`,
+    { ticket: ticketData },
+    { headers }
+  );
+  return res.data.ticket;
 }
 
 module.exports = {
-  // user lookups
+  // users
   searchUsers,
   getUserById,
 
-  // organization lookups
+  // orgs
   getOrganizations,
   getOrganizationById,
 
-  // asset CRUD
+  // assets
   getAllAssets,
   getUserAssetsById,
-  createAsset,
   updateAsset,
+  createAsset,
+  getAssetFields,
 
   // tickets
   createTicket,
