@@ -97,7 +97,6 @@ module.exports = {
   getUserAssetsById,
   updateAsset,
   createAsset,
-  getAssetFields,
 
   // tickets
   createTicket,
