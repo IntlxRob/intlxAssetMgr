@@ -1,16 +1,16 @@
 // src/routes/api.js
-const express = require('express');
-const router  = express.Router();
-const zendesk = require('../services/zendesk');
+const express   = require('express');
+const router    = express.Router();
+const zendesk   = require('../services/zendesk');
 
-// 🔍 Search users by query string
+// 🔍 Search users
 router.get('/users', async (req, res) => {
   const query = req.query.query || '';
   try {
     const users = await zendesk.searchUsers(query);
     res.json({ users });
   } catch (err) {
-    console.error('Error in GET /users:', err);
+    console.error('GET /users failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -21,66 +21,66 @@ router.get('/users/:id', async (req, res) => {
     const user = await zendesk.getUserById(req.params.id);
     res.json({ user });
   } catch (err) {
-    console.error('Error in GET /users/:id:', err);
+    console.error(`GET /users/${req.params.id} failed:`, err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🏢 List all organizations
+// 🏢 List all orgs
 router.get('/organizations', async (req, res) => {
   try {
-    const orgs = await zendesk.getOrganizations();
-    res.json({ organizations: orgs });
+    const organizations = await zendesk.getOrganizations();
+    res.json({ organizations });
   } catch (err) {
-    console.error('Error in GET /organizations:', err);
+    console.error('GET /organizations failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🏷️ Lookup single organization by ID
+// 🏷️ Lookup single org by ID
 router.get('/organizations/:id', async (req, res) => {
   try {
     const organization = await zendesk.getOrganizationById(req.params.id);
     res.json({ organization });
   } catch (err) {
-    console.error('Error in GET /organizations/:id:', err);
+    console.error(`GET /organizations/${req.params.id} failed:`, err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 📦 Get all assets assigned to a given user
+// 📦 Get assets for a user
 router.get('/assets', async (req, res) => {
   const user_id = req.query.user_id;
   if (!user_id) {
-    return res.status(400).json({ error: 'Missing user_id parameter' });
+    return res.status(400).json({ error: 'Missing user_id' });
   }
   try {
     const assets = await zendesk.getUserAssetsById(user_id);
     res.json({ assets });
   } catch (err) {
-    console.error('Error in GET /assets:', err);
+    console.error(`GET /assets?user_id=${user_id} failed:`, err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🔧 Fetch the asset custom-object schema (e.g. to build your status dropdown)
+// 🔧 Get asset‐object schema (so you can build your Status dropdown)
 router.get('/assets/schema', async (req, res) => {
   try {
     const fields = await zendesk.getAssetFields();
     res.json({ fields });
   } catch (err) {
-    console.error('Error in GET /assets/schema:', err);
+    console.error('GET /assets/schema failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✏️ Update an asset record
+// ✏️ Update an existing asset
 router.patch('/assets/:id', async (req, res) => {
   try {
     const updated = await zendesk.updateAsset(req.params.id, req.body);
     res.json(updated);
   } catch (err) {
-    console.error('Error in PATCH /assets/:id:', err);
+    console.error(`PATCH /assets/${req.params.id} failed:`, err);
     res.status(500).json({ error: err.message });
   }
 });
