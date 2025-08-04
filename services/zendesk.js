@@ -43,26 +43,35 @@ async function getOrganizationById(id) {
   return res.data.organization;
 }
 
-// 📦 Get all asset records
+// 📦 Get all asset records (useful for other purposes, but not for user-specific filtering)
 async function getAllAssets() {
   const res = await zendeskApi.get(`/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`);
   return res.data.custom_object_records || res.data.data || [];
 }
 
 // 📦 Get assets assigned to a particular Zendesk user ID
+//    Uses the correct POST /search endpoint for filtering.
 async function getUserAssetsById(userId) {
-  console.log(`[DEBUG] Fetching assets for user ID: ${userId}`);
+  console.log(`[DEBUG] Searching for assets assigned to user ID: ${userId}`);
   try {
-    const res = await zendeskApi.get(`/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`, {
-      params: {
-        'filter[field]': 'assigned_to',
-        'filter[value]': userId
+    const payload = {
+      filter: {
+        field: "assigned_to",
+        operator: "is",
+        value: userId,
       }
-    });
-    console.log('[DEBUG] Successfully received assets from Zendesk API:', JSON.stringify(res.data, null, 2));
+    };
+
+    // Use the POST search endpoint as required by Zendesk docs for filtering
+    const res = await zendeskApi.post(
+      `/custom_objects/${CUSTOM_OBJECT_KEY}/records/search.json`,
+      payload
+    );
+
+    console.log('[DEBUG] Successfully received assets from Zendesk API search:', JSON.stringify(res.data, null, 2));
     return res.data.custom_object_records || res.data.data || [];
   } catch(err) {
-    console.error('[DEBUG] Error fetching user assets from Zendesk API:', err.response ? err.response.data : err.message);
+    console.error('[DEBUG] Error searching for user assets from Zendesk API:', err.response ? err.response.data : err.message);
     throw err;
   }
 }
@@ -95,6 +104,7 @@ async function createAsset(attrs) {
 async function getAssetFields() {
   try {
     console.log('[DEBUG] Fetching asset schema fields...');
+    // Uses the corrected path without '/metadata/'
     const res = await zendeskApi.get(
       `/custom_objects/${CUSTOM_OBJECT_KEY}/fields.json`
     );
