@@ -43,23 +43,13 @@ async function getOrganizationById(id) {
   return res.data.organization;
 }
 
-// 📦 Get all asset records (useful for other purposes, but not for user-specific filtering)
-async function getAllAssets() {
-  const res = await zendeskApi.get(`/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`);
-  return res.data.custom_object_records || res.data.data || [];
-}
-
 // 📦 Get assets assigned to a particular Zendesk user ID
-//    Uses the correct POST /search endpoint and "eq" operator for filtering.
 async function getUserAssetsById(userId) {
   console.log(`[DEBUG] Searching for assets assigned to user ID: ${userId}`);
   try {
+    // This payload structure is required by the Zendesk API search endpoint
     const payload = {
-      filter: {
-        field: "assigned_to",
-        operator: "eq", // Corrected operator for equality
-        value: String(userId),
-      }
+      query: `assigned_to:${userId}`
     };
 
     // Use the POST search endpoint as required by Zendesk docs for filtering
@@ -69,9 +59,9 @@ async function getUserAssetsById(userId) {
     );
 
     console.log('[DEBUG] Successfully received assets from Zendesk API search:', JSON.stringify(res.data, null, 2));
-    return res.data.custom_object_records || res.data.data || [];
+    return res.data.custom_object_records || [];
   } catch(err) {
-    // The 422 error was logged here, indicating the payload was the issue
+    // The 422 error from previous logs confirmed the payload structure was the issue
     console.error('[DEBUG] Error searching for user assets from Zendesk API:', err.response ? err.response.data : err.message);
     throw err;
   }
@@ -134,7 +124,7 @@ module.exports = {
   getOrganizationById,
 
   // assets
-  getAllAssets,
+  // The 'getAllAssets' function was removed as it is inefficient and not used by the final logic.
   getUserAssetsById,
   updateAsset,
   createAsset,
