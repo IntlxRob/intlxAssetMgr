@@ -1,115 +1,141 @@
-// services/zendesk.js
+// src/services/zendesk.js
 const axios = require('axios');
 
-// 🔐 Env
+// 🔐 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
 const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN;
 
-const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
-const KEY      = 'asset'; // your custom object key
+// Your custom object key for assets
+const KEY               = 'asset';
 
-// Auth header
-const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64');
-const headers = { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' };
+const BASE = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
+const auth = Buffer
+  .from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`)
+  .toString('base64');
 
-// — USERS —
-// search by name/email
-async function searchUsers(name) {
-  if (!name) return [];
+const headers = {
+  Authorization: `Basic ${auth}`,
+  'Content-Type':  'application/json',
+};
+
+/** ─── USERS ────────────────────────────────────────────────────────────────── **/
+
+/**
+ * Search users by name or email.
+ */
+async function searchUsers(q) {
+  if (!q) return [];
   const res = await axios.get(
-    `${BASE_URL}/users/search.json?query=${encodeURIComponent(name)}`,
+    `${BASE}/users/search.json?query=${encodeURIComponent(q)}`,
     { headers }
   );
   return res.data.users || [];
 }
 
-// get single user
+/**
+ * Get one user by ID.
+ */
 async function getUserById(id) {
-  const res = await axios.get(`${BASE_URL}/users/${id}.json`, { headers });
+  const res = await axios.get(`${BASE}/users/${id}.json`, { headers });
   return res.data.user;
 }
 
-// — ORGS —
-// list all
+/** ─── ORGANIZATIONS ───────────────────────────────────────────────────────── **/
+
+/**
+ * List all organizations.
+ */
 async function getOrganizations() {
-  const res = await axios.get(`${BASE_URL}/organizations.json`, { headers });
+  const res = await axios.get(`${BASE}/organizations.json`, { headers });
   return res.data.organizations || [];
 }
 
-// single by ID
+/**
+ * Get one organization by ID.
+ */
 async function getOrganizationById(id) {
-  const res = await axios.get(`${BASE_URL}/organizations/${id}.json`, { headers });
+  const res = await axios.get(`${BASE}/organizations/${id}.json`, { headers });
   return res.data.organization;
 }
 
-// — ASSETS —
-// list all records (not normally used)
+/** ─── ASSETS (CUSTOM OBJECT) ───────────────────────────────────────────────── **/
+
+/**
+ * Fetch all asset records.
+ */
 async function getAllAssets() {
   const res = await axios.get(
-    `${BASE_URL}/custom_objects/${KEY}/records.json`,
+    `${BASE}/custom_objects/${KEY}/records.json`,
     { headers }
   );
   return res.data.custom_object_records || [];
 }
 
-// search by assigned_to:<userId>
+/**
+ * Search asset records where assigned_to = <userId>.
+ */
 async function getUserAssetsById(userId) {
-  console.debug(`[zendesk] getUserAssetsById → userId=${userId}`);
-  const res = await axios.get(
-    `${BASE_URL}/custom_objects/${KEY}/records/search.json?` +
-    `query=${encodeURIComponent(`assigned_to:${userId}`)}`,
+  const query = `assigned_to:${userId}`;
+  const res   = await axios.get(
+    `${BASE}/custom_objects/${KEY}/records/search.json?query=${encodeURIComponent(query)}`,
     { headers }
   );
-  console.debug('[zendesk] assets search returned', res.data);
   return res.data.custom_object_records || [];
 }
 
-// fetch the schema list, then pick out our KEY
-async function getAssetFields() {
-  console.debug('[zendesk] getAssetFields → fetching schemas list');
-  const res = await axios.get(
-    `${BASE_URL}/custom_objects/${KEY}/schemas.json`,
-    { headers }
-  );
-  const schemas = res.data.custom_object_schemas || [];
-  const me = schemas.find(s => s.key === KEY);
-  if (!me) {
-    console.warn(`[zendesk] no schema with key="${KEY}" found`);
-    return [];
-  }
-  return me.fields || [];
-}
-
-// update a record
-async function updateAsset(assetId, attributes) {
-  const res = await axios.patch(
-    `${BASE_URL}/custom_objects/${KEY}/records/${assetId}`,
-    { attributes },
-    { headers }
-  );
-  return res.data;
-}
-
-// create a record
+/**
+ * Create a new asset record.
+ */
 async function createAsset(attributes) {
   const res = await axios.post(
-    `${BASE_URL}/custom_objects/${KEY}/records`,
+    `${BASE}/custom_objects/${KEY}/records.json`,
     { record: { attributes } },
     { headers }
   );
   return res.data;
 }
 
-// tickets
-async function createTicket(ticketData) {
+/**
+ * Update a specific asset record’s attributes.
+ */
+async function updateAsset(id, attributes) {
+  const res = await axios.patch(
+    `${BASE}/custom_objects/${KEY}/records/${id}.json`,
+    { attributes },
+    { headers }
+  );
+  return res.data;
+}
+
+/**
+ * Retrieve the asset schema (fields) for dropdowns, etc.
+ */
+async function getAssetFields() {
+  const res = await axios.get(
+    `${BASE}/custom_objects/${KEY}/schemas.json`,
+    { headers }
+  );
+  const schemas = res.data.custom_object_schemas || [];
+  const me      = schemas.find(s => s.key === KEY);
+  return me ? me.fields : [];
+}
+
+/** ─── TICKETS ───────────────────────────────────────────────────────────────── **/
+
+/**
+ * Create a Zendesk ticket.
+ */
+async function createTicket(ticketPayload) {
   const res = await axios.post(
-    `${BASE_URL}/tickets.json`,
-    { ticket: ticketData },
+    `${BASE}/tickets.json`,
+    { ticket: ticketPayload },
     { headers }
   );
   return res.data.ticket;
 }
+
+/** ─── EXPORTS ──────────────────────────────────────────────────────────────── **/
 
 module.exports = {
   // users
@@ -123,8 +149,8 @@ module.exports = {
   // assets
   getAllAssets,
   getUserAssetsById,
-  updateAsset,
   createAsset,
+  updateAsset,
   getAssetFields,
 
   // tickets
