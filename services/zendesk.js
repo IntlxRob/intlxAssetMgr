@@ -6,8 +6,8 @@ const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
 const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN;
 
-const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
-const CUSTOM_OBJECT_KEY = 'asset';
+const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`; //
+const CUSTOM_OBJECT_KEY = 'asset'; //
 
 // 🛡️ Axios instance with basic auth
 const zendeskApi = axios.create({
@@ -50,13 +50,12 @@ async function getAllAssets() {
 }
 
 // 📦 Get assets assigned to a particular Zendesk user ID
-// -- UPDATED with server-side filtering and debugging --
 async function getUserAssetsById(userId) {
   console.log(`[DEBUG] Fetching assets for user ID: ${userId}`);
   try {
     const res = await zendeskApi.get(`/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`, {
       params: {
-        'filter[field]': 'assigned_to', // IMPORTANT: Confirm 'assigned_to' is the correct key in your Zendesk custom object
+        'filter[field]': 'assigned_to',
         'filter[value]': userId
       }
     });
@@ -64,12 +63,11 @@ async function getUserAssetsById(userId) {
     return res.data.custom_object_records || res.data.data || [];
   } catch(err) {
     console.error('[DEBUG] Error fetching user assets from Zendesk API:', err.response ? err.response.data : err.message);
-    throw err; // Re-throw the error so the route can handle it
+    throw err;
   }
 }
 
 // 🔧 Update an asset’s attributes
-// -- UPDATED to handle payload structure --
 async function updateAsset(assetId, attrs) {
   const payload = {
     custom_object_record: { custom_fields: attrs }
@@ -82,7 +80,6 @@ async function updateAsset(assetId, attrs) {
 }
 
 // ➕ Create a new asset record
-// -- UPDATED to handle payload structure --
 async function createAsset(attrs) {
   const payload = {
     custom_object_record: { custom_fields: attrs }
@@ -96,10 +93,17 @@ async function createAsset(attrs) {
 
 // 🔍 Get the schema (fields + options) for your asset custom object
 async function getAssetFields() {
-  const res = await zendeskApi.get(
-    `/custom_objects/${CUSTOM_OBJECT_KEY}/metadata/fields.json`
-  );
-  return res.data.fields || [];
+  try {
+    console.log('[DEBUG] Fetching asset schema fields...');
+    const res = await zendeskApi.get(
+      `/custom_objects/${CUSTOM_OBJECT_KEY}/fields.json`
+    );
+    console.log('[DEBUG] Successfully received asset schema from Zendesk API.');
+    return res.data.custom_object_fields || [];
+  } catch(err) {
+    console.error('[DEBUG] Error fetching asset schema from Zendesk API:', err.response ? err.response.data : err.message);
+    throw err;
+  }
 }
 
 // 🎫 Create a Zendesk ticket
@@ -126,4 +130,4 @@ module.exports = {
 
   // tickets
   createTicket,
-};
+}; //
