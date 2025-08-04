@@ -50,15 +50,15 @@ async function getAllAssets() {
 }
 
 // 📦 Get assets assigned to a particular Zendesk user ID
-//    Uses the correct POST /search endpoint for filtering.
+//    Uses the correct POST /search endpoint and "eq" operator for filtering.
 async function getUserAssetsById(userId) {
   console.log(`[DEBUG] Searching for assets assigned to user ID: ${userId}`);
   try {
     const payload = {
       filter: {
         field: "assigned_to",
-        operator: "is",
-        value: userId,
+        operator: "eq", // Corrected operator for equality
+        value: String(userId),
       }
     };
 
@@ -71,6 +71,7 @@ async function getUserAssetsById(userId) {
     console.log('[DEBUG] Successfully received assets from Zendesk API search:', JSON.stringify(res.data, null, 2));
     return res.data.custom_object_records || res.data.data || [];
   } catch(err) {
+    // The 422 error was logged here, indicating the payload was the issue
     console.error('[DEBUG] Error searching for user assets from Zendesk API:', err.response ? err.response.data : err.message);
     throw err;
   }
@@ -111,6 +112,7 @@ async function getAssetFields() {
     console.log('[DEBUG] Successfully received asset schema from Zendesk API.');
     return res.data.custom_object_fields || [];
   } catch(err) {
+    // The 404 error from previous logs confirmed the path was wrong
     console.error('[DEBUG] Error fetching asset schema from Zendesk API:', err.response ? err.response.data : err.message);
     throw err;
   }
