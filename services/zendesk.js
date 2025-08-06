@@ -26,6 +26,12 @@ async function searchUsers(query) {
 }
 
 // 👤 Get one user by ID (includes organization_id)
+  const searchQuery = `name:"${query}"* type:user`;
+  const res = await zendeskApi.get(`/search.json?query=${encodeURIComponent(searchQuery)}`);
+  return res.data.results || [];
+}
+
+// 👤 Get one user by ID
 async function getUserById(id) {
   const res = await zendeskApi.get(`/users/${id}.json`);
   return res.data.user;
@@ -46,6 +52,15 @@ async function getOrganizationById(id) {
 // 📦 Get assets assigned to a particular Zendesk user ID
 //    Fetches all pages of assets and filters locally. This is the required method
 //    because the 'assigned_to' field is a 'Lookup' type and not searchable via the API.
+// 🏢 Search organizations by name
+async function searchOrganizations(query) {
+  if (!query) return [];
+  const searchQuery = `name:"${query}"* type:organization`;
+  const res = await zendeskApi.get(`/search.json?query=${encodeURIComponent(searchQuery)}`);
+  return res.data.results || [];
+}
+
+// 📦 Get assets assigned to a particular Zendesk user ID
 async function getUserAssetsById(userId) {
   console.log(`[DEBUG] Fetching all assets to filter for user ID: ${userId}`);
   try {
@@ -71,6 +86,10 @@ async function getUserAssetsById(userId) {
     );
 
     console.log(`[DEBUG] Found ${userAssets.length} assets assigned to user ID ${userId} after filtering.`);
+    const userAssets = allRecords.filter(
+      (record) => String(record.custom_object_fields?.assigned_to) === String(userId)
+    );
+    
     return userAssets;
 
   } catch (err) {
@@ -112,6 +131,12 @@ async function getAssetFields() {
       `/custom_objects/${CUSTOM_OBJECT_KEY}/fields.json`
     );
     console.log('[DEBUG] Successfully received asset schema from Zendesk API.');
+// 🔍 Get the schema for your asset custom object
+async function getAssetFields() {
+  try {
+    const res = await zendeskApi.get(
+      `/custom_objects/${CUSTOM_OBJECT_KEY}/fields.json`
+    );
     return res.data.custom_object_fields || [];
   } catch(err) {
     console.error('[DEBUG] Error fetching asset schema from Zendesk API:', err.response ? err.response.data : err.message);

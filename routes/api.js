@@ -8,6 +8,8 @@ router.get('/users', async (req, res) => {
   try {
     const users = await zendesk.searchUsers(req.query.query || '');
     res.json({ users });
+    const users = await zendesk.searchUsers(query);
+    res.json({ users: users }); // Respond with a 'users' key
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -28,12 +30,19 @@ router.get('/organizations', async (req, res) => {
   try {
     const orgs = await zendesk.getOrganizations();
     res.json({ organizations: orgs });
+// 🏢 Search organizations by name
+router.get('/organizations/search', async (req, res) => {
+  const query = req.query.query || '';
+  try {
+    const organizations = await zendesk.searchOrganizations(query);
+    res.json({ organizations: organizations }); // Respond with an 'organizations' key
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // 🏷 Lookup org by ID
+// 🏷️ Lookup single org by ID
 router.get('/organizations/:id', async (req, res) => {
   try {
     const organization = await zendesk.getOrganizationById(req.params.id);
@@ -56,6 +65,7 @@ router.get('/assets', async (req, res) => {
 });
 
 // 🔧 Get asset-field schema (for status dropdown)
+// 🔧 Get asset-field schema
 router.get('/assets/schema', async (req, res) => {
   try {
     const fields = await zendesk.getAssetFields();
