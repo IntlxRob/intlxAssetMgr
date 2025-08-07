@@ -25,16 +25,18 @@ async function searchUsers(query) {
   return res.data.users || [];
 }
 
+// 🏢 Search organizations by name
+async function searchOrganizations(query) {
+  if (!query) return [];
+  const searchQuery = `name:"${query}"* type:organization`;
+  const res = await zendeskApi.get(`/search.json?query=${encodeURIComponent(searchQuery)}`);
+  return res.data.results || [];
+}
+
 // 👤 Get one user by ID
 async function getUserById(id) {
   const res = await zendeskApi.get(`/users/${id}.json`);
   return res.data.user;
-}
-
-// 🏢 List all organizations
-async function getOrganizations() {
-  const res = await zendeskApi.get(`/organizations.json`);
-  return res.data.organizations || [];
 }
 
 // 🏢 Get one organization by ID
@@ -43,12 +45,10 @@ async function getOrganizationById(id) {
   return res.data.organization;
 }
 
-// 🏢 Search organizations by name
-async function searchOrganizations(query) {
-  if (!query) return [];
-  const searchQuery = `name:"${query}"* type:organization`;
-  const res = await zendeskApi.get(`/search.json?query=${encodeURIComponent(searchQuery)}`);
-  return res.data.results || [];
+// 🏢 List all organizations
+async function getOrganizations() {
+  const res = await zendeskApi.get(`/organizations.json`);
+  return res.data.organizations || [];
 }
 
 // 📦 Get assets assigned to a particular Zendesk user ID
@@ -58,13 +58,12 @@ async function getUserAssetsById(userId) {
     let allRecords = [];
     let nextPage = `/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`;
 
-    // Loop through all pages until there are no more records
     while (nextPage) {
       console.log(`[DEBUG] Fetching page: ${nextPage}`);
       const response = await zendeskApi.get(nextPage);
       const records = response.data.custom_object_records || [];
       allRecords.push(...records);
-      nextPage = response.data.meta.has_more ? response.data.links.next : null;
+      nextPage = response.data.meta?.has_more ? response.data.links?.next : null;
     }
 
     console.log(`[DEBUG] Fetched a total of ${allRecords.length} assets across all pages.`);
@@ -77,7 +76,7 @@ async function getUserAssetsById(userId) {
     return userAssets;
 
   } catch (err) {
-    console.error('[DEBUG] Error fetching all user assets:', err.response ? err.response.data : err.message);
+    console.error('[DEBUG] Error fetching all user assets:', err.response?.data || err.message);
     throw err;
   }
 }
@@ -106,22 +105,20 @@ async function createAsset(attrs) {
   return res.data;
 }
 
-// 🔍 Get the schema (fields + options) for your asset custom object
+// 🧠 Get the schema (fields + options) for your asset custom object
 async function getAssetFields() {
   try {
     console.log('[DEBUG] Fetching asset schema fields...');
-    const res = await zendeskApi.get(
-      `/custom_objects/${CUSTOM_OBJECT_KEY}/fields.json`
-    );
+    const res = await zendeskApi.get(`/custom_objects/${CUSTOM_OBJECT_KEY}/fields.json`);
     console.log('[DEBUG] Successfully received asset schema from Zendesk API.');
     return res.data.custom_object_fields || [];
   } catch (err) {
-    console.error('[DEBUG] Error fetching asset schema from Zendesk API:', err.response ? err.response.data : err.message);
+    console.error('[DEBUG] Error fetching asset schema from Zendesk API:', err.response?.data || err.message);
     throw err;
   }
 }
 
-// 🎫 Create a Zendesk ticket
+// 🎫 Create a Zendesk ticket (if needed)
 async function createTicket(ticketData) {
   const res = await zendeskApi.post(`/tickets.json`, { ticket: ticketData });
   return res.data.ticket;
@@ -133,9 +130,9 @@ module.exports = {
   getUserById,
 
   // orgs
-  getOrganizations,
-  getOrganizationById,
   searchOrganizations,
+  getOrganizationById,
+  getOrganizations,
 
   // assets
   getUserAssetsById,
