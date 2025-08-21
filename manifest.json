@@ -24,5 +24,14 @@
   "logo": {
     "app": "assets/logo-small.png",
     "brand": "assets/logo.png"
-  }
+  },
+  "ignore": [
+    "node_modules",
+    "webpack.config.js",
+    "*.log",
+    "*.md",
+    ".gitignore",
+    "package.json",
+    "package-lock.json"
+  ]
 }

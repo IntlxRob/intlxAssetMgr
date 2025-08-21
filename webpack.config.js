@@ -1,13 +1,13 @@
 const path = require('path');
 
 module.exports = {
-  entry: './src/App.jsx',
+  entry: './src/index.jsx',
   output: {
     path: path.resolve(__dirname, 'assets'),
-    filename: 'bundle.js'
+    filename: 'bundle.js',
   },
   resolve: {
-    extensions: ['.js', '.jsx']
+    extensions: ['.js', '.jsx'],
   },
   module: {
     rules: [
@@ -17,11 +17,12 @@ module.exports = {
         use: {
           loader: 'babel-loader',
           options: {
-            presets: ['@babel/preset-env', '@babel/preset-react']
-          }
-        }
-      }
-    ]
+            sourceType: 'unambiguous',
+            presets: ['@babel/preset-env', '@babel/preset-react'],
+          },
+        },
+      },
+    ],
   },
-  mode: 'development'
+  mode: 'development',
 };
