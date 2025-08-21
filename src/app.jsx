@@ -306,8 +306,10 @@ export default function App({ client, initialRequester, initialOrg }) {
                   </div>
 
                   <div style={{ marginTop:8 }}>
-                    <button style={btnStyle} onClick={() => saveAsset(a.id)}>Save</button>
-                    <button style={{ ...btnStyle, background:"#ABB2BF" }} onClick={() => toggle(a)}>
+                    <button type="button" style={btnStyle} onClick={() => saveAsset(a.id)}>
+                      Save
+                    </button>
+                    <button type="button" style={{ ...btnStyle, background:"#ABB2BF" }} onClick={() => toggle(a)}>
                       Cancel
                     </button>
                   </div>
