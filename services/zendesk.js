@@ -21,8 +21,20 @@ const zendeskApi = axios.create({
 // 🔍 Search users by name/email
 async function searchUsers(query) {
   if (!query) return [];
-  const res = await zendeskApi.get(`/users/search.json?query=${encodeURIComponent(query)}`);
-  return res.data.users || [];
+  
+  try {
+    // If query is '*', get all users (limited to first page)
+    if (query === '*') {
+      const res = await zendeskApi.get('/users.json?per_page=100');
+      return res.data.users || [];
+    }
+    
+    const res = await zendeskApi.get(`/users/search.json?query=${encodeURIComponent(query)}`);
+    return res.data.users || [];
+  } catch (err) {
+    console.error('Error searching users:', err.message);
+    return [];
+  }
 }
 
 // 🏢 Search organizations by name
@@ -47,8 +59,27 @@ async function getOrganizationById(id) {
 
 // 🏢 List all organizations
 async function getOrganizations() {
-  const res = await zendeskApi.get(`/organizations.json`);
-  return res.data.organizations || [];
+  try {
+    const res = await zendeskApi.get('/organizations.json?per_page=100');
+    return res.data.organizations || [];
+  } catch (err) {
+    console.error('Error fetching organizations:', err.message);
+    return [];
+  }
+}
+
+// 📦 Get a single asset by ID
+async function getAssetById(assetId) {
+  console.log(`[DEBUG] Fetching asset by ID: ${assetId}`);
+  try {
+    const response = await zendeskApi.get(`/custom_objects/${CUSTOM_OBJECT_KEY}/records/${assetId}.json`);
+    const asset = response.data.custom_object_record;
+    console.log(`[DEBUG] Successfully fetched asset:`, asset?.id);
+    return asset;
+  } catch (err) {
+    console.error('[DEBUG] Error fetching asset by ID:', err.response?.data || err.message);
+    throw err;
+  }
 }
 
 // 📦 Get assets assigned to a particular Zendesk user ID
@@ -81,22 +112,22 @@ async function getUserAssetsById(userId) {
   }
 }
 
-// 🔧 Update an asset’s attributes
+// 🔧 Update an asset's attributes
 async function updateAsset(assetId, attrs) {
   const payload = {
-    custom_object_record: { custom_fields: attrs }
+    custom_object_record: { custom_object_fields: attrs }
   };
   const res = await zendeskApi.patch(
     `/custom_objects/${CUSTOM_OBJECT_KEY}/records/${assetId}.json`,
     payload
   );
-  return res.data;
+  return res.data.custom_object_record;
 }
 
 // ➕ Create a new asset record
 async function createAsset(attrs) {
   const payload = {
-    custom_object_record: { custom_fields: attrs }
+    custom_object_record: { custom_object_fields: attrs }
   };
   const res = await zendeskApi.post(
     `/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`,
@@ -120,7 +151,7 @@ async function getAssetFields() {
 
 // 🎫 Create a Zendesk ticket (if needed)
 async function createTicket(ticketData) {
-  const res = await zendeskApi.post(`/tickets.json`, { ticket: ticketData });
+  const res = await zendeskApi.post('/tickets.json', { ticket: ticketData });
   return res.data.ticket;
 }
 
@@ -136,6 +167,7 @@ module.exports = {
 
   // assets
   getUserAssetsById,
+  getAssetById,
   updateAsset,
   createAsset,
   getAssetFields,
