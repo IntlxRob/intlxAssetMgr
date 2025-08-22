@@ -1,294 +1,313 @@
-// api.js
-// Centralized API helpers for the Asset Manager app.
-//
-// Key fixes:
-// - Adds getAssetById(id) with cache-busting to avoid stale reads after PATCH.
-// - updateAsset(id, changes) always wraps as { properties: {...} } and logs verbosely.
-// - Consistent, high-signal console logs for req/resp/error paths.
-// - Safe extractors for common Zendesk Custom Objects response shapes.
-// - Added missing functions for React app compatibility.
+// routes/api.js
+// This file defines all the API endpoints and calls the appropriate service functions.
 
-import axios from 'axios';
+const express = require('express');
+const router = express.Router();
+const zendeskService = require('../services/zendesk');
+const googleSheetsService = require('../services/googleSheets');
 
-// ---------- Config ----------
+/**
+ * Endpoint to test the direct connection to the Zendesk API.
+ */
+router.get('/test-zendesk', async (req, res) => {
+    try {
+        const data = await zendeskService.testConnection();
+        res.status(200).json({ success: true, message: 'Successfully connected to Zendesk API.', data });
+    } catch (error) {
+        console.error('!!!!!!!! ZENDESK API TEST FAILED !!!!!!!!');
+        res.status(500).json({ success: false, message: 'Failed to connect to Zendesk API.', error: error.message });
+    }
+});
 
-// Allow overriding at runtime. Falls back to your known proxy.
-let PROXY =
-  (typeof window !== 'undefined' && (window.PROXY || window.ASSETMGR_PROXY)) ||
-  process.env.ASSETMGR_PROXY ||
-  'https://intlxassetmgr-proxy.onrender.com';
+/**
+ * Endpoint to fetch the service catalog from Google Sheets.
+ */
+router.get('/catalog', async (req, res) => {
+    try {
+        const catalog = await googleSheetsService.getCatalog();
+        res.json(catalog);
+    } catch (error) {
+        console.error('Error fetching catalog:', error.message);
+        res.status(500).json({ error: 'Failed to fetch catalog from Google Sheets.', details: error.message });
+    }
+});
 
-export function setProxy(newUrl) {
-  if (!newUrl) return;
-  PROXY = newUrl.replace(/\/+$/, ''); // trim trailing slash
-  console.log('[API] setProxy ->', PROXY);
-}
+/**
+ * Endpoint to create a new ticket and associated asset records.
+ */
+router.post('/ticket', async (req, res) => {
+    try {
+        // Handle both old format and new React app format
+        if (req.body.assets && req.body.name) {
+            // New React app format - convert to ticket
+            const { subject, description, name, email, approved_by, assets } = req.body;
+            
+            const ticketDescription = `
+New Asset Catalog Request
 
-// Optional place to add shared headers (auth, etc.)
-export function defaultHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-}
+Requester: ${name} (${email})
+Approved by: ${approved_by}
 
-// ---------- Utils ----------
+Requested Assets:
+${assets.map(asset => `
+- Asset Name: ${asset.asset_name}
+- Manufacturer: ${asset.manufacturer}
+- Model Number: ${asset.model_number}
+- Serial Number: ${asset.serial_number || 'N/A'}
+- Status: ${asset.status || 'N/A'}
+`).join('')}
+            `.trim();
 
-function logReq(tag, method, url, payload) {
-  console.log(`[API][${tag}] ${method.toUpperCase()} ${url}`, payload ?? '');
-}
+            const ticketData = {
+                subject: subject,
+                description: ticketDescription,
+                type: 'task',
+                priority: 'normal',
+                requester: {
+                    name: name,
+                    email: email
+                }
+            };
 
-function logRes(tag, res, picked) {
-  const status = res?.status;
-  const brief = picked ?? res?.data;
-  console.log(`[API][${tag}] <-- ${status}`, brief);
-}
+            const ticket = await zendeskService.createTicket(ticketData);
+            res.status(201).json({ ticket });
+        } else {
+            // Original format
+            const result = await zendeskService.createTicketAndAssets(req.body);
+            res.status(201).json(result);
+        }
+    } catch (error) {
+        console.error('Error in the /api/ticket POST endpoint:', error.message);
+        res.status(500).json({ error: 'Failed to process request.', details: error.message });
+    }
+});
 
-function logErr(tag, err) {
-  const status = err?.response?.status;
-  const data = err?.response?.data;
-  console.error(`[API][${tag}][ERROR]`, status, data || err);
-}
+/**
+ * Endpoint to get all asset records associated with a given user_id.
+ * Used by React app.
+ */
+router.get('/user-assets', async (req, res) => {
+    const { user_id } = req.query;
+    if (!user_id) {
+        return res.status(400).json({ error: 'Missing user_id query parameter.' });
+    }
+    try {
+        const assets = await zendeskService.getUserAssetsById(user_id);
+        console.log('Fetched assets:', assets);
+        res.json({ assets: assets || [] });
+    } catch (error) {
+        console.error('Error fetching user assets:', error.message);
+        res.status(500).json({ error: 'Failed to fetch user assets.', details: error.message });
+    }
+});
 
-// Human-friendly error text for toasts
-export function apiErrorToText(err) {
-  if (!err) return 'Unknown error';
-  const status = err?.response?.status;
-  const data = err?.response?.data;
-  const msg =
-    data?.message ||
-    data?.error ||
-    (typeof data === 'string' ? data : '') ||
-    err?.message ||
-    'Request failed';
-  return status ? `${status}: ${msg}` : msg;
-}
+/**
+ * Endpoint to get assets by user ID (client-side API format).
+ * Used by client-side API helper.
+ */
+router.get('/assets', async (req, res) => {
+    const { user_id } = req.query;
+    if (user_id) {
+        // If user_id is provided, get user assets
+        try {
+            const assets = await zendeskService.getUserAssetsById(user_id);
+            res.json({ 
+                custom_object_records: assets,
+                assets: assets 
+            });
+        } catch (error) {
+            console.error('Error fetching user assets:', error.message);
+            res.status(500).json({ error: 'Failed to fetch user assets.', details: error.message });
+        }
+    } else {
+        // If no user_id, return error
+        res.status(400).json({ error: 'Missing user_id query parameter.' });
+    }
+});
 
-// Safely pull a single record from varied shapes
-function extractRecord(data) {
-  return (
-    data?.custom_object_record ||
-    data?.record ||
-    data?.data?.custom_object_record ||
-    data?.data?.record ||
-    data
-  );
-}
+/**
+ * Endpoint to get a single asset by ID.
+ * Used by client-side API getAssetById function.
+ */
+router.get('/assets/:id', async (req, res) => {
+    try {
+        const assetId = req.params.id;
+        const asset = await zendeskService.getAssetById(assetId);
+        
+        if (!asset) {
+            return res.status(404).json({ error: 'Asset not found' });
+        }
+        
+        // Return in format expected by client-side API
+        res.json({ 
+            custom_object_record: asset,
+            record: asset
+        });
+    } catch (error) {
+        console.error('Error fetching asset by ID:', error.message);
+        res.status(500).json({ error: 'Failed to fetch asset.', details: error.message });
+    }
+});
 
-// Safely pull array from varied shapes
-function extractRecords(data) {
-  return (
-    data?.custom_object_records ||
-    data?.records ||
-    data?.data?.custom_object_records ||
-    data?.data?.records ||
-    data?.assets ||  // Added for React app compatibility
-    []
-  );
-}
+/**
+ * Endpoint to create a new asset.
+ */
+router.post('/assets', async (req, res) => {
+    try {
+        const assetData = req.body;
+        const result = await zendeskService.createAsset(assetData);
+        res.status(201).json(result);
+    } catch (error) {
+        console.error('Error in the /api/assets POST endpoint:', error.message, error.response?.data);
+        res.status(500).json({ error: 'Failed to create asset.', details: error.message });
+    }
+});
 
-// ---------- Assets ----------
+/**
+ * Endpoint to update an existing asset.
+ */
+router.patch('/assets/:id', async (req, res) => {
+    const assetId = req.params.id;
+    let fieldsToUpdate = req.body;
+    
+    try {
+        // Handle both formats: direct properties or wrapped in 'properties'
+        if (fieldsToUpdate.properties) {
+            fieldsToUpdate = fieldsToUpdate.properties;
+        }
+        
+        console.log(`[API] Updating asset ${assetId} with:`, fieldsToUpdate);
+        
+        const result = await zendeskService.updateAsset(assetId, fieldsToUpdate);
+        
+        // Return in format expected by client-side API
+        res.status(200).json({
+            custom_object_record: result,
+            record: result
+        });
+    } catch (error) {
+        console.error('Error in the /api/assets/:id PATCH endpoint:', error.message, error.response?.data);
+        res.status(500).json({ error: 'Failed to update asset.', details: error.message });
+    }
+});
 
-// List assets by requester/user id (using user-assets endpoint for React app)
-export async function getAssetsByUserId(userId) {
-  const url = `${PROXY}/api/user-assets?user_id=${encodeURIComponent(userId)}`;
-  const tag = 'Assets:listByUser';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    const assets = extractRecords(res.data);
-    logRes(tag, res, { count: assets.length ?? 0 });
-    return assets; // Return the assets array directly for React app compatibility
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
+/**
+ * Endpoint to get asset schema/fields.
+ * Used by client-side API and React app.
+ */
+router.get('/assets/schema', async (req, res) => {
+    try {
+        const fields = await zendeskService.getAssetFields();
+        
+        // Transform fields for client-side API compatibility
+        const properties = {};
+        fields.forEach(field => {
+            properties[field.key] = {
+                type: field.type,
+                title: field.title,
+                options: field.custom_field_options || []
+            };
+        });
+        
+        res.json({ 
+            fields,
+            properties // Format expected by client-side API
+        });
+    } catch (error) {
+        console.error('Error fetching asset schema:', error.message);
+        res.status(500).json({ error: 'Failed to fetch schema.', details: error.message });
+    }
+});
 
-// NEW: fetch a single asset by id, with cache-busting so we never read stale data after a PATCH
-export async function getAssetById(id) {
-  const url = `${PROXY}/api/assets/${encodeURIComponent(id)}?t=${Date.now()}`;
-  const tag = 'Asset:getById';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    const rec = extractRecord(res.data);
-    logRes(tag, res, { id: rec?.id, updated_at: rec?.updated_at });
-    return rec;
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
+/**
+ * Search users by name/email.
+ * Used by React app SearchInput component.
+ */
+router.get('/users/search', async (req, res) => {
+    try {
+        const query = req.query.q;
+        if (!query) return res.status(400).json({ error: 'Missing query parameter' });
 
-// Update an asset's properties (only send changed fields).
-// `changes` should be a flat map of property keys -> values.
-export async function updateAsset(id, changes) {
-  const url = `${PROXY}/api/assets/${encodeURIComponent(id)}`;
-  const tag = 'Asset:update';
-  const payload = { properties: { ...(changes || {}) } };
-  try {
-    logReq(tag, 'patch', url, payload);
-    const res = await axios.patch(url, payload, { headers: defaultHeaders() });
-    // Some backends return the updated record; others return minimal info.
-    const rec = extractRecord(res.data);
-    logRes(tag, res, rec ? { id: rec?.id, updated_at: rec?.updated_at } : res.data);
-    return res; // keep full axios response so caller can choose how to handle
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
+        const users = await zendeskService.searchUsers(query);
+        res.json({ users });
+    } catch (error) {
+        console.error('Error searching users:', error.message);
+        res.status(500).json({ error: 'Failed to search users' });
+    }
+});
 
-// ---------- Schema ----------
+/**
+ * Get all users (for React app dropdowns).
+ */
+router.get('/users', async (req, res) => {
+    try {
+        // Get first 100 users for dropdown
+        const users = await zendeskService.searchUsers('*');
+        res.json({ users: users.slice(0, 100) });
+    } catch (error) {
+        console.error('Error fetching users:', error.message);
+        res.status(500).json({ error: 'Failed to fetch users' });
+    }
+});
 
-export async function getAssetSchema() {
-  const url = `${PROXY}/api/assets/schema`;
-  const tag = 'Schema:get';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    // For convenience, surface any status options found
-    const statusOptions =
-      res?.data?.properties?.status?.options ||
-      res?.data?.fields?.find?.((f) => f.key === 'status')?.options ||
-      [];
-    logRes(tag, res, { statusOptionsCount: statusOptions.length });
-    return res.data;
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
+/**
+ * Get user by ID.
+ * Used by client-side API.
+ */
+router.get('/users/:id', async (req, res) => {
+    try {
+        const userId = req.params.id;
+        const user = await zendeskService.getUserById(userId);
+        res.json({ user, ...user }); // Provide both wrapped and unwrapped
+    } catch (error) {
+        console.error('Error fetching user:', error.message);
+        res.status(500).json({ error: 'Failed to fetch user' });
+    }
+});
 
-// ---------- Users / Orgs ----------
+/**
+ * Search organizations by name.
+ * Used by React app SearchInput component.
+ */
+router.get('/organizations/search', async (req, res) => {
+    try {
+        const query = req.query.q;
+        if (!query) return res.status(400).json({ error: 'Missing query parameter' });
 
-export async function getUser(userId) {
-  const url = `${PROXY}/api/users/${encodeURIComponent(userId)}`;
-  const tag = 'User:get';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    logRes(tag, res, { id: res?.data?.id || userId, name: res?.data?.name });
-    return res.data;
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
+        const organizations = await zendeskService.searchOrganizations(query);
+        res.json({ organizations });
+    } catch (error) {
+        console.error('Error searching organizations:', error.message);
+        res.status(500).json({ error: 'Failed to search organizations' });
+    }
+});
 
-export async function getOrganization(orgId) {
-  const url = `${PROXY}/api/organizations/${encodeURIComponent(orgId)}`;
-  const tag = 'Org:get';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    logRes(tag, res, { id: res?.data?.id || orgId, name: res?.data?.name });
-    return res.data;
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
+/**
+ * Get all organizations (for React app dropdowns).
+ */
+router.get('/organizations', async (req, res) => {
+    try {
+        const organizations = await zendeskService.getOrganizations();
+        res.json({ organizations });
+    } catch (error) {
+        console.error('Error fetching organizations:', error.message);
+        res.status(500).json({ error: 'Failed to fetch organizations' });
+    }
+});
 
-// ---------- New Functions for React App Compatibility ----------
+/**
+ * Get organization by ID.
+ * Used by client-side API.
+ */
+router.get('/organizations/:id', async (req, res) => {
+    try {
+        const orgId = req.params.id;
+        const organization = await zendeskService.getOrganizationById(orgId);
+        res.json({ organization, ...organization }); // Provide both wrapped and unwrapped
+    } catch (error) {
+        console.error('Error fetching organization:', error.message);
+        res.status(500).json({ error: 'Failed to fetch organization' });
+    }
+});
 
-// Get all users for dropdowns
-export async function getUsers() {
-  const url = `${PROXY}/api/users`;
-  const tag = 'Users:getAll';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    logRes(tag, res, { count: res?.data?.users?.length ?? 0 });
-    return res.data.users || [];
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
-
-// Get all organizations for dropdowns  
-export async function getOrganizations() {
-  const url = `${PROXY}/api/organizations`;
-  const tag = 'Organizations:getAll';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    logRes(tag, res, { count: res?.data?.organizations?.length ?? 0 });
-    return res.data.organizations || [];
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
-
-// Search users by query
-export async function searchUsers(query) {
-  const url = `${PROXY}/api/users/search?q=${encodeURIComponent(query)}`;
-  const tag = 'Users:search';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    logRes(tag, res, { count: res?.data?.users?.length ?? 0 });
-    return res.data.users || [];
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
-
-// Search organizations by query
-export async function searchOrganizations(query) {
-  const url = `${PROXY}/api/organizations/search?q=${encodeURIComponent(query)}`;
-  const tag = 'Organizations:search';
-  try {
-    logReq(tag, 'get', url);
-    const res = await axios.get(url, { headers: defaultHeaders() });
-    logRes(tag, res, { count: res?.data?.organizations?.length ?? 0 });
-    return res.data.organizations || [];
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
-
-// Create a ticket (for React app new asset requests)
-export async function createTicket(ticketData) {
-  const url = `${PROXY}/api/ticket`;
-  const tag = 'Ticket:create';
-  try {
-    logReq(tag, 'post', url, ticketData);
-    const res = await axios.post(url, ticketData, { headers: defaultHeaders() });
-    logRes(tag, res, { ticketId: res?.data?.ticket?.id });
-    return res.data.ticket;
-  } catch (err) {
-    logErr(tag, err);
-    throw err;
-  }
-}
-
-// ---------- Convenience grouped export (optional) ----------
-
-export const api = {
-  setProxy,
-  defaultHeaders,
-  apiErrorToText,
-  // assets
-  getAssetsByUserId,
-  getAssetById,      // use this right after PATCH to verify authoritatively
-  updateAsset,
-  // schema
-  getAssetSchema,
-  // users & orgs
-  getUser,
-  getOrganization,
-  getUsers,          // NEW: for dropdowns
-  getOrganizations,  // NEW: for dropdowns
-  searchUsers,       // NEW: for search
-  searchOrganizations, // NEW: for search
-  // tickets
-  createTicket,      // NEW: for React app
-};
-
-export default api;
+module.exports = router;
