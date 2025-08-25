@@ -1,7 +1,7 @@
 // services/zendesk.js
 const axios = require('axios');
 
-// 🔑 Environment Variables
+// Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
 const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN;
@@ -9,7 +9,7 @@ const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN;
 const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 const CUSTOM_OBJECT_KEY = 'asset';
 
-// 🛡️ Axios instance with basic auth
+// Axios instance with basic auth
 const zendeskApi = axios.create({
   baseURL: BASE_URL,
   headers: {
@@ -18,7 +18,7 @@ const zendeskApi = axios.create({
   },
 });
 
-// 🔍 Search users by name/email
+// Search users by name/email
 async function searchUsers(query) {
   if (!query) return [];
   
@@ -37,7 +37,7 @@ async function searchUsers(query) {
   }
 }
 
-// 🏢 Search organizations by name
+// Search organizations by name
 async function searchOrganizations(query) {
   if (!query) return [];
   const searchQuery = `name:"${query}"* type:organization`;
@@ -45,43 +45,67 @@ async function searchOrganizations(query) {
   return res.data.results || [];
 }
 
-// 👤 Get one user by ID
+// Get one user by ID
 async function getUserById(id) {
   const res = await zendeskApi.get(`/users/${id}.json`);
   return res.data.user;
 }
 
-// 🏢 Get one organization by ID
+// Get one organization by ID
 async function getOrganizationById(id) {
   const res = await zendeskApi.get(`/organizations/${id}.json`);
   return res.data.organization;
 }
 
-// 🏢 List all organizations (with pagination support)
+// List all organizations (with detailed debugging)
 async function getOrganizations() {
   try {
     let allOrganizations = [];
     let nextPage = '/organizations.json?per_page=100';
+    let pageCount = 0;
 
-    while (nextPage) {
-      console.log(`[DEBUG] Fetching organizations page: ${nextPage}`);
+    while (nextPage && pageCount < 10) { // Safety limit to prevent infinite loops
+      pageCount++;
+      console.log(`[DEBUG] Page ${pageCount}: Fetching ${nextPage}`);
+      
       const response = await zendeskApi.get(nextPage);
       const organizations = response.data.organizations || [];
       allOrganizations.push(...organizations);
       
+      console.log(`[DEBUG] Page ${pageCount}: Found ${organizations.length} organizations`);
+      console.log(`[DEBUG] Page ${pageCount}: Total so far: ${allOrganizations.length}`);
+      console.log(`[DEBUG] Page ${pageCount}: Response meta:`, JSON.stringify(response.data.meta, null, 2));
+      console.log(`[DEBUG] Page ${pageCount}: Response links:`, JSON.stringify(response.data.links, null, 2));
+      
       // Check if there are more pages
-      nextPage = response.data.meta?.has_more ? response.data.links?.next : null;
+      const hasMore = response.data.meta?.has_more;
+      const nextUrl = response.data.links?.next;
+      
+      console.log(`[DEBUG] Page ${pageCount}: has_more = ${hasMore}`);
+      console.log(`[DEBUG] Page ${pageCount}: next URL = ${nextUrl}`);
+      
+      if (hasMore && nextUrl) {
+        nextPage = nextUrl;
+      } else {
+        console.log(`[DEBUG] Page ${pageCount}: No more pages. Stopping pagination.`);
+        nextPage = null;
+      }
     }
 
-    console.log(`[DEBUG] Fetched a total of ${allOrganizations.length} organizations across all pages.`);
+    if (pageCount >= 10) {
+      console.log(`[DEBUG] Hit safety limit of 10 pages. Total fetched: ${allOrganizations.length}`);
+    }
+
+    console.log(`[DEBUG] Final result: Fetched ${allOrganizations.length} organizations across ${pageCount} pages.`);
     return allOrganizations;
   } catch (err) {
-    console.error('Error fetching organizations:', err.message);
+    console.error('[DEBUG] Error fetching organizations:', err.message);
+    console.error('[DEBUG] Error response data:', err.response?.data);
     return [];
   }
 }
 
-// 📦 Get a single asset by ID
+// Get a single asset by ID
 async function getAssetById(assetId) {
   console.log(`[DEBUG] Fetching asset by ID: ${assetId}`);
   try {
@@ -95,7 +119,7 @@ async function getAssetById(assetId) {
   }
 }
 
-// 📦 Get assets assigned to a particular Zendesk user ID
+// Get assets assigned to a particular Zendesk user ID
 async function getUserAssetsById(userId) {
   console.log(`[DEBUG] Fetching all assets to filter for user ID: ${userId}`);
   try {
@@ -125,7 +149,7 @@ async function getUserAssetsById(userId) {
   }
 }
 
-// 🔧 Update an asset's attributes
+// Update an asset's attributes
 async function updateAsset(assetId, attrs) {
   const payload = {
     custom_object_record: { custom_object_fields: attrs }
@@ -137,7 +161,7 @@ async function updateAsset(assetId, attrs) {
   return res.data.custom_object_record;
 }
 
-// ➕ Create a new asset record
+// Create a new asset record
 async function createAsset(attrs) {
   const payload = {
     custom_object_record: { custom_object_fields: attrs }
@@ -149,7 +173,7 @@ async function createAsset(attrs) {
   return res.data;
 }
 
-// 🧠 Get the schema (fields + options) for your asset custom object
+// Get the schema (fields + options) for your asset custom object
 async function getAssetFields() {
   try {
     console.log('[DEBUG] Fetching asset schema fields...');
@@ -162,7 +186,7 @@ async function getAssetFields() {
   }
 }
 
-// 🎫 Create a Zendesk ticket (if needed)
+// Create a Zendesk ticket (if needed)
 async function createTicket(ticketData) {
   const res = await zendeskApi.post('/tickets.json', { ticket: ticketData });
   return res.data.ticket;
