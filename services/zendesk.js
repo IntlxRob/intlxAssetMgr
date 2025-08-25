@@ -57,7 +57,7 @@ async function getOrganizationById(id) {
   return res.data.organization;
 }
 
-// List all organizations (with detailed debugging)
+// List all organizations (using offset pagination)
 async function getOrganizations() {
   try {
     let allOrganizations = [];
@@ -74,20 +74,19 @@ async function getOrganizations() {
       
       console.log(`[DEBUG] Page ${pageCount}: Found ${organizations.length} organizations`);
       console.log(`[DEBUG] Page ${pageCount}: Total so far: ${allOrganizations.length}`);
-      console.log(`[DEBUG] Page ${pageCount}: Response meta:`, JSON.stringify(response.data.meta, null, 2));
-      console.log(`[DEBUG] Page ${pageCount}: Response links:`, JSON.stringify(response.data.links, null, 2));
+      console.log(`[DEBUG] Page ${pageCount}: next_page:`, response.data.next_page);
+      console.log(`[DEBUG] Page ${pageCount}: previous_page:`, response.data.previous_page);
       
-      // Check if there are more pages
-      const hasMore = response.data.meta?.has_more;
-      const nextUrl = response.data.links?.next;
+      // Check for next page using offset pagination format
+      const nextUrl = response.data.next_page;
       
-      console.log(`[DEBUG] Page ${pageCount}: has_more = ${hasMore}`);
-      console.log(`[DEBUG] Page ${pageCount}: next URL = ${nextUrl}`);
-      
-      if (hasMore && nextUrl) {
-        nextPage = nextUrl;
+      if (nextUrl) {
+        // Extract just the path and query from the full URL
+        const url = new URL(nextUrl);
+        nextPage = url.pathname + url.search;
+        console.log(`[DEBUG] Page ${pageCount}: Continuing to next page: ${nextPage}`);
       } else {
-        console.log(`[DEBUG] Page ${pageCount}: No more pages. Stopping pagination.`);
+        console.log(`[DEBUG] Page ${pageCount}: No more pages (next_page is null). Stopping pagination.`);
         nextPage = null;
       }
     }
