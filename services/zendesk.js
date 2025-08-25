@@ -1,7 +1,7 @@
 // services/zendesk.js
 const axios = require('axios');
 
-// 🔐 Environment Variables
+// 🔑 Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
 const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN;
@@ -57,11 +57,24 @@ async function getOrganizationById(id) {
   return res.data.organization;
 }
 
-// 🏢 List all organizations
+// 🏢 List all organizations (with pagination support)
 async function getOrganizations() {
   try {
-    const res = await zendeskApi.get('/organizations.json?per_page=100');
-    return res.data.organizations || [];
+    let allOrganizations = [];
+    let nextPage = '/organizations.json?per_page=100';
+
+    while (nextPage) {
+      console.log(`[DEBUG] Fetching organizations page: ${nextPage}`);
+      const response = await zendeskApi.get(nextPage);
+      const organizations = response.data.organizations || [];
+      allOrganizations.push(...organizations);
+      
+      // Check if there are more pages
+      nextPage = response.data.meta?.has_more ? response.data.links?.next : null;
+    }
+
+    console.log(`[DEBUG] Fetched a total of ${allOrganizations.length} organizations across all pages.`);
+    return allOrganizations;
   } catch (err) {
     console.error('Error fetching organizations:', err.message);
     return [];
