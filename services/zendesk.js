@@ -57,7 +57,7 @@ async function getOrganizationById(id) {
   return res.data.organization;
 }
 
-// List all organizations (using offset pagination)
+// List all organizations (using offset pagination - FIXED)
 async function getOrganizations() {
   try {
     let allOrganizations = [];
@@ -81,9 +81,16 @@ async function getOrganizations() {
       const nextUrl = response.data.next_page;
       
       if (nextUrl) {
-        // Extract just the path and query from the full URL
+        // Extract just the path and query from the full URL, removing /api/v2 prefix
         const url = new URL(nextUrl);
-        nextPage = url.pathname + url.search;
+        let path = url.pathname + url.search;
+        
+        // Remove /api/v2 prefix since our baseURL already includes it
+        if (path.startsWith('/api/v2')) {
+          path = path.substring(7); // Remove '/api/v2'
+        }
+        
+        nextPage = path;
         console.log(`[DEBUG] Page ${pageCount}: Continuing to next page: ${nextPage}`);
       } else {
         console.log(`[DEBUG] Page ${pageCount}: No more pages (next_page is null). Stopping pagination.`);
