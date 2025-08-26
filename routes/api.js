@@ -37,11 +37,10 @@ router.get('/catalog', async (req, res) => {
  */
 router.post('/ticket', async (req, res) => {
     try {
-        // Handle both old format and new React app format
-        if (req.body.assets && req.body.name) {
-            // New React app format - convert to ticket
-            const { subject, description, name, email, approved_by, assets } = req.body;
-            
+        const { name, email, subject, body, approved_by, tags, assets } = req.body;
+        
+        // Handle new React app format if assets are provided
+        if (assets && Array.isArray(assets)) {
             const ticketDescription = `
 New Asset Catalog Request
 
@@ -59,26 +58,40 @@ ${assets.map(asset => `
             `.trim();
 
             const ticketData = {
-                subject: subject,
+                subject: subject || 'New Asset Catalog Request',
                 description: ticketDescription,
                 type: 'task',
                 priority: 'normal',
                 requester: {
                     name: name,
                     email: email
-                }
+                },
+                tags: tags || []
             };
 
             const ticket = await zendeskService.createTicket(ticketData);
             res.status(201).json({ ticket });
         } else {
-            // Original format
-            const result = await zendeskService.createTicketAndAssets(req.body);
-            res.status(201).json(result);
+            // Handle service catalog format
+            const ticketData = {
+                subject: subject || 'New Service Catalog Request',
+                description: body || 'Service catalog request',
+                type: 'task',
+                priority: 'normal',
+                requester: {
+                    name: name,
+                    email: email
+                },
+                tags: tags || []
+            };
+
+            const ticket = await zendeskService.createTicket(ticketData);
+            console.log('Ticket created successfully:', ticket.id);
+            res.status(201).json({ ticket });
         }
     } catch (error) {
         console.error('Error in the /api/ticket POST endpoint:', error.message);
-        res.status(500).json({ error: 'Failed to process request.', details: error.message });
+        res.status(500).json({ error: 'Failed to create ticket.', details: error.message });
     }
 });
 
