@@ -192,6 +192,48 @@ router.patch('/assets/:id', async (req, res) => {
 });
 
 /**
+ * Endpoint to delete an asset by ID.
+ * Used by React app delete functionality.
+ */
+router.delete('/assets/:id', async (req, res) => {
+    try {
+        const assetId = req.params.id;
+        console.log(`[API] DELETE request for asset: ${assetId}`);
+        
+        const result = await zendeskService.deleteAsset(assetId);
+        
+        if (!result) {
+            return res.status(404).json({ 
+                error: 'Asset not found',
+                message: `Asset with ID ${assetId} does not exist`
+            });
+        }
+        
+        console.log(`[API] Asset ${assetId} deleted successfully`);
+        res.status(200).json({ 
+            success: true, 
+            message: 'Asset deleted successfully',
+            deletedId: assetId 
+        });
+        
+    } catch (error) {
+        console.error('[API] Error deleting asset:', error.message);
+        
+        if (error.response?.status === 404) {
+            res.status(404).json({ 
+                error: 'Asset not found',
+                message: `Asset with ID ${req.params.id} does not exist`
+            });
+        } else {
+            res.status(500).json({ 
+                error: 'Internal server error',
+                message: error.message || 'Failed to delete asset'
+            });
+        }
+    }
+});
+
+/**
  * Endpoint to get asset schema/fields.
  * Used by client-side API and React app.
  */
@@ -307,6 +349,29 @@ router.get('/organizations/:id', async (req, res) => {
     } catch (error) {
         console.error('Error fetching organization:', error.message);
         res.status(500).json({ error: 'Failed to fetch organization' });
+    }
+});
+
+/**
+ * Update organization by ID.
+ * Used by client-side API for customer notes editing.
+ */
+router.put('/organizations/:id', async (req, res) => {
+    try {
+        const orgId = req.params.id;
+        const updateData = req.body;
+        
+        console.log(`[API] Updating organization ${orgId} with:`, updateData);
+        
+        const result = await zendeskService.updateOrganization(orgId, updateData);
+        
+        res.json({ 
+            organization: result,
+            ...result 
+        });
+    } catch (error) {
+        console.error('Error updating organization:', error.message);
+        res.status(500).json({ error: 'Failed to update organization' });
     }
 });
 

@@ -57,6 +57,25 @@ async function getOrganizationById(id) {
   return res.data.organization;
 }
 
+// Update an organization
+async function updateOrganization(orgId, updateData) {
+  try {
+    console.log(`[Zendesk Service] Updating organization: ${orgId}`);
+    console.log(`[Zendesk Service] Update data:`, updateData);
+    
+    const response = await zendeskApi.put(`/organizations/${orgId}.json`, { 
+      organization: updateData 
+    });
+    
+    console.log(`[Zendesk Service] Organization ${orgId} updated successfully`);
+    return response.data.organization;
+    
+  } catch (error) {
+    console.error(`[Zendesk Service] Error updating organization ${orgId}:`, error.message);
+    throw error;
+  }
+}
+
 // List all organizations (using offset pagination)
 async function getOrganizations() {
   try {
@@ -145,6 +164,22 @@ async function updateAsset(assetId, attrs) {
   return res.data.custom_object_record;
 }
 
+// Delete an asset by ID
+async function deleteAsset(assetId) {
+  try {
+    console.log(`[Zendesk Service] Deleting asset: ${assetId}`);
+    
+    const response = await zendeskApi.delete(`/custom_objects/${CUSTOM_OBJECT_KEY}/records/${assetId}.json`);
+    
+    console.log(`[Zendesk Service] Asset ${assetId} deleted successfully`);
+    return true;
+    
+  } catch (error) {
+    console.error(`[Zendesk Service] Error deleting asset ${assetId}:`, error.message);
+    throw error;
+  }
+}
+
 // Create a new asset record
 async function createAsset(attrs) {
   const payload = {
@@ -182,12 +217,14 @@ module.exports = {
   // orgs
   searchOrganizations,
   getOrganizationById,
+  updateOrganization,
   getOrganizations,
 
   // assets
   getUserAssetsById,
   getAssetById,
   updateAsset,
+  deleteAsset,
   createAsset,
   getAssetFields,
 
