@@ -82,7 +82,10 @@ ${assets.map(asset => `
                     name: name,
                     email: email
                 },
-                tags: tags || []
+                tags: tags || [],
+                comment: {
+                    html_body: body || 'Service catalog request'
+                }
             };
 
             const ticket = await zendeskService.createTicket(ticketData);
