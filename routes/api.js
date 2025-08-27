@@ -1159,4 +1159,82 @@ router.put('/organizations/:id', async (req, res) => {
     }
 });
 
+/**
+ * Debug endpoint to check SiPortal company by ID
+ * GET /api/debug-siportal-company/:id
+ */
+router.get('/debug-siportal-company/:id', async (req, res) => {
+    try {
+        const companyId = req.params.id;
+        
+        console.log(`[Debug] Checking SiPortal company ID: ${companyId}`);
+        
+        // Try to fetch devices for this specific company ID
+        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!devicesResponse.ok) {
+            throw new Error(`SiPortal Devices API returned ${devicesResponse.status}: ${devicesResponse.statusText}`);
+        }
+
+        const devicesData = await devicesResponse.json();
+        const deviceCount = devicesData.data?.results?.length || 0;
+        
+        console.log(`[Debug] Company ${companyId} has ${deviceCount} devices`);
+        
+        // Also try to find this company in the companies list
+        let companyInfo = null;
+        let page = 1;
+        let found = false;
+        
+        while (page <= 25 && !found) { // Search up to 25 pages
+            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (companiesResponse.ok) {
+                const companiesData = await companiesResponse.json();
+                const companies = companiesData.data?.results || [];
+                
+                if (companies.length === 0) break;
+                
+                companyInfo = companies.find(c => c.id == companyId);
+                if (companyInfo) {
+                    found = true;
+                    console.log(`[Debug] Found company ${companyId} on page ${page}: "${companyInfo.name}"`);
+                }
+                
+                page++;
+            } else {
+                break;
+            }
+        }
+
+        res.json({
+            success: true,
+            company_id: companyId,
+            device_count: deviceCount,
+            company_info: companyInfo,
+            found_on_page: found ? page - 1 : null,
+            searched_pages: page - 1
+        });
+
+    } catch (error) {
+        console.error('[Debug] Error checking SiPortal company:', error.message);
+        res.status(500).json({
+            error: 'Failed to check SiPortal company',
+            details: error.message
+        });
+    }
+});
+
 module.exports = router;
