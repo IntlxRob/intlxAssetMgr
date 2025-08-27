@@ -115,67 +115,160 @@ async function refreshCompaniesCache() {
 }
 
 /**
- * Search companies in cache
+ * Advanced company name normalization and matching
+ */
+function normalizeCompanyName(name) {
+    if (!name) return '';
+    
+    return name
+        .toLowerCase()
+        .trim()
+        // Remove common suffixes
+        .replace(/[,.]?\s*(llc|inc|corp|ltd|limited|corporation|company|co\.|co)\.?$/i, '')
+        // Normalize punctuation
+        .replace(/[.,&]/g, ' ')
+        // Handle "and" variations
+        .replace(/\s+and\s+/g, ' ')
+        .replace(/\s+&\s+/g, ' ')
+        // Remove extra spaces
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * Generate alternative name variations for better matching
+ */
+function generateNameVariations(orgName) {
+    const variations = new Set();
+    const normalized = normalizeCompanyName(orgName);
+    
+    variations.add(normalized);
+    variations.add(orgName.toLowerCase().trim());
+    
+    // Add acronym variations
+    const words = normalized.split(/\s+/).filter(w => w.length > 0);
+    if (words.length > 1) {
+        // Try first letters of each word
+        const acronym = words.map(w => w[0]).join('');
+        variations.add(acronym);
+        
+        // Try abbreviations (keep first word, acronym rest)
+        if (words.length > 2) {
+            variations.add(words[0] + ' ' + words.slice(1).map(w => w[0]).join(''));
+        }
+    }
+    
+    // Add partial matches (for "University of X" vs "X University")
+    if (words.length > 2) {
+        variations.add(words.slice(-1)[0] + ' ' + words.slice(0, -1).join(' '));
+    }
+    
+    return Array.from(variations);
+}
+
+/**
+ * Enhanced search with multiple strategies
  */
 function searchCompaniesInCache(orgName) {
-    const lowerOrgName = orgName.toLowerCase().trim();
+    const variations = generateNameVariations(orgName);
     let bestMatch = null;
     let bestScore = 0;
+    let matchMethod = '';
 
     for (const company of companiesCache.companies) {
-        const companyName = company.name?.toLowerCase().trim();
+        const companyName = company.name;
         if (!companyName) continue;
 
-        let score = 0;
-
-        // Exact match (case-insensitive)
-        if (companyName === lowerOrgName) {
-            return { company, score: 100 };
-        }
-
-        // Clean match (remove suffixes and normalize spacing)
-        const cleanCompany = companyName
-            .replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-        const cleanSearch = lowerOrgName
-            .replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '')
-            .replace(/\s+/g, ' ')
-            .trim();
+        const normalizedCompany = normalizeCompanyName(companyName);
         
-        if (cleanCompany === cleanSearch) {
-            score = 95;
-        }
-        // Substring match
-        else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
-            score = 80;
-        }
-        // Word-based matching - all significant words must match
-        else {
-            const companyWords = cleanCompany.split(/\s+/).filter(w => w.length > 2);
-            const searchWords = cleanSearch.split(/\s+/).filter(w => w.length > 2);
+        // Try each variation
+        for (const variation of variations) {
+            let score = 0;
+            let method = '';
+
+            // Exact match after normalization
+            if (normalizedCompany === variation) {
+                return { company, score: 100, method: 'normalized_exact' };
+            }
+
+            // Substring matching
+            if (normalizedCompany.includes(variation) || variation.includes(normalizedCompany)) {
+                score = Math.max(score, 85);
+                method = 'substring';
+            }
+
+            // Word-based similarity
+            const companyWords = normalizedCompany.split(/\s+/);
+            const searchWords = variation.split(/\s+/);
             
             if (companyWords.length > 0 && searchWords.length > 0) {
                 const matchingWords = searchWords.filter(word => 
-                    companyWords.some(cWord => cWord === word || cWord.includes(word) || word.includes(cWord))
+                    companyWords.some(cWord => 
+                        cWord === word || 
+                        (word.length > 2 && cWord.includes(word)) ||
+                        (cWord.length > 2 && word.includes(cWord))
+                    )
                 );
                 
-                if (matchingWords.length === searchWords.length) {
-                    score = 70;
-                } else if (matchingWords.length >= Math.ceil(searchWords.length * 0.8)) {
-                    score = 60;
+                const matchRatio = matchingWords.length / Math.max(searchWords.length, companyWords.length);
+                if (matchRatio >= 0.7) {
+                    score = Math.max(score, 70 + (matchRatio - 0.7) * 50);
+                    method = 'word_similarity';
                 }
             }
-        }
 
-        if (score > bestScore) {
-            bestMatch = company;
-            bestScore = score;
+            // Levenshtein distance for close matches
+            if (score === 0 && variation.length > 3 && normalizedCompany.length > 3) {
+                const distance = levenshteinDistance(variation, normalizedCompany);
+                const maxLen = Math.max(variation.length, normalizedCompany.length);
+                const similarity = 1 - (distance / maxLen);
+                
+                if (similarity >= 0.8) {
+                    score = similarity * 60;
+                    method = 'edit_distance';
+                }
+            }
+
+            if (score > bestScore) {
+                bestMatch = company;
+                bestScore = score;
+                matchMethod = method;
+            }
         }
     }
 
-    // Lower the threshold to catch more matches
-    return bestMatch && bestScore >= 60 ? { company: bestMatch, score: bestScore } : null;
+    return bestMatch && bestScore >= 60 ? { company: bestMatch, score: bestScore, method: matchMethod } : null;
+}
+
+/**
+ * Simple Levenshtein distance implementation
+ */
+function levenshteinDistance(str1, str2) {
+    const matrix = [];
+    
+    for (let i = 0; i <= str2.length; i++) {
+        matrix[i] = [i];
+    }
+    
+    for (let j = 0; j <= str1.length; j++) {
+        matrix[0][j] = j;
+    }
+    
+    for (let i = 1; i <= str2.length; i++) {
+        for (let j = 1; j <= str1.length; j++) {
+            if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j - 1] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j] + 1
+                );
+            }
+        }
+    }
+    
+    return matrix[str2.length][str1.length];
 }
 
 /**
@@ -516,9 +609,18 @@ router.get('/it-portal-assets', async (req, res) => {
         
         const lowerOrgName = orgName.toLowerCase().trim();
         const knownMappings = {
+            // Exact mappings
             'keep me home, llc': 3632,
             'keep me home,llc': 3632,
-            'intlx solutions, llc': 3492
+            'intlx solutions, llc': 3492,
+            
+            // Name variation mappings (Zendesk name -> SiPortal company ID)
+            'starling physicians mso, llc': 4133, // Maps to "Starling Physicians MSO, LLC"
+            'rockland trust company': null, // Set to null to search by name variations
+            
+            // Common patterns
+            'university of massachusetts': null, // Will try "UMass", "Mass University", etc.
+            'mass general brigham': null, // Will try "MGB", "Massachusetts General", etc.
         };
 
         let matchingCompany = null;
@@ -551,7 +653,7 @@ router.get('/it-portal-assets', async (req, res) => {
                 
                 if (cacheResult) {
                     matchingCompany = cacheResult.company;
-                    console.log(`[API] Cache match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${cacheResult.score})`);
+                    console.log(`[API] Cache match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${cacheResult.score}, Method: ${cacheResult.method})`);
                 }
             } else {
                 // Step 4: Fallback to single page search if no cache
