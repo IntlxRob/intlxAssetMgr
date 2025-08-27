@@ -297,13 +297,14 @@ router.get('/it-portal-assets', async (req, res) => {
             return res.json({ assets: [] });
         }
 
-        const organization = await zendeskService.getOrganizationById(user.organization_id);
-        const companyName = organization.name;
+        // For intlx Solutions, LLC we know the companyId is 3492
+        // You could make this dynamic by first querying companies, but for now use the known ID
+        const companyId = 3492;
 
-        console.log(`[API] Fetching SiPortal company ID for: ${companyName}`);
+        console.log(`[API] Fetching SiPortal devices for company ID: ${companyId}`);
 
-        // Step 1: Get company ID from SiPortal
-        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
+        // Fetch devices directly using companyId
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${process.env.SIPORTAL_API_KEY}`,
@@ -311,60 +312,30 @@ router.get('/it-portal-assets', async (req, res) => {
             }
         });
 
-        if (!companiesResponse.ok) {
-            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+        if (!response.ok) {
+            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
         }
 
-        const companiesData = await companiesResponse.json();
-        
-        // Find matching company (case-insensitive partial match)
-        const matchingCompany = companiesData.data?.find(company => 
-            company.name.toLowerCase().includes(companyName.toLowerCase()) ||
-            companyName.toLowerCase().includes(company.name.toLowerCase())
-        );
-
-        if (!matchingCompany) {
-            console.log(`[API] No matching company found in SiPortal for: ${companyName}`);
-            return res.json({ assets: [] });
-        }
-
-        console.log(`[API] Found SiPortal company: ${matchingCompany.name} (ID: ${matchingCompany.id})`);
-
-        // Step 2: Get devices for this company
-        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${process.env.SIPORTAL_API_KEY}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!devicesResponse.ok) {
-            throw new Error(`SiPortal Devices API returned ${devicesResponse.status}: ${devicesResponse.statusText}`);
-        }
-
-        const devicesData = await devicesResponse.json();
-        console.log(`[API] SiPortal devices response: ${devicesData.data?.length || 0} devices`);
+        const siPortalData = await response.json();
+        console.log(`[API] SiPortal response: ${siPortalData.data?.results?.length || 0} devices`);
         
         // Transform SiPortal device data
-        const assets = (devicesData.data || []).map(device => ({
+        const assets = (siPortalData.data?.results || []).map(device => ({
             id: device.id,
-            asset_tag: device.assetTag || device.serialNumber || device.id,
-            description: `${device.manufacturer || ''} ${device.model || ''} ${device.name || ''}`.trim() || 'IT Portal Device',
-            manufacturer: device.manufacturer,
-            model: device.model,
-            status: device.status?.toLowerCase() === 'active' ? 'active' : 
-                    device.status?.toLowerCase() === 'retired' ? 'retired' : 'active',
+            asset_tag: device.name || device.hostName || device.id,
+            description: `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
+            manufacturer: device.type?.name || 'Unknown',
+            model: device.type?.name || 'Unknown',
+            status: 'active', // Adjust based on actual device status field
             source: 'SiPortal',
             imported_date: new Date().toISOString(),
-            notes: device.notes || device.description,
+            notes: device.notes || '',
             serial_number: device.serialNumber,
-            device_type: device.deviceType,
-            location: device.location,
-            assigned_user: device.assignedUser || device.assignedTo
+            device_type: device.type?.name,
+            assigned_user: device.assignedUser
         }));
 
-        console.log(`[API] Returning ${assets.length} SiPortal devices for company ${matchingCompany.name}`);
+        console.log(`[API] Returning ${assets.length} SiPortal devices`);
         res.json({ assets });
         
     } catch (error) {
