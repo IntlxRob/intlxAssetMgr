@@ -334,9 +334,9 @@ router.get('/it-portal-assets', async (req, res) => {
         let page = 1;
         let maxPages = 20; // Safety limit to prevent infinite loops
 
-        // Fetch all companies with pagination
+        // Fetch all companies with pagination - handle SiPortal's actual pagination behavior
         while (page <= maxPages) {
-            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
+            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
                 method: 'GET',
                 headers: {
                     'Authorization': process.env.SIPORTAL_API_KEY,
@@ -353,15 +353,31 @@ router.get('/it-portal-assets', async (req, res) => {
             
             if (companies.length === 0) {
                 // No more companies, break the loop
+                console.log(`[API] Page ${page}: No companies found, stopping pagination`);
                 break;
             }
             
             allCompanies.push(...companies);
             console.log(`[API] Page ${page}: Found ${companies.length} companies (total: ${allCompanies.length})`);
             
-            // If we got less than 100 companies, we're likely on the last page
-            if (companies.length < 100) {
-                console.log(`[API] Got ${companies.length} companies (less than 100), assuming last page`);
+            // Check if there's pagination metadata
+            const hasMore = companiesData.meta?.has_more || 
+                          companiesData.pagination?.has_more ||
+                          companiesData.data?.has_more;
+            
+            const totalPages = companiesData.meta?.total_pages || 
+                             companiesData.pagination?.total_pages;
+            
+            // More robust pagination detection
+            if (hasMore === false || (totalPages && page >= totalPages)) {
+                console.log(`[API] Reached last page based on API metadata`);
+                break;
+            }
+            
+            // If we consistently get the same number of companies (likely page size), continue
+            // Only stop if we get 0 companies or if we've reached reasonable limits
+            if (page >= 20) { // Safety: Don't go beyond 20 pages
+                console.log(`[API] Reached page limit of 20, stopping`);
                 break;
             }
             
@@ -618,8 +634,8 @@ router.post('/import-siportal-devices', async (req, res) => {
         let totalPages = 1;
 
         // Fetch all companies with proper pagination
-        while (page <= totalPages) {
-            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
+        while (page <= 20) { // Safety limit
+            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
                 method: 'GET',
                 headers: {
                     'Authorization': process.env.SIPORTAL_API_KEY,
@@ -633,18 +649,25 @@ router.post('/import-siportal-devices', async (req, res) => {
 
             const companiesData = await companiesResponse.json();
             const companies = companiesData.data?.results || [];
-            allCompanies.push(...companies);
             
-            // Update total pages based on pagination info
-            if (companiesData.meta?.pagination?.total_pages) {
-                totalPages = companiesData.meta.pagination.total_pages;
-            } else if (companies.length < 100) {
-                totalPages = page;
-            } else {
-                totalPages = Math.min(page + 1, 10);
+            if (companies.length === 0) {
+                console.log(`[Import] Page ${page}: No companies found, stopping pagination`);
+                break;
             }
             
-            console.log(`[Import] Page ${page}/${totalPages}: Found ${companies.length} companies (total: ${allCompanies.length})`);
+            allCompanies.push(...companies);
+            console.log(`[Import] Page ${page}: Found ${companies.length} companies (total: ${allCompanies.length})`);
+            
+            // Check pagination metadata
+            const hasMore = companiesData.meta?.has_more || 
+                          companiesData.pagination?.has_more ||
+                          companiesData.data?.has_more;
+            
+            if (hasMore === false) {
+                console.log(`[Import] Reached last page based on API metadata`);
+                break;
+            }
+            
             page++;
         }
 
@@ -862,8 +885,8 @@ router.get('/preview-siportal-import', async (req, res) => {
         let totalPages = 1;
 
         // Fetch all companies with proper pagination
-        while (page <= totalPages) {
-            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
+        while (page <= 20) { // Safety limit
+            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
                 method: 'GET',
                 headers: {
                     'Authorization': process.env.SIPORTAL_API_KEY,
@@ -877,18 +900,25 @@ router.get('/preview-siportal-import', async (req, res) => {
 
             const companiesData = await companiesResponse.json();
             const companies = companiesData.data?.results || [];
-            allCompanies.push(...companies);
             
-            // Update total pages based on pagination info
-            if (companiesData.meta?.pagination?.total_pages) {
-                totalPages = companiesData.meta.pagination.total_pages;
-            } else if (companies.length < 100) {
-                totalPages = page;
-            } else {
-                totalPages = Math.min(page + 1, 10);
+            if (companies.length === 0) {
+                console.log(`[Preview] Page ${page}: No companies found, stopping pagination`);
+                break;
             }
             
-            console.log(`[Preview] Page ${page}/${totalPages}: Found ${companies.length} companies (total: ${allCompanies.length})`);
+            allCompanies.push(...companies);
+            console.log(`[Preview] Page ${page}: Found ${companies.length} companies (total: ${allCompanies.length})`);
+            
+            // Check pagination metadata
+            const hasMore = companiesData.meta?.has_more || 
+                          companiesData.pagination?.has_more ||
+                          companiesData.data?.has_more;
+            
+            if (hasMore === false) {
+                console.log(`[Preview] Reached last page based on API metadata`);
+                break;
+            }
+            
             page++;
         }
 
