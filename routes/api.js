@@ -303,6 +303,7 @@ router.get('/assets/schema', async (req, res) => {
 /**
  * Endpoint to fetch IT Portal (SiPortal) assets for a company/organization.
  * Used by React app IT Portal Assets section.
+ * NOW SUPPORTS ANY ORGANIZATION - dynamically finds matching company in SiPortal
  */
 router.get('/it-portal-assets', async (req, res) => {
     try {
@@ -320,14 +321,14 @@ router.get('/it-portal-assets', async (req, res) => {
             return res.json({ assets: [] });
         }
 
-        // For intlx Solutions, LLC we know the companyId is 3492
-        // You could make this dynamic by first querying companies, but for now use the known ID
-        const companyId = 3492;
+        // Get organization details
+        const organization = await zendeskService.getOrganizationById(user.organization_id);
+        const orgName = organization.name;
+        
+        console.log(`[API] Fetching SiPortal devices for organization: ${orgName}`);
 
-        console.log(`[API] Fetching SiPortal devices for company ID: ${companyId}`);
-
-        // Fetch devices directly using companyId
-        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
+        // Step 1: Get all companies from SiPortal to find matching company ID
+        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -335,12 +336,62 @@ router.get('/it-portal-assets', async (req, res) => {
             }
         });
 
-        if (!response.ok) {
-            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        if (!companiesResponse.ok) {
+            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
         }
 
-        const siPortalData = await response.json();
-        console.log(`[API] SiPortal response: ${siPortalData.data?.results?.length || 0} devices`);
+        const companiesData = await companiesResponse.json();
+        const companies = companiesData.data?.results || [];
+        
+        console.log(`[API] Found ${companies.length} companies in SiPortal`);
+
+        // Step 2: Find matching company by name (case-insensitive, flexible matching)
+        const matchingCompany = companies.find(company => {
+            const companyName = company.name?.toLowerCase().trim();
+            const searchName = orgName.toLowerCase().trim();
+            
+            // Try exact match first
+            if (companyName === searchName) return true;
+            
+            // Try partial matches (remove common suffixes)
+            const cleanCompanyName = companyName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            const cleanSearchName = searchName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            
+            if (cleanCompanyName === cleanSearchName) return true;
+            
+            // Try substring match
+            if (companyName?.includes(cleanSearchName) || cleanSearchName?.includes(cleanCompanyName)) return true;
+            
+            return false;
+        });
+
+        if (!matchingCompany) {
+            console.log(`[API] No matching company found in SiPortal for organization: ${orgName}`);
+            console.log(`[API] Available companies:`, companies.map(c => c.name).join(', '));
+            return res.json({ 
+                assets: [],
+                message: `No matching IT Portal company found for "${orgName}"`,
+                available_companies: companies.map(c => c.name).slice(0, 10) // First 10 for debugging
+            });
+        }
+
+        console.log(`[API] Found matching company: ${matchingCompany.name} (ID: ${matchingCompany.id})`);
+
+        // Step 3: Fetch devices for the matching company
+        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!devicesResponse.ok) {
+            throw new Error(`SiPortal Devices API returned ${devicesResponse.status}: ${devicesResponse.statusText}`);
+        }
+
+        const siPortalData = await devicesResponse.json();
+        console.log(`[API] SiPortal response: ${siPortalData.data?.results?.length || 0} devices for ${matchingCompany.name}`);
         
         // Transform SiPortal device data
         const assets = (siPortalData.data?.results || []).map(device => ({
@@ -355,11 +406,24 @@ router.get('/it-portal-assets', async (req, res) => {
             notes: device.notes || '',
             serial_number: device.serialNumber,
             device_type: device.type?.name,
-            assigned_user: device.assignedUser
+            assigned_user: device.assignedUser,
+            // Include company info for debugging
+            company_name: matchingCompany.name,
+            company_id: matchingCompany.id
         }));
 
-        console.log(`[API] Returning ${assets.length} SiPortal devices`);
-        res.json({ assets });
+        console.log(`[API] Returning ${assets.length} SiPortal devices for ${matchingCompany.name}`);
+        res.json({ 
+            assets,
+            company: {
+                name: matchingCompany.name,
+                id: matchingCompany.id
+            },
+            organization: {
+                name: orgName,
+                id: user.organization_id
+            }
+        });
         
     } catch (error) {
         console.error('[API] Error fetching SiPortal devices:', error.message);
@@ -421,6 +485,7 @@ router.post('/webhooks/siportal', async (req, res) => {
 /**
  * Endpoint to import SiPortal devices as Zendesk assets for an organization
  * POST /api/import-siportal-devices
+ * NOW SUPPORTS ANY ORGANIZATION - dynamically finds matching company
  */
 router.post('/import-siportal-devices', async (req, res) => {
     try {
@@ -448,12 +513,53 @@ router.post('/import-siportal-devices', async (req, res) => {
         
         console.log(`[Import] Starting SiPortal device import for organization: ${orgName} (ID: ${orgId})`);
 
-        // For now, we know intlx Solutions, LLC maps to company ID 3492
-        // This could be made dynamic by storing the mapping or querying SiPortal companies
-        const companyId = 3492;
+        // Step 1: Get all companies from SiPortal to find matching company ID
+        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
 
-        // Fetch devices from SiPortal
-        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
+        if (!companiesResponse.ok) {
+            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+        }
+
+        const companiesData = await companiesResponse.json();
+        const companies = companiesData.data?.results || [];
+
+        // Step 2: Find matching company by name
+        const matchingCompany = companies.find(company => {
+            const companyName = company.name?.toLowerCase().trim();
+            const searchName = orgName.toLowerCase().trim();
+            
+            // Try exact match first
+            if (companyName === searchName) return true;
+            
+            // Try partial matches (remove common suffixes)
+            const cleanCompanyName = companyName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            const cleanSearchName = searchName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            
+            if (cleanCompanyName === cleanSearchName) return true;
+            
+            // Try substring match
+            if (companyName?.includes(cleanSearchName) || cleanSearchName?.includes(cleanCompanyName)) return true;
+            
+            return false;
+        });
+
+        if (!matchingCompany) {
+            return res.status(404).json({
+                error: 'No matching company found',
+                message: `No matching IT Portal company found for organization "${orgName}"`
+            });
+        }
+
+        console.log(`[Import] Found matching company: ${matchingCompany.name} (ID: ${matchingCompany.id})`);
+
+        // Step 3: Fetch devices from SiPortal
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -468,7 +574,7 @@ router.post('/import-siportal-devices', async (req, res) => {
         const siPortalData = await response.json();
         const devices = siPortalData.data?.results || [];
         
-        console.log(`[Import] Found ${devices.length} devices in SiPortal for company ${companyId}`);
+        console.log(`[Import] Found ${devices.length} devices in SiPortal for company ${matchingCompany.name}`);
 
         if (devices.length === 0) {
             return res.json({
@@ -555,6 +661,10 @@ router.post('/import-siportal-devices', async (req, res) => {
                 id: orgId,
                 name: orgName
             },
+            company: {
+                id: matchingCompany.id,
+                name: matchingCompany.name
+            },
             results: importResults
         });
 
@@ -570,6 +680,7 @@ router.post('/import-siportal-devices', async (req, res) => {
 /**
  * Endpoint to get import preview - shows what devices would be imported
  * GET /api/preview-siportal-import?user_id=123 or ?organization_id=456
+ * NOW SUPPORTS ANY ORGANIZATION - dynamically finds matching company
  */
 router.get('/preview-siportal-import', async (req, res) => {
     try {
@@ -595,11 +706,52 @@ router.get('/preview-siportal-import', async (req, res) => {
         const organization = await zendeskService.getOrganizationById(orgId);
         orgName = organization.name;
 
-        // Map organization to SiPortal company ID (hardcoded for now)
-        const companyId = 3492;
+        // Step 1: Get all companies from SiPortal to find matching company ID
+        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
 
-        // Fetch devices from SiPortal
-        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
+        if (!companiesResponse.ok) {
+            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+        }
+
+        const companiesData = await companiesResponse.json();
+        const companies = companiesData.data?.results || [];
+
+        // Step 2: Find matching company by name
+        const matchingCompany = companies.find(company => {
+            const companyName = company.name?.toLowerCase().trim();
+            const searchName = orgName.toLowerCase().trim();
+            
+            // Try exact match first
+            if (companyName === searchName) return true;
+            
+            // Try partial matches (remove common suffixes)
+            const cleanCompanyName = companyName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            const cleanSearchName = searchName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            
+            if (cleanCompanyName === cleanSearchName) return true;
+            
+            // Try substring match
+            if (companyName?.includes(cleanSearchName) || cleanSearchName?.includes(cleanCompanyName)) return true;
+            
+            return false;
+        });
+
+        if (!matchingCompany) {
+            return res.status(404).json({
+                error: 'No matching company found',
+                message: `No matching IT Portal company found for organization "${orgName}"`,
+                available_companies: companies.map(c => c.name).slice(0, 10)
+            });
+        }
+
+        // Step 3: Fetch devices from SiPortal
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -642,6 +794,10 @@ router.get('/preview-siportal-import', async (req, res) => {
             organization: {
                 id: orgId,
                 name: orgName
+            },
+            company: {
+                id: matchingCompany.id,
+                name: matchingCompany.name
             },
             total_devices: devices.length,
             new_devices: newDevices.length,
