@@ -348,6 +348,54 @@ router.get('/it-portal-assets', async (req, res) => {
 });
 
 /**
+ * SiPortal webhook endpoint
+ * Receives webhook notifications from SiPortal when devices are updated
+ */
+router.post('/webhooks/siportal', async (req, res) => {
+    try {
+        const { event, company_id, device_id, timestamp } = req.body;
+        
+        console.log(`[Webhook] Received SiPortal ${event} event for company ${company_id}, device ${device_id}`);
+        
+        if (!company_id) {
+            return res.status(400).json({ error: 'company_id is required' });
+        }
+
+        // Fetch updated device data from SiPortal
+        console.log(`[API] Fetching SiPortal devices for company ID: ${company_id}`);
+        
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company_id}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        }
+
+        const siPortalData = await response.json();
+        console.log(`[API] Successfully fetched ${siPortalData.data?.results?.length || 0} devices from SiPortal`);
+        
+        console.log(`[Webhook] Processed ${event} event for company ${company_id}`);
+        
+        res.json({ 
+            success: true, 
+            message: 'Webhook processed successfully'
+        });
+        
+    } catch (error) {
+        console.error('[Webhook] Error processing SiPortal webhook:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to process webhook',
+            details: error.message 
+        });
+    }
+});
+
+/**
  * Search users by name/email.
  * Used by React app SearchInput component.
  */
