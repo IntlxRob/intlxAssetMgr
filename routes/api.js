@@ -327,53 +327,112 @@ router.get('/it-portal-assets', async (req, res) => {
         
         console.log(`[API] Fetching SiPortal devices for organization: ${orgName}`);
 
-        // Step 1: Get all companies from SiPortal to find matching company ID
-        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
-            method: 'GET',
-            headers: {
-                'Authorization': process.env.SIPORTAL_API_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
+        // Step 1: Comprehensive company search with pagination and enhanced fuzzy matching
+        console.log(`[API] Searching SiPortal for organization: "${orgName}"`);
+        
+        let allCompanies = [];
+        let page = 1;
+        let totalPages = 1;
 
-        if (!companiesResponse.ok) {
-            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+        // Fetch all companies with proper pagination
+        while (page <= totalPages) {
+            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!companiesResponse.ok) {
+                throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+            }
+
+            const companiesData = await companiesResponse.json();
+            const companies = companiesData.data?.results || [];
+            allCompanies.push(...companies);
+            
+            // Update total pages based on pagination info if available
+            if (companiesData.meta?.pagination?.total_pages) {
+                totalPages = companiesData.meta.pagination.total_pages;
+            } else if (companies.length < 100) {
+                // If we got less than 100, we're on the last page
+                totalPages = page;
+            } else {
+                // If we got exactly 100, there might be more pages
+                totalPages = Math.min(page + 1, 10); // Limit to 10 pages max for safety
+            }
+            
+            console.log(`[API] Page ${page}/${totalPages}: Found ${companies.length} companies (total: ${allCompanies.length})`);
+            page++;
         }
 
-        const companiesData = await companiesResponse.json();
-        const companies = companiesData.data?.results || [];
-        
-        console.log(`[API] Found ${companies.length} companies in SiPortal`);
+        console.log(`[API] Total companies retrieved: ${allCompanies.length}`);
 
-        // Step 2: Find matching company by name (case-insensitive, flexible matching)
-        const matchingCompany = companies.find(company => {
+        // Step 2: Enhanced fuzzy matching with multiple strategies
+        const searchName = orgName.toLowerCase().trim();
+        let matchingCompany = null;
+        let matchScore = 0;
+
+        for (const company of allCompanies) {
             const companyName = company.name?.toLowerCase().trim();
-            const searchName = orgName.toLowerCase().trim();
-            
-            // Try exact match first
-            if (companyName === searchName) return true;
-            
-            // Try partial matches (remove common suffixes)
-            const cleanCompanyName = companyName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-            const cleanSearchName = searchName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-            
-            if (cleanCompanyName === cleanSearchName) return true;
-            
-            // Try substring match
-            if (companyName?.includes(cleanSearchName) || cleanSearchName?.includes(cleanCompanyName)) return true;
-            
-            return false;
-        });
+            if (!companyName) continue;
 
-        if (!matchingCompany) {
-            console.log(`[API] No matching company found in SiPortal for organization: ${orgName}`);
-            console.log(`[API] Available companies:`, companies.map(c => c.name).join(', '));
+            let currentScore = 0;
+
+            // Strategy 1: Exact match (highest score)
+            if (companyName === searchName) {
+                matchingCompany = company;
+                matchScore = 100;
+                console.log(`[API] Exact match found: "${company.name}" (ID: ${company.id})`);
+                break;
+            }
+
+            // Strategy 2: Clean match (remove suffixes and punctuation)
+            const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            const cleanSearch = searchName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            
+            if (cleanCompany === cleanSearch) {
+                currentScore = 90;
+            }
+            // Strategy 3: Clean substring match
+            else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
+                currentScore = 70;
+            }
+            // Strategy 4: Word-based matching (all words present)
+            else {
+                const companyWords = cleanCompany.split(/\s+/);
+                const searchWords = cleanSearch.split(/\s+/);
+                const matchingWords = searchWords.filter(word => 
+                    companyWords.some(cWord => cWord.includes(word) || word.includes(cWord))
+                );
+                
+                if (matchingWords.length === searchWords.length && searchWords.length > 1) {
+                    currentScore = 60;
+                } else if (matchingWords.length > 0) {
+                    currentScore = 30;
+                }
+            }
+
+            // Keep track of the best match
+            if (currentScore > matchScore) {
+                matchingCompany = company;
+                matchScore = currentScore;
+            }
+        }
+
+        if (!matchingCompany || matchScore < 50) {
+            console.log(`[API] No good match found for "${orgName}" (best score: ${matchScore})`);
+            console.log(`[API] Sample companies:`, allCompanies.slice(0, 10).map(c => `"${c.name}"`).join(', '));
             return res.json({ 
                 assets: [],
                 message: `No matching IT Portal company found for "${orgName}"`,
-                available_companies: companies.map(c => c.name).slice(0, 10) // First 10 for debugging
+                total_companies_searched: allCompanies.length,
+                sample_companies: allCompanies.slice(0, 20).map(c => c.name)
             });
         }
+
+        console.log(`[API] Best match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`)
 
         console.log(`[API] Found matching company: ${matchingCompany.name} (ID: ${matchingCompany.id})`);
 
@@ -513,48 +572,101 @@ router.post('/import-siportal-devices', async (req, res) => {
         
         console.log(`[Import] Starting SiPortal device import for organization: ${orgName} (ID: ${orgId})`);
 
-        // Step 1: Get all companies from SiPortal to find matching company ID
-        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
-            method: 'GET',
-            headers: {
-                'Authorization': process.env.SIPORTAL_API_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
+        // Comprehensive company search with enhanced fuzzy matching
+        console.log(`[Import] Searching SiPortal for organization: "${orgName}"`);
+        
+        let allCompanies = [];
+        let page = 1;
+        let totalPages = 1;
 
-        if (!companiesResponse.ok) {
-            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+        // Fetch all companies with proper pagination
+        while (page <= totalPages) {
+            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!companiesResponse.ok) {
+                throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+            }
+
+            const companiesData = await companiesResponse.json();
+            const companies = companiesData.data?.results || [];
+            allCompanies.push(...companies);
+            
+            // Update total pages based on pagination info
+            if (companiesData.meta?.pagination?.total_pages) {
+                totalPages = companiesData.meta.pagination.total_pages;
+            } else if (companies.length < 100) {
+                totalPages = page;
+            } else {
+                totalPages = Math.min(page + 1, 10);
+            }
+            
+            console.log(`[Import] Page ${page}/${totalPages}: Found ${companies.length} companies (total: ${allCompanies.length})`);
+            page++;
         }
 
-        const companiesData = await companiesResponse.json();
-        const companies = companiesData.data?.results || [];
+        // Enhanced fuzzy matching
+        const searchName = orgName.toLowerCase().trim();
+        let matchingCompany = null;
+        let matchScore = 0;
 
-        // Step 2: Find matching company by name
-        const matchingCompany = companies.find(company => {
+        for (const company of allCompanies) {
             const companyName = company.name?.toLowerCase().trim();
-            const searchName = orgName.toLowerCase().trim();
-            
-            // Try exact match first
-            if (companyName === searchName) return true;
-            
-            // Try partial matches (remove common suffixes)
-            const cleanCompanyName = companyName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-            const cleanSearchName = searchName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-            
-            if (cleanCompanyName === cleanSearchName) return true;
-            
-            // Try substring match
-            if (companyName?.includes(cleanSearchName) || cleanSearchName?.includes(cleanCompanyName)) return true;
-            
-            return false;
-        });
+            if (!companyName) continue;
 
-        if (!matchingCompany) {
+            let currentScore = 0;
+
+            // Exact match
+            if (companyName === searchName) {
+                matchingCompany = company;
+                matchScore = 100;
+                break;
+            }
+
+            // Clean match (remove suffixes)
+            const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            const cleanSearch = searchName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            
+            if (cleanCompany === cleanSearch) {
+                currentScore = 90;
+            } else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
+                currentScore = 70;
+            } else {
+                // Word-based matching
+                const companyWords = cleanCompany.split(/\s+/);
+                const searchWords = cleanSearch.split(/\s+/);
+                const matchingWords = searchWords.filter(word => 
+                    companyWords.some(cWord => cWord.includes(word) || word.includes(cWord))
+                );
+                
+                if (matchingWords.length === searchWords.length && searchWords.length > 1) {
+                    currentScore = 60;
+                } else if (matchingWords.length > 0) {
+                    currentScore = 30;
+                }
+            }
+
+            if (currentScore > matchScore) {
+                matchingCompany = company;
+                matchScore = currentScore;
+            }
+        }
+
+        if (!matchingCompany || matchScore < 50) {
+            console.log(`[Import] No good match found for "${orgName}" (best score: ${matchScore})`);
             return res.status(404).json({
                 error: 'No matching company found',
-                message: `No matching IT Portal company found for organization "${orgName}"`
+                message: `No matching IT Portal company found for organization "${orgName}"`,
+                total_companies_searched: allCompanies.length
             });
         }
+
+        console.log(`[Import] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`)
 
         console.log(`[Import] Found matching company: ${matchingCompany.name} (ID: ${matchingCompany.id})`);
 
@@ -706,49 +818,102 @@ router.get('/preview-siportal-import', async (req, res) => {
         const organization = await zendeskService.getOrganizationById(orgId);
         orgName = organization.name;
 
-        // Step 1: Get all companies from SiPortal to find matching company ID
-        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
-            method: 'GET',
-            headers: {
-                'Authorization': process.env.SIPORTAL_API_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
+        // Comprehensive company search with enhanced fuzzy matching
+        console.log(`[Preview] Searching SiPortal for organization: "${orgName}"`);
+        
+        let allCompanies = [];
+        let page = 1;
+        let totalPages = 1;
 
-        if (!companiesResponse.ok) {
-            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+        // Fetch all companies with proper pagination
+        while (page <= totalPages) {
+            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!companiesResponse.ok) {
+                throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+            }
+
+            const companiesData = await companiesResponse.json();
+            const companies = companiesData.data?.results || [];
+            allCompanies.push(...companies);
+            
+            // Update total pages based on pagination info
+            if (companiesData.meta?.pagination?.total_pages) {
+                totalPages = companiesData.meta.pagination.total_pages;
+            } else if (companies.length < 100) {
+                totalPages = page;
+            } else {
+                totalPages = Math.min(page + 1, 10);
+            }
+            
+            console.log(`[Preview] Page ${page}/${totalPages}: Found ${companies.length} companies (total: ${allCompanies.length})`);
+            page++;
         }
 
-        const companiesData = await companiesResponse.json();
-        const companies = companiesData.data?.results || [];
+        // Enhanced fuzzy matching
+        const searchName = orgName.toLowerCase().trim();
+        let matchingCompany = null;
+        let matchScore = 0;
 
-        // Step 2: Find matching company by name
-        const matchingCompany = companies.find(company => {
+        for (const company of allCompanies) {
             const companyName = company.name?.toLowerCase().trim();
-            const searchName = orgName.toLowerCase().trim();
-            
-            // Try exact match first
-            if (companyName === searchName) return true;
-            
-            // Try partial matches (remove common suffixes)
-            const cleanCompanyName = companyName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-            const cleanSearchName = searchName?.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-            
-            if (cleanCompanyName === cleanSearchName) return true;
-            
-            // Try substring match
-            if (companyName?.includes(cleanSearchName) || cleanSearchName?.includes(cleanCompanyName)) return true;
-            
-            return false;
-        });
+            if (!companyName) continue;
 
-        if (!matchingCompany) {
+            let currentScore = 0;
+
+            // Exact match
+            if (companyName === searchName) {
+                matchingCompany = company;
+                matchScore = 100;
+                break;
+            }
+
+            // Clean match (remove suffixes)
+            const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            const cleanSearch = searchName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+            
+            if (cleanCompany === cleanSearch) {
+                currentScore = 90;
+            } else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
+                currentScore = 70;
+            } else {
+                // Word-based matching
+                const companyWords = cleanCompany.split(/\s+/);
+                const searchWords = cleanSearch.split(/\s+/);
+                const matchingWords = searchWords.filter(word => 
+                    companyWords.some(cWord => cWord.includes(word) || word.includes(cWord))
+                );
+                
+                if (matchingWords.length === searchWords.length && searchWords.length > 1) {
+                    currentScore = 60;
+                } else if (matchingWords.length > 0) {
+                    currentScore = 30;
+                }
+            }
+
+            if (currentScore > matchScore) {
+                matchingCompany = company;
+                matchScore = currentScore;
+            }
+        }
+
+        if (!matchingCompany || matchScore < 50) {
+            console.log(`[Preview] No good match found for "${orgName}" (best score: ${matchScore})`);
             return res.status(404).json({
                 error: 'No matching company found',
                 message: `No matching IT Portal company found for organization "${orgName}"`,
-                available_companies: companies.map(c => c.name).slice(0, 10)
+                total_companies_searched: allCompanies.length,
+                sample_companies: allCompanies.slice(0, 20).map(c => c.name)
             });
         }
+
+        console.log(`[Preview] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`)
 
         // Step 3: Fetch devices from SiPortal
         const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
