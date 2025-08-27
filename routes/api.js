@@ -466,8 +466,25 @@ router.get('/it-portal-assets', async (req, res) => {
         }
 
         const siPortalData = await devicesResponse.json();
-        console.log(`[API] SiPortal response: ${siPortalData.data?.results?.length || 0} devices for ${matchingCompany.name}`);
+        const devices = siPortalData.data?.results || [];
+        console.log(`[API] SiPortal response: ${devices.length} devices for ${matchingCompany.name}`);
         
+        // Handle empty device list gracefully
+        if (devices.length === 0) {
+            console.log(`[API] No devices found for company ${matchingCompany.name} (ID: ${matchingCompany.id})`);
+            return res.json({ 
+                assets: [],
+                company: {
+                    name: matchingCompany.name,
+                    id: matchingCompany.id
+                },
+                organization: {
+                    name: orgName,
+                    id: user.organization_id
+                },
+                message: `No devices found in IT Portal for ${matchingCompany.name}`
+            });
+        }
         // Transform SiPortal device data
         const assets = (siPortalData.data?.results || []).map(device => ({
             id: device.id,
