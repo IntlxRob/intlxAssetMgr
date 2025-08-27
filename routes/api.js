@@ -108,19 +108,44 @@ function searchCompaniesInCache(orgName) {
 
         let score = 0;
 
-        // Exact match
+        // Exact match (case-insensitive)
         if (companyName === lowerOrgName) {
             return { company, score: 100 };
         }
 
-        // Clean match (remove suffixes)
-        const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-        const cleanSearch = lowerOrgName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+        // Clean match (remove suffixes and normalize spacing)
+        const cleanCompany = companyName
+            .replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const cleanSearch = lowerOrgName
+            .replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '')
+            .replace(/\s+/g, ' ')
+            .trim();
         
         if (cleanCompany === cleanSearch) {
-            score = 90;
-        } else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
-            score = 70;
+            score = 95;
+        }
+        // Substring match
+        else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
+            score = 80;
+        }
+        // Word-based matching - all significant words must match
+        else {
+            const companyWords = cleanCompany.split(/\s+/).filter(w => w.length > 2);
+            const searchWords = cleanSearch.split(/\s+/).filter(w => w.length > 2);
+            
+            if (companyWords.length > 0 && searchWords.length > 0) {
+                const matchingWords = searchWords.filter(word => 
+                    companyWords.some(cWord => cWord === word || cWord.includes(word) || word.includes(cWord))
+                );
+                
+                if (matchingWords.length === searchWords.length) {
+                    score = 70;
+                } else if (matchingWords.length >= Math.ceil(searchWords.length * 0.8)) {
+                    score = 60;
+                }
+            }
         }
 
         if (score > bestScore) {
@@ -129,7 +154,8 @@ function searchCompaniesInCache(orgName) {
         }
     }
 
-    return bestMatch && bestScore >= 70 ? { company: bestMatch, score: bestScore } : null;
+    // Lower the threshold to catch more matches
+    return bestMatch && bestScore >= 60 ? { company: bestMatch, score: bestScore } : null;
 }
 
 /**
