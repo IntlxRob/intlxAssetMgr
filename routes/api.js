@@ -59,8 +59,9 @@ async function refreshCompaniesCache() {
         
         let allCompanies = [];
         let page = 1;
+        let consecutiveEmptyPages = 0;
         
-        while (page <= 25) { // Max 25 pages = 500 companies
+        while (page <= 50) { // Increased from 25 to 50 pages = 1000 companies max
             const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
                 method: 'GET',
                 headers: {
@@ -69,23 +70,42 @@ async function refreshCompaniesCache() {
                 }
             });
 
-            if (!response.ok) break;
+            if (!response.ok) {
+                console.log(`[Cache] API error on page ${page}: ${response.status}`);
+                break;
+            }
 
             const data = await response.json();
             const companies = data.data?.results || [];
             
-            if (companies.length === 0) break;
+            if (companies.length === 0) {
+                consecutiveEmptyPages++;
+                if (consecutiveEmptyPages >= 2) {
+                    console.log(`[Cache] Two consecutive empty pages, stopping at page ${page}`);
+                    break;
+                }
+            } else {
+                consecutiveEmptyPages = 0;
+                allCompanies.push(...companies);
+                
+                // Log every 10th page for progress tracking
+                if (page % 10 === 0) {
+                    console.log(`[Cache] Page ${page}: ${companies.length} companies (total: ${allCompanies.length})`);
+                }
+            }
             
-            allCompanies.push(...companies);
             page++;
             
             // Add small delay to avoid rate limiting
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 50));
         }
         
         companiesCache.companies = allCompanies;
         companiesCache.lastUpdated = new Date();
-        console.log(`[Cache] Updated companies cache with ${allCompanies.length} companies`);
+        console.log(`[Cache] Updated companies cache with ${allCompanies.length} companies from ${page-1} pages`);
+        
+        // Log some sample company names for debugging
+        console.log(`[Cache] Sample companies:`, allCompanies.slice(0, 5).map(c => c.name).join(', '));
         
     } catch (error) {
         console.error('[Cache] Error refreshing companies cache:', error.message);
@@ -571,6 +591,67 @@ router.get('/it-portal-assets', async (req, res) => {
             }
 
             if (!matchingCompany) {
+                console.log(`[API] No match found in cache for "${orgName}", trying direct search`);
+                
+                // Try direct search by company name as fallback
+                try {
+                    const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}`, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': process.env.SIPORTAL_API_KEY,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (directResponse.ok) {
+                        const directData = await directResponse.json();
+                        const devices = directData.data?.results || [];
+                        
+                        if (devices.length > 0) {
+                            // Extract company info from the first device
+                            const companyInfo = devices[0].company;
+                            if (companyInfo && companyInfo.id) {
+                                matchingCompany = companyInfo;
+                                console.log(`[API] Direct search found: "${companyInfo.name}" (ID: ${companyInfo.id}) with ${devices.length} devices`);
+                                
+                                // Return the devices directly since we already have them
+                                const transformedAssets = devices.map(device => ({
+                                    id: device.id,
+                                    asset_tag: device.name || device.hostName || device.id,
+                                    description: `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
+                                    manufacturer: device.type?.name || 'Unknown',
+                                    model: device.type?.name || 'Unknown',
+                                    status: 'active',
+                                    source: 'SiPortal',
+                                    imported_date: new Date().toISOString(),
+                                    notes: device.notes || '',
+                                    serial_number: device.serialNumber,
+                                    device_type: device.type?.name,
+                                    assigned_user: device.assignedUser,
+                                    company_name: companyInfo.name,
+                                    company_id: companyInfo.id
+                                }));
+                                
+                                console.log(`[API] Returning ${transformedAssets.length} devices via direct search`);
+                                return res.json({
+                                    assets: transformedAssets,
+                                    company: {
+                                        name: companyInfo.name,
+                                        id: companyInfo.id
+                                    },
+                                    organization: {
+                                        name: orgName,
+                                        id: user.organization_id
+                                    },
+                                    search_method: 'direct_search'
+                                });
+                            }
+                        }
+                    }
+                } catch (directError) {
+                    console.log(`[API] Direct search failed: ${directError.message}`);
+                }
+                
                 console.log(`[API] No match found for "${orgName}"`);
                 return res.json({ 
                     assets: [],
