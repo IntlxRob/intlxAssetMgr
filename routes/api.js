@@ -300,10 +300,10 @@ router.get('/it-portal-assets', async (req, res) => {
         const organization = await zendeskService.getOrganizationById(user.organization_id);
         const companyName = organization.name;
 
-        console.log(`[API] Fetching SiPortal devices for company: ${companyName}`);
+        console.log(`[API] Fetching SiPortal company ID for: ${companyName}`);
 
-        // Fetch devices from SiPortal API by company
-        const response = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(companyName)}`, {
+        // Step 1: Get company ID from SiPortal
+        const companiesResponse = await fetch('https://www.siportal.net/api/2.0/companies', {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${process.env.SIPORTAL_API_KEY}`,
@@ -311,15 +311,43 @@ router.get('/it-portal-assets', async (req, res) => {
             }
         });
 
-        if (!response.ok) {
-            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        if (!companiesResponse.ok) {
+            throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
         }
 
-        const siPortalData = await response.json();
-        console.log(`[API] SiPortal response received: ${siPortalData.data?.length || 0} devices`);
+        const companiesData = await companiesResponse.json();
         
-        // Transform SiPortal device data to match frontend format
-        const assets = (siPortalData.data || []).map(device => ({
+        // Find matching company (case-insensitive partial match)
+        const matchingCompany = companiesData.data?.find(company => 
+            company.name.toLowerCase().includes(companyName.toLowerCase()) ||
+            companyName.toLowerCase().includes(company.name.toLowerCase())
+        );
+
+        if (!matchingCompany) {
+            console.log(`[API] No matching company found in SiPortal for: ${companyName}`);
+            return res.json({ assets: [] });
+        }
+
+        console.log(`[API] Found SiPortal company: ${matchingCompany.name} (ID: ${matchingCompany.id})`);
+
+        // Step 2: Get devices for this company
+        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${process.env.SIPORTAL_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!devicesResponse.ok) {
+            throw new Error(`SiPortal Devices API returned ${devicesResponse.status}: ${devicesResponse.statusText}`);
+        }
+
+        const devicesData = await devicesResponse.json();
+        console.log(`[API] SiPortal devices response: ${devicesData.data?.length || 0} devices`);
+        
+        // Transform SiPortal device data
+        const assets = (devicesData.data || []).map(device => ({
             id: device.id,
             asset_tag: device.assetTag || device.serialNumber || device.id,
             description: `${device.manufacturer || ''} ${device.model || ''} ${device.name || ''}`.trim() || 'IT Portal Device',
@@ -336,7 +364,7 @@ router.get('/it-portal-assets', async (req, res) => {
             assigned_user: device.assignedUser || device.assignedTo
         }));
 
-        console.log(`[API] Returning ${assets.length} SiPortal devices for company ${companyName}`);
+        console.log(`[API] Returning ${assets.length} SiPortal devices for company ${matchingCompany.name}`);
         res.json({ assets });
         
     } catch (error) {
