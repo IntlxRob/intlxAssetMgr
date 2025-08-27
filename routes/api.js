@@ -7,6 +7,35 @@ const zendeskService = require('../services/zendesk');
 const googleSheetsService = require('../services/googleSheets');
 
 /**
+ * Debug endpoint to search for companies containing specific text
+ */
+router.get('/debug-search-companies/:searchText', async (req, res) => {
+    try {
+        const searchText = req.params.searchText.toLowerCase();
+        
+        const matches = companiesCache.companies.filter(company => 
+            company.name?.toLowerCase().includes(searchText)
+        );
+        
+        res.json({
+            success: true,
+            search_text: searchText,
+            total_companies_in_cache: companiesCache.companies.length,
+            matching_companies: matches.map(c => ({
+                id: c.id,
+                name: c.name
+            })),
+            cache_last_updated: companiesCache.lastUpdated
+        });
+    } catch (error) {
+        res.status(500).json({
+            error: 'Failed to search companies',
+            details: error.message
+        });
+    }
+});
+
+/**
  * Cache for SiPortal companies - refreshed periodically
  */
 let companiesCache = {
