@@ -118,26 +118,49 @@ router.get('/user-assets', async (req, res) => {
 });
 
 /**
- * Endpoint to get assets by user ID (client-side API format).
- * Used by client-side API helper.
+ * Enhanced endpoint to get assets by user ID or organization ID.
+ * Supports multiple query modes:
+ * - /api/assets (get all assets)
+ * - /api/assets?user_id=123 (get assets for specific user)
+ * - /api/assets?organization_id=456 (get assets for specific organization)
+ * Used by client-side API helper and React app.
  */
 router.get('/assets', async (req, res) => {
-    const { user_id } = req.query;
-    if (user_id) {
-        // If user_id is provided, get user assets
-        try {
-            const assets = await zendeskService.getUserAssetsById(user_id);
-            res.json({ 
-                custom_object_records: assets,
-                assets: assets 
-            });
-        } catch (error) {
-            console.error('Error fetching user assets:', error.message);
-            res.status(500).json({ error: 'Failed to fetch user assets.', details: error.message });
+    const { user_id, organization_id } = req.query;
+    
+    console.log(`[API] Assets request - user_id: ${user_id}, organization_id: ${organization_id}`);
+    
+    try {
+        let assets = [];
+        
+        if (organization_id) {
+            // If organization_id is provided, get all assets for that organization
+            console.log(`[API] Fetching assets for organization: ${organization_id}`);
+            assets = await zendeskService.getAssetsByOrganizationId(organization_id);
+        } else if (user_id) {
+            // If user_id is provided, get user assets
+            console.log(`[API] Fetching assets for user: ${user_id}`);
+            assets = await zendeskService.getUserAssetsById(user_id);
+        } else {
+            // If neither parameter provided, get all assets
+            console.log(`[API] Fetching all assets`);
+            assets = await zendeskService.getAllAssets();
         }
-    } else {
-        // If no user_id, return error
-        res.status(400).json({ error: 'Missing user_id query parameter.' });
+        
+        console.log(`[API] Returning ${assets?.length || 0} assets`);
+        
+        res.json({ 
+            custom_object_records: assets || [],
+            assets: assets || []
+        });
+        
+    } catch (error) {
+        console.error('Error fetching assets:', error.message);
+        const errorType = organization_id ? 'organization' : user_id ? 'user' : 'all';
+        res.status(500).json({ 
+            error: `Failed to fetch ${errorType} assets.`, 
+            details: error.message 
+        });
     }
 });
 

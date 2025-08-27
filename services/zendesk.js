@@ -127,6 +127,105 @@ async function getAssetById(assetId) {
   }
 }
 
+// Get all assets (no filtering)
+async function getAllAssets() {
+  try {
+    console.log(`[Zendesk Service] Fetching all assets`);
+    
+    let allRecords = [];
+    let nextPage = `/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`;
+    let pageCount = 0;
+
+    while (nextPage && pageCount < 50) { // Safety limit
+      pageCount++;
+      console.log(`[Zendesk Service] Fetching page ${pageCount} of assets`);
+      
+      const response = await zendeskApi.get(nextPage);
+      const records = response.data.custom_object_records || [];
+      allRecords.push(...records);
+      
+      // Check for next page
+      if (response.data.meta?.has_more && response.data.links?.next) {
+        nextPage = response.data.links.next;
+        
+        // Remove base URL if present
+        if (nextPage.includes(BASE_URL)) {
+          nextPage = nextPage.replace(BASE_URL, '');
+        }
+      } else {
+        nextPage = null;
+      }
+    }
+
+    console.log(`[Zendesk Service] Retrieved ${allRecords.length} total assets`);
+    return allRecords;
+
+  } catch (err) {
+    console.error('Error fetching all assets:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
+// Get assets assigned to a particular organization ID
+async function getAssetsByOrganizationId(organizationId) {
+  try {
+    console.log(`[Zendesk Service] Fetching assets for organization: ${organizationId}`);
+    
+    let allRecords = [];
+    let nextPage = `/custom_objects/${CUSTOM_OBJECT_KEY}/records.json`;
+    let pageCount = 0;
+
+    while (nextPage && pageCount < 50) { // Safety limit
+      pageCount++;
+      console.log(`[Zendesk Service] Fetching page ${pageCount} for organization assets`);
+      
+      const response = await zendeskApi.get(nextPage);
+      const records = response.data.custom_object_records || [];
+      allRecords.push(...records);
+      
+      // Check for next page
+      if (response.data.meta?.has_more && response.data.links?.next) {
+        nextPage = response.data.links.next;
+        
+        // Remove base URL if present
+        if (nextPage.includes(BASE_URL)) {
+          nextPage = nextPage.replace(BASE_URL, '');
+        }
+      } else {
+        nextPage = null;
+      }
+    }
+
+    // Filter assets by organization ID
+    const orgAssets = allRecords.filter(record => {
+      const assetOrgId = record.custom_object_fields?.organization || 
+                        record.custom_object_fields?.assigned_to_org;
+      
+      // Try multiple comparison methods since IDs might be strings or numbers
+      return assetOrgId == organizationId || 
+             assetOrgId === organizationId || 
+             assetOrgId?.toString() === organizationId?.toString();
+    });
+
+    console.log(`[Zendesk Service] Found ${orgAssets.length} assets for organization ${organizationId} out of ${allRecords.length} total assets`);
+    
+    // Log organization IDs found for debugging
+    const orgIds = new Set();
+    allRecords.forEach(record => {
+      const orgId = record.custom_object_fields?.organization || 
+                   record.custom_object_fields?.assigned_to_org;
+      if (orgId) orgIds.add(orgId);
+    });
+    console.log(`[Zendesk Service] Organization IDs found in assets:`, Array.from(orgIds));
+    
+    return orgAssets;
+
+  } catch (err) {
+    console.error('Error fetching organization assets:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
 // Get assets assigned to a particular Zendesk user ID
 async function getUserAssetsById(userId) {
   try {
@@ -209,7 +308,25 @@ async function createTicket(ticketData) {
   return res.data.ticket;
 }
 
+// Test connection to Zendesk API
+async function testConnection() {
+  try {
+    const response = await zendeskApi.get('/users/me.json');
+    return {
+      success: true,
+      user: response.data.user.email,
+      subdomain: ZENDESK_SUBDOMAIN
+    };
+  } catch (err) {
+    console.error('Zendesk API test failed:', err.message);
+    throw err;
+  }
+}
+
 module.exports = {
+  // Connection test
+  testConnection,
+  
   // users
   searchUsers,
   getUserById,
@@ -221,6 +338,8 @@ module.exports = {
   getOrganizations,
 
   // assets
+  getAllAssets,
+  getAssetsByOrganizationId,
   getUserAssetsById,
   getAssetById,
   updateAsset,
