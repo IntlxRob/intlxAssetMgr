@@ -7,6 +7,115 @@ const zendeskService = require('../services/zendesk');
 const googleSheetsService = require('../services/googleSheets');
 
 /**
+ * Cache for SiPortal companies - refreshed periodically
+ */
+let companiesCache = {
+    companies: [],
+    lastUpdated: null,
+    isUpdating: false
+};
+
+/**
+ * Refresh the companies cache
+ */
+async function refreshCompaniesCache() {
+    if (companiesCache.isUpdating) {
+        console.log('[Cache] Already updating companies cache, skipping...');
+        return;
+    }
+
+    try {
+        companiesCache.isUpdating = true;
+        console.log('[Cache] Refreshing companies cache...');
+        
+        let allCompanies = [];
+        let page = 1;
+        
+        while (page <= 25) { // Max 25 pages = 500 companies
+            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) break;
+
+            const data = await response.json();
+            const companies = data.data?.results || [];
+            
+            if (companies.length === 0) break;
+            
+            allCompanies.push(...companies);
+            page++;
+            
+            // Add small delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        companiesCache.companies = allCompanies;
+        companiesCache.lastUpdated = new Date();
+        console.log(`[Cache] Updated companies cache with ${allCompanies.length} companies`);
+        
+    } catch (error) {
+        console.error('[Cache] Error refreshing companies cache:', error.message);
+    } finally {
+        companiesCache.isUpdating = false;
+    }
+}
+
+/**
+ * Search companies in cache
+ */
+function searchCompaniesInCache(orgName) {
+    const lowerOrgName = orgName.toLowerCase().trim();
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const company of companiesCache.companies) {
+        const companyName = company.name?.toLowerCase().trim();
+        if (!companyName) continue;
+
+        let score = 0;
+
+        // Exact match
+        if (companyName === lowerOrgName) {
+            return { company, score: 100 };
+        }
+
+        // Clean match (remove suffixes)
+        const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+        const cleanSearch = lowerOrgName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+        
+        if (cleanCompany === cleanSearch) {
+            score = 90;
+        } else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
+            score = 70;
+        }
+
+        if (score > bestScore) {
+            bestMatch = company;
+            bestScore = score;
+        }
+    }
+
+    return bestMatch && bestScore >= 70 ? { company: bestMatch, score: bestScore } : null;
+}
+
+/**
+ * Endpoint to manually refresh companies cache
+ */
+router.get('/refresh-companies-cache', async (req, res) => {
+    await refreshCompaniesCache();
+    res.json({
+        success: true,
+        companies_count: companiesCache.companies.length,
+        last_updated: companiesCache.lastUpdated
+    });
+});
+
+/**
  * Endpoint to test the direct connection to the Zendesk API.
  */
 router.get('/test-zendesk', async (req, res) => {
@@ -346,14 +455,34 @@ router.get('/it-portal-assets', async (req, res) => {
                 name: orgName
             };
         } else {
-            // Step 2: Quick search (first 3 pages only for common companies)
-            console.log(`[API] Performing quick search for "${orgName}"`);
+            // Step 2: Check if cache needs refresh (refresh every 6 hours)
+            const cacheAge = companiesCache.lastUpdated ? 
+                (Date.now() - companiesCache.lastUpdated.getTime()) : 
+                Infinity;
+            const CACHE_MAX_AGE = 6 * 60 * 60 * 1000; // 6 hours
             
-            let quickCompanies = [];
-            let foundMatch = false;
+            if (cacheAge > CACHE_MAX_AGE && !companiesCache.isUpdating) {
+                console.log('[API] Cache is stale, refreshing in background...');
+                // Don't await - refresh in background
+                refreshCompaniesCache().catch(err => 
+                    console.error('[API] Background cache refresh failed:', err.message)
+                );
+            }
             
-            for (let page = 1; page <= 3 && !foundMatch; page++) {
-                const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
+            // Step 3: Search in cache if available
+            if (companiesCache.companies.length > 0) {
+                console.log(`[API] Searching in cache (${companiesCache.companies.length} companies)`);
+                const cacheResult = searchCompaniesInCache(orgName);
+                
+                if (cacheResult) {
+                    matchingCompany = cacheResult.company;
+                    console.log(`[API] Cache match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${cacheResult.score})`);
+                }
+            } else {
+                // Step 4: Fallback to single page search if no cache
+                console.log(`[API] No cache available, performing single page search`);
+                
+                const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=1`, {
                     method: 'GET',
                     headers: {
                         'Authorization': process.env.SIPORTAL_API_KEY,
@@ -361,91 +490,40 @@ router.get('/it-portal-assets', async (req, res) => {
                     }
                 });
 
-                if (!companiesResponse.ok) {
-                    throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
-                }
-
-                const companiesData = await companiesResponse.json();
-                const companies = companiesData.data?.results || [];
-                
-                if (companies.length === 0) break;
-                
-                quickCompanies.push(...companies);
-                console.log(`[API] Quick search page ${page}: Found ${companies.length} companies (total: ${quickCompanies.length})`);
-                
-                // Look for exact or very close matches in this batch
-                for (const company of companies) {
-                    const companyName = company.name?.toLowerCase().trim();
-                    if (!companyName) continue;
-
-                    // Exact match
-                    if (companyName === lowerOrgName) {
-                        matchingCompany = company;
-                        foundMatch = true;
-                        console.log(`[API] Exact match found on page ${page}: "${company.name}" (ID: ${company.id})`);
-                        break;
-                    }
-
-                    // Clean match (remove suffixes)
-                    const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-                    const cleanSearch = lowerOrgName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+                if (companiesResponse.ok) {
+                    const companiesData = await companiesResponse.json();
+                    const companies = companiesData.data?.results || [];
                     
-                    if (cleanCompany === cleanSearch) {
-                        matchingCompany = company;
-                        foundMatch = true;
-                        console.log(`[API] Clean match found on page ${page}: "${company.name}" (ID: ${company.id})`);
-                        break;
-                    }
-                }
-            }
-            
-            // If no exact match in quick search, try fuzzy matching on the limited set
-            if (!matchingCompany && quickCompanies.length > 0) {
-                console.log(`[API] No exact match in quick search, trying fuzzy matching on ${quickCompanies.length} companies`);
-                
-                let bestScore = 0;
-                for (const company of quickCompanies) {
-                    const companyName = company.name?.toLowerCase().trim();
-                    if (!companyName) continue;
+                    // Look for exact matches only in first page
+                    for (const company of companies) {
+                        const companyName = company.name?.toLowerCase().trim();
+                        if (!companyName) continue;
 
-                    let score = 0;
-                    const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-                    const cleanSearch = lowerOrgName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-                    
-                    if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
-                        score = 70;
-                    } else {
-                        // Word-based matching
-                        const companyWords = cleanCompany.split(/\s+/).filter(w => w.length > 0);
-                        const searchWords = cleanSearch.split(/\s+/).filter(w => w.length > 0);
-                        const matchingWords = searchWords.filter(word => 
-                            companyWords.some(cWord => cWord.includes(word) || word.includes(cWord))
-                        );
-                        
-                        if (matchingWords.length >= Math.ceil(searchWords.length * 0.6)) {
-                            score = 50;
+                        if (companyName === lowerOrgName) {
+                            matchingCompany = company;
+                            console.log(`[API] Exact match found: "${company.name}" (ID: ${company.id})`);
+                            break;
                         }
                     }
-
-                    if (score > bestScore && score >= 50) {
-                        matchingCompany = company;
-                        bestScore = score;
-                    }
                 }
                 
-                if (matchingCompany) {
-                    console.log(`[API] Fuzzy match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${bestScore})`);
+                // Start cache refresh for next time
+                if (!companiesCache.isUpdating) {
+                    refreshCompaniesCache().catch(err => 
+                        console.error('[API] Cache refresh failed:', err.message)
+                    );
                 }
             }
 
-            // If no match found in the quick search, return appropriate message
             if (!matchingCompany) {
                 console.log(`[API] No match found for "${orgName}"`);
                 return res.json({ 
                     assets: [],
-                    message: `No matching IT Portal company found for "${orgName}"`,
-                    search_method: 'quick_search',
-                    companies_searched: quickCompanies.length
+                    message: companiesCache.companies.length > 0 ?
+                        `No matching IT Portal company found for "${orgName}". Contact support if this company should be in IT Portal.` :
+                        `Searching IT Portal companies... Please refresh in a moment or contact support if "${orgName}" should be in IT Portal.`,
+                    search_method: companiesCache.companies.length > 0 ? 'cache_search' : 'fallback_search',
+                    companies_searched: companiesCache.companies.length || 20
                 });
             }
         }
@@ -1215,5 +1293,12 @@ router.get('/debug-siportal-company/:id', async (req, res) => {
         });
     }
 });
+
+// Initialize companies cache on startup
+if (process.env.SIPORTAL_API_KEY) {
+    refreshCompaniesCache().catch(err => 
+        console.error('[Startup] Initial cache refresh failed:', err.message)
+    );
+}
 
 module.exports = router;
