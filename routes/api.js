@@ -437,17 +437,17 @@ router.get('/it-portal-assets', async (req, res) => {
                     console.log(`[API] Fuzzy match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${bestScore})`);
                 }
             }
-        }
 
-        // If no match found, return early
-        if (!matchingCompany) {
-            console.log(`[API] No match found for "${orgName}"`);
-            return res.json({ 
-                assets: [],
-                message: `No matching IT Portal company found for "${orgName}"`,
-                search_method: knownMappings[lowerOrgName] ? 'known_mapping' : 'quick_search',
-                companies_searched: knownMappings[lowerOrgName] ? 0 : quickCompanies?.length || 0
-            });
+            // If no match found in the quick search, return appropriate message
+            if (!matchingCompany) {
+                console.log(`[API] No match found for "${orgName}"`);
+                return res.json({ 
+                    assets: [],
+                    message: `No matching IT Portal company found for "${orgName}"`,
+                    search_method: 'quick_search',
+                    companies_searched: quickCompanies.length
+                });
+            }
         }
 
         console.log(`[API] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
