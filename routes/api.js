@@ -479,13 +479,59 @@ router.get('/it-portal-assets', async (req, res) => {
                 console.log(`[API] Companies containing 'keep' or 'home':`, homeMatches.map(c => `"${c.name}" (ID: ${c.id})`));
             }
             
-            return res.json({ 
-                assets: [],
-                message: `No matching IT Portal company found for "${orgName}"`,
-                total_companies_searched: allCompanies.length,
-                top_matches: allMatches.sort((a, b) => b.score - a.score).slice(0, 10),
-                sample_companies: allCompanies.slice(0, 30).map(c => c.name)
-            });
+            // Try known company ID mappings as fallback for organizations not found in companies list
+            let fallbackCompanyId = null;
+            const lowerOrgName = orgName.toLowerCase().trim();
+            
+            const knownMappings = {
+                'keep me home, llc': 3632,
+                'keep me home,llc': 3632,
+                'intlx solutions, llc': 3492
+            };
+            
+            if (knownMappings[lowerOrgName]) {
+                fallbackCompanyId = knownMappings[lowerOrgName];
+                console.log(`[API] Using fallback company ID ${fallbackCompanyId} for "${orgName}"`);
+                
+                // Test if this company ID has devices
+                try {
+                    const testResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${fallbackCompanyId}`, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': process.env.SIPORTAL_API_KEY,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (testResponse.ok) {
+                        const testData = await testResponse.json();
+                        const deviceCount = testData.data?.results?.length || 0;
+                        
+                        if (deviceCount > 0) {
+                            console.log(`[API] Fallback company ID ${fallbackCompanyId} has ${deviceCount} devices, using it`);
+                            matchingCompany = {
+                                id: fallbackCompanyId,
+                                name: orgName // Use the Zendesk org name for display
+                            };
+                            matchScore = 100; // Override score since we found a direct match
+                        } else {
+                            console.log(`[API] Fallback company ID ${fallbackCompanyId} has no devices`);
+                        }
+                    }
+                } catch (fallbackError) {
+                    console.log(`[API] Error testing fallback company ID ${fallbackCompanyId}:`, fallbackError.message);
+                }
+            }
+            
+            if (!matchingCompany) {
+                return res.json({ 
+                    assets: [],
+                    message: `No matching IT Portal company found for "${orgName}"`,
+                    total_companies_searched: allCompanies.length,
+                    top_matches: allMatches.sort((a, b) => b.score - a.score).slice(0, 10),
+                    sample_companies: allCompanies.slice(0, 30).map(c => c.name)
+                });
+            }
         }
 
         console.log(`[API] Best match: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`);
