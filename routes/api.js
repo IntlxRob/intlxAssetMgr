@@ -396,6 +396,246 @@ router.post('/webhooks/siportal', async (req, res) => {
 });
 
 /**
+ * Endpoint to import SiPortal devices as Zendesk assets for an organization
+ * POST /api/import-siportal-devices
+ */
+router.post('/import-siportal-devices', async (req, res) => {
+    try {
+        const { user_id, organization_id } = req.body;
+        
+        if (!user_id && !organization_id) {
+            return res.status(400).json({ error: 'Either user_id or organization_id is required' });
+        }
+
+        let orgId = organization_id;
+        let orgName = '';
+
+        // If user_id provided, get their organization
+        if (user_id && !organization_id) {
+            const user = await zendeskService.getUserById(user_id);
+            if (!user.organization_id) {
+                return res.status(400).json({ error: 'User has no organization associated' });
+            }
+            orgId = user.organization_id;
+        }
+
+        // Get organization details
+        const organization = await zendeskService.getOrganizationById(orgId);
+        orgName = organization.name;
+        
+        console.log(`[Import] Starting SiPortal device import for organization: ${orgName} (ID: ${orgId})`);
+
+        // For now, we know intlx Solutions, LLC maps to company ID 3492
+        // This could be made dynamic by storing the mapping or querying SiPortal companies
+        const companyId = 3492;
+
+        // Fetch devices from SiPortal
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        }
+
+        const siPortalData = await response.json();
+        const devices = siPortalData.data?.results || [];
+        
+        console.log(`[Import] Found ${devices.length} devices in SiPortal for company ${companyId}`);
+
+        if (devices.length === 0) {
+            return res.json({
+                success: true,
+                message: 'No devices found to import',
+                imported: 0,
+                skipped: 0
+            });
+        }
+
+        let imported = 0;
+        let skipped = 0;
+        const importResults = [];
+
+        // Import each device as a Zendesk asset
+        for (const device of devices) {
+            try {
+                // Check if asset already exists (by serial number or device ID)
+                const existingAssets = await zendeskService.getUserAssetsById(user_id || 'search');
+                const assetExists = existingAssets?.some(asset => 
+                    asset.serial_number === device.serialNumber ||
+                    (asset.notes && asset.notes.includes(`SiPortal ID: ${device.id}`))
+                );
+
+                if (assetExists) {
+                    console.log(`[Import] Skipping device ${device.id} - already exists`);
+                    skipped++;
+                    importResults.push({
+                        device_id: device.id,
+                        status: 'skipped',
+                        reason: 'Asset already exists'
+                    });
+                    continue;
+                }
+
+                // Create asset data
+                const assetData = {
+                    name: device.name || device.hostName || `Device ${device.id}`,
+                    asset_tag: device.name || device.hostName || device.id,
+                    description: `${device.name || ''} ${device.hostName || ''}`.trim() || 'Imported from SiPortal',
+                    status: 'active',
+                    assigned_user_id: user_id,
+                    organization_id: orgId,
+                    manufacturer: device.type?.name || 'Unknown',
+                    model: device.type?.name || 'Unknown',
+                    serial_number: device.serialNumber || '',
+                    purchase_date: device.purchaseDate || null,
+                    notes: `Imported from SiPortal\nSiPortal ID: ${device.id}\nDevice Type: ${device.type?.name || 'Unknown'}\nAssigned User: ${device.assignedUser || 'Unassigned'}`,
+                    source: 'SiPortal'
+                };
+
+                // Create the asset in Zendesk
+                const createdAsset = await zendeskService.createAsset(assetData);
+                
+                imported++;
+                importResults.push({
+                    device_id: device.id,
+                    asset_id: createdAsset.id,
+                    status: 'imported',
+                    name: assetData.name
+                });
+                
+                console.log(`[Import] Successfully imported device ${device.id} as asset ${createdAsset.id}`);
+
+            } catch (deviceError) {
+                console.error(`[Import] Failed to import device ${device.id}:`, deviceError.message);
+                skipped++;
+                importResults.push({
+                    device_id: device.id,
+                    status: 'failed',
+                    reason: deviceError.message
+                });
+            }
+        }
+
+        console.log(`[Import] Import completed: ${imported} imported, ${skipped} skipped`);
+
+        res.json({
+            success: true,
+            message: `Successfully imported ${imported} devices from SiPortal`,
+            imported,
+            skipped,
+            organization: {
+                id: orgId,
+                name: orgName
+            },
+            results: importResults
+        });
+
+    } catch (error) {
+        console.error('[Import] Error importing SiPortal devices:', error.message);
+        res.status(500).json({
+            error: 'Failed to import devices from SiPortal',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Endpoint to get import preview - shows what devices would be imported
+ * GET /api/preview-siportal-import?user_id=123 or ?organization_id=456
+ */
+router.get('/preview-siportal-import', async (req, res) => {
+    try {
+        const { user_id, organization_id } = req.query;
+        
+        if (!user_id && !organization_id) {
+            return res.status(400).json({ error: 'Either user_id or organization_id is required' });
+        }
+
+        let orgId = organization_id;
+        let orgName = '';
+
+        // If user_id provided, get their organization
+        if (user_id && !organization_id) {
+            const user = await zendeskService.getUserById(user_id);
+            if (!user.organization_id) {
+                return res.status(400).json({ error: 'User has no organization associated' });
+            }
+            orgId = user.organization_id;
+        }
+
+        // Get organization details
+        const organization = await zendeskService.getOrganizationById(orgId);
+        orgName = organization.name;
+
+        // Map organization to SiPortal company ID (hardcoded for now)
+        const companyId = 3492;
+
+        // Fetch devices from SiPortal
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        }
+
+        const siPortalData = await response.json();
+        const devices = siPortalData.data?.results || [];
+
+        // Get existing assets to check for duplicates
+        const existingAssets = user_id ? await zendeskService.getUserAssetsById(user_id) : [];
+
+        // Preview what would be imported
+        const preview = devices.map(device => {
+            const assetExists = existingAssets?.some(asset => 
+                asset.serial_number === device.serialNumber ||
+                (asset.notes && asset.notes.includes(`SiPortal ID: ${device.id}`))
+            );
+
+            return {
+                device_id: device.id,
+                name: device.name || device.hostName || `Device ${device.id}`,
+                serial_number: device.serialNumber || '',
+                device_type: device.type?.name || 'Unknown',
+                assigned_user: device.assignedUser || 'Unassigned',
+                status: assetExists ? 'exists' : 'new'
+            };
+        });
+
+        const newDevices = preview.filter(d => d.status === 'new');
+        const existingDevices = preview.filter(d => d.status === 'exists');
+
+        res.json({
+            success: true,
+            organization: {
+                id: orgId,
+                name: orgName
+            },
+            total_devices: devices.length,
+            new_devices: newDevices.length,
+            existing_devices: existingDevices.length,
+            preview
+        });
+
+    } catch (error) {
+        console.error('[Preview] Error previewing SiPortal import:', error.message);
+        res.status(500).json({
+            error: 'Failed to preview import',
+            details: error.message
+        });
+    }
+});
+
+/**
  * Search users by name/email.
  * Used by React app SearchInput component.
  */
