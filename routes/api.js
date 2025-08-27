@@ -278,6 +278,77 @@ router.get('/assets/schema', async (req, res) => {
 });
 
 /**
+ * Endpoint to fetch IT Portal (SiPortal) assets for a company/organization.
+ * Used by React app IT Portal Assets section.
+ */
+router.get('/it-portal-assets', async (req, res) => {
+    try {
+        const { user_id } = req.query;
+        
+        if (!user_id) {
+            return res.status(400).json({ error: 'user_id parameter is required' });
+        }
+
+        // Get the user's organization from Zendesk
+        const user = await zendeskService.getUserById(user_id);
+        
+        if (!user.organization_id) {
+            console.log(`[API] User ${user_id} has no organization, returning empty assets`);
+            return res.json({ assets: [] });
+        }
+
+        const organization = await zendeskService.getOrganizationById(user.organization_id);
+        const companyName = organization.name;
+
+        console.log(`[API] Fetching SiPortal devices for company: ${companyName}`);
+
+        // Fetch devices from SiPortal API by company
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(companyName)}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${process.env.SIPORTAL_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        }
+
+        const siPortalData = await response.json();
+        console.log(`[API] SiPortal response received: ${siPortalData.data?.length || 0} devices`);
+        
+        // Transform SiPortal device data to match frontend format
+        const assets = (siPortalData.data || []).map(device => ({
+            id: device.id,
+            asset_tag: device.assetTag || device.serialNumber || device.id,
+            description: `${device.manufacturer || ''} ${device.model || ''} ${device.name || ''}`.trim() || 'IT Portal Device',
+            manufacturer: device.manufacturer,
+            model: device.model,
+            status: device.status?.toLowerCase() === 'active' ? 'active' : 
+                    device.status?.toLowerCase() === 'retired' ? 'retired' : 'active',
+            source: 'SiPortal',
+            imported_date: new Date().toISOString(),
+            notes: device.notes || device.description,
+            serial_number: device.serialNumber,
+            device_type: device.deviceType,
+            location: device.location,
+            assigned_user: device.assignedUser || device.assignedTo
+        }));
+
+        console.log(`[API] Returning ${assets.length} SiPortal devices for company ${companyName}`);
+        res.json({ assets });
+        
+    } catch (error) {
+        console.error('[API] Error fetching SiPortal devices:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to fetch IT Portal assets',
+            details: error.message 
+        });
+    }
+});
+
+/**
  * Search users by name/email.
  * Used by React app SearchInput component.
  */
