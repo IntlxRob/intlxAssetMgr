@@ -307,7 +307,7 @@ router.get('/it-portal-assets', async (req, res) => {
         const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
             method: 'GET',
             headers: {
-                'Authorization': `Bearer ${process.env.SIPORTAL_API_KEY}`,
+                'Authorization': process.env.SIPORTAL_API_KEY,
                 'Content-Type': 'application/json'
             }
         });
