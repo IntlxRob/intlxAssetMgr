@@ -327,214 +327,130 @@ router.get('/it-portal-assets', async (req, res) => {
         
         console.log(`[API] Fetching SiPortal devices for organization: ${orgName}`);
 
-        // Step 1: Comprehensive company search with proper pagination
+        // Step 1: Try known company mappings first (instant lookup)
         console.log(`[API] Searching SiPortal for organization: "${orgName}"`);
         
-        let allCompanies = [];
-        let page = 1;
-        let maxPages = 20; // Safety limit to prevent infinite loops
+        const lowerOrgName = orgName.toLowerCase().trim();
+        const knownMappings = {
+            'keep me home, llc': 3632,
+            'keep me home,llc': 3632,
+            'intlx solutions, llc': 3492
+        };
 
-        // Fetch all companies with pagination - handle SiPortal's actual pagination behavior
-        while (page <= maxPages) {
-            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': process.env.SIPORTAL_API_KEY,
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (!companiesResponse.ok) {
-                throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
-            }
-
-            const companiesData = await companiesResponse.json();
-            const companies = companiesData.data?.results || [];
-            
-            if (companies.length === 0) {
-                // No more companies, break the loop
-                console.log(`[API] Page ${page}: No companies found, stopping pagination`);
-                break;
-            }
-            
-            allCompanies.push(...companies);
-            console.log(`[API] Page ${page}: Found ${companies.length} companies (total: ${allCompanies.length})`);
-            
-            // Check if there's pagination metadata
-            const hasMore = companiesData.meta?.has_more || 
-                          companiesData.pagination?.has_more ||
-                          companiesData.data?.has_more;
-            
-            const totalPages = companiesData.meta?.total_pages || 
-                             companiesData.pagination?.total_pages;
-            
-            // More robust pagination detection
-            if (hasMore === false || (totalPages && page >= totalPages)) {
-                console.log(`[API] Reached last page based on API metadata`);
-                break;
-            }
-            
-            // If we consistently get the same number of companies (likely page size), continue
-            // Only stop if we get 0 companies or if we've reached reasonable limits
-            if (page >= 20) { // Safety: Don't go beyond 20 pages
-                console.log(`[API] Reached page limit of 20, stopping`);
-                break;
-            }
-            
-            page++;
-        }
-
-        console.log(`[API] Total companies retrieved: ${allCompanies.length} across ${page} pages`);
-
-        // Step 2: Enhanced fuzzy matching with scoring
-        const searchName = orgName.toLowerCase().trim();
         let matchingCompany = null;
-        let matchScore = 0;
-        let allMatches = []; // For debugging
-
-        for (const company of allCompanies) {
-            const companyName = company.name?.toLowerCase().trim();
-            if (!companyName) continue;
-
-            let currentScore = 0;
-
-            // Strategy 1: Exact match (highest score)
-            if (companyName === searchName) {
-                matchingCompany = company;
-                matchScore = 100;
-                console.log(`[API] Exact match found: "${company.name}" (ID: ${company.id})`);
-                break;
-            }
-
-            // Strategy 2: Clean match (remove suffixes and punctuation)
-            const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
-            const cleanSearch = searchName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+        
+        if (knownMappings[lowerOrgName]) {
+            console.log(`[API] Using known mapping for "${orgName}" -> Company ID ${knownMappings[lowerOrgName]}`);
+            matchingCompany = {
+                id: knownMappings[lowerOrgName],
+                name: orgName
+            };
+        } else {
+            // Step 2: Quick search (first 3 pages only for common companies)
+            console.log(`[API] Performing quick search for "${orgName}"`);
             
-            if (cleanCompany === cleanSearch) {
-                currentScore = 90;
-            }
-            // Strategy 3: Clean substring match
-            else if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
-                currentScore = 70;
-            }
-            // Strategy 4: Word-based matching (all words present)
-            else {
-                const companyWords = cleanCompany.split(/\s+/).filter(w => w.length > 0);
-                const searchWords = cleanSearch.split(/\s+/).filter(w => w.length > 0);
-                const matchingWords = searchWords.filter(word => 
-                    companyWords.some(cWord => 
-                        cWord.includes(word) || word.includes(cWord) ||
-                        // Handle common abbreviations
-                        (word === 'home' && cWord.includes('home')) ||
-                        (word === 'keep' && cWord.includes('keep'))
-                    )
-                );
+            let quickCompanies = [];
+            let foundMatch = false;
+            
+            for (let page = 1; page <= 3 && !foundMatch; page++) {
+                const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': process.env.SIPORTAL_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!companiesResponse.ok) {
+                    throw new Error(`SiPortal Companies API returned ${companiesResponse.status}: ${companiesResponse.statusText}`);
+                }
+
+                const companiesData = await companiesResponse.json();
+                const companies = companiesData.data?.results || [];
                 
-                if (matchingWords.length === searchWords.length && searchWords.length > 1) {
-                    currentScore = 60;
-                } else if (matchingWords.length >= Math.ceil(searchWords.length * 0.6)) {
-                    // At least 60% of words match
-                    currentScore = 40;
-                } else if (matchingWords.length > 0) {
-                    currentScore = 20;
+                if (companies.length === 0) break;
+                
+                quickCompanies.push(...companies);
+                console.log(`[API] Quick search page ${page}: Found ${companies.length} companies (total: ${quickCompanies.length})`);
+                
+                // Look for exact or very close matches in this batch
+                for (const company of companies) {
+                    const companyName = company.name?.toLowerCase().trim();
+                    if (!companyName) continue;
+
+                    // Exact match
+                    if (companyName === lowerOrgName) {
+                        matchingCompany = company;
+                        foundMatch = true;
+                        console.log(`[API] Exact match found on page ${page}: "${company.name}" (ID: ${company.id})`);
+                        break;
+                    }
+
+                    // Clean match (remove suffixes)
+                    const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+                    const cleanSearch = lowerOrgName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+                    
+                    if (cleanCompany === cleanSearch) {
+                        matchingCompany = company;
+                        foundMatch = true;
+                        console.log(`[API] Clean match found on page ${page}: "${company.name}" (ID: ${company.id})`);
+                        break;
+                    }
                 }
             }
-
-            // Keep track of all potential matches for debugging
-            if (currentScore > 0) {
-                allMatches.push({
-                    name: company.name,
-                    id: company.id,
-                    score: currentScore
-                });
-            }
-
-            // Keep track of the best match
-            if (currentScore > matchScore) {
-                matchingCompany = company;
-                matchScore = currentScore;
-            }
-        }
-
-        // Log top matches for debugging
-        console.log(`[API] Top 5 potential matches:`, 
-            allMatches
-                .sort((a, b) => b.score - a.score)
-                .slice(0, 5)
-                .map(m => `"${m.name}" (ID: ${m.id}, Score: ${m.score})`)
-        );
-
-        if (!matchingCompany || matchScore < 40) { // Lowered threshold for better matching
-            console.log(`[API] No good match found for "${orgName}" (best score: ${matchScore})`);
-            console.log(`[API] Total companies searched: ${allCompanies.length}`);
-            console.log(`[API] First 20 companies:`, allCompanies.slice(0, 20).map(c => `"${c.name}"`).join(', '));
             
-            // Check if "Keep Me Home" appears anywhere in the company names
-            const homeMatches = allCompanies.filter(c => 
-                c.name?.toLowerCase().includes('keep') || 
-                c.name?.toLowerCase().includes('home')
-            );
-            
-            if (homeMatches.length > 0) {
-                console.log(`[API] Companies containing 'keep' or 'home':`, homeMatches.map(c => `"${c.name}" (ID: ${c.id})`));
-            }
-            
-            // Try known company ID mappings as fallback for organizations not found in companies list
-            let fallbackCompanyId = null;
-            const lowerOrgName = orgName.toLowerCase().trim();
-            
-            const knownMappings = {
-                'keep me home, llc': 3632,
-                'keep me home,llc': 3632,
-                'intlx solutions, llc': 3492
-            };
-            
-            if (knownMappings[lowerOrgName]) {
-                fallbackCompanyId = knownMappings[lowerOrgName];
-                console.log(`[API] Using fallback company ID ${fallbackCompanyId} for "${orgName}"`);
+            // If no exact match in quick search, try fuzzy matching on the limited set
+            if (!matchingCompany && quickCompanies.length > 0) {
+                console.log(`[API] No exact match in quick search, trying fuzzy matching on ${quickCompanies.length} companies`);
                 
-                // Test if this company ID has devices
-                try {
-                    const testResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${fallbackCompanyId}`, {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': process.env.SIPORTAL_API_KEY,
-                            'Content-Type': 'application/json'
-                        }
-                    });
+                let bestScore = 0;
+                for (const company of quickCompanies) {
+                    const companyName = company.name?.toLowerCase().trim();
+                    if (!companyName) continue;
+
+                    let score = 0;
+                    const cleanCompany = companyName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
+                    const cleanSearch = lowerOrgName.replace(/[,.]?\s*(llc|inc|corp|ltd|limited)\.?$/i, '').trim();
                     
-                    if (testResponse.ok) {
-                        const testData = await testResponse.json();
-                        const deviceCount = testData.data?.results?.length || 0;
+                    if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
+                        score = 70;
+                    } else {
+                        // Word-based matching
+                        const companyWords = cleanCompany.split(/\s+/).filter(w => w.length > 0);
+                        const searchWords = cleanSearch.split(/\s+/).filter(w => w.length > 0);
+                        const matchingWords = searchWords.filter(word => 
+                            companyWords.some(cWord => cWord.includes(word) || word.includes(cWord))
+                        );
                         
-                        if (deviceCount > 0) {
-                            console.log(`[API] Fallback company ID ${fallbackCompanyId} has ${deviceCount} devices, using it`);
-                            matchingCompany = {
-                                id: fallbackCompanyId,
-                                name: orgName // Use the Zendesk org name for display
-                            };
-                            matchScore = 100; // Override score since we found a direct match
-                        } else {
-                            console.log(`[API] Fallback company ID ${fallbackCompanyId} has no devices`);
+                        if (matchingWords.length >= Math.ceil(searchWords.length * 0.6)) {
+                            score = 50;
                         }
                     }
-                } catch (fallbackError) {
-                    console.log(`[API] Error testing fallback company ID ${fallbackCompanyId}:`, fallbackError.message);
+
+                    if (score > bestScore && score >= 50) {
+                        matchingCompany = company;
+                        bestScore = score;
+                    }
                 }
-            }
-            
-            if (!matchingCompany) {
-                return res.json({ 
-                    assets: [],
-                    message: `No matching IT Portal company found for "${orgName}"`,
-                    total_companies_searched: allCompanies.length,
-                    top_matches: allMatches.sort((a, b) => b.score - a.score).slice(0, 10),
-                    sample_companies: allCompanies.slice(0, 30).map(c => c.name)
-                });
+                
+                if (matchingCompany) {
+                    console.log(`[API] Fuzzy match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${bestScore})`);
+                }
             }
         }
 
-        console.log(`[API] Best match: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`);
+        // If no match found, return early
+        if (!matchingCompany) {
+            console.log(`[API] No match found for "${orgName}"`);
+            return res.json({ 
+                assets: [],
+                message: `No matching IT Portal company found for "${orgName}"`,
+                search_method: knownMappings[lowerOrgName] ? 'known_mapping' : 'quick_search',
+                companies_searched: knownMappings[lowerOrgName] ? 0 : quickCompanies?.length || 0
+            });
+        }
+
+        console.log(`[API] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
 
         // Step 3: Fetch devices for the matching company
         const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
