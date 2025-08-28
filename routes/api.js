@@ -845,7 +845,7 @@ router.get('/it-portal-assets', async (req, res) => {
             description: device.description || `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
             domain: device.domain || device.realm || '',
             realm: device.realm || device.domain || '', // Alternative field name
-            facility: device.facility || '',
+            facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
             username: device.username || device.user || '',
             preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
             access_method: device.accessMethod || device.access_method || device.preferredAccess || '', // Alternative field name
@@ -860,7 +860,7 @@ router.get('/it-portal-assets', async (req, res) => {
             // Metadata fields
             source: 'SiPortal',
             imported_date: new Date().toISOString(),
-            notes: device.notes || '',
+            notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
             assigned_user: device.assignedUser || device.assigned_user || '',
             
             // Company info for debugging
@@ -868,7 +868,7 @@ router.get('/it-portal-assets', async (req, res) => {
             company_id: matchingCompany.id,
             
             // Additional fields that might be useful
-            location: device.location || '',
+            location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
             ip_address: device.ipAddress || device.ip_address || '',
             mac_address: device.macAddress || device.mac_address || '',
             os: device.operatingSystem || device.os || '',
@@ -1374,7 +1374,7 @@ router.get('/preview-siportal-import', async (req, res) => {
                 serial_number: device.serialNumber || device.serial_number || '',
                 assigned_user: device.assignedUser || device.assigned_user || 'Unassigned',
                 domain: device.domain || device.realm || '',
-                facility: device.facility || '',
+                facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
                 username: device.username || device.user || '',
                 preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
                 credentials: device.credentials || device.credential || '',
