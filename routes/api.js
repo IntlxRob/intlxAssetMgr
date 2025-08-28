@@ -718,20 +718,45 @@ router.get('/it-portal-assets', async (req, res) => {
                                 
                                 // Return the devices directly since we already have them
                                 const transformedAssets = devices.map(device => ({
+                                    // Basic identification
                                     id: device.id,
                                     asset_tag: device.name || device.hostName || device.id,
-                                    description: `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
-                                    manufacturer: device.type?.name || 'Unknown',
-                                    model: device.type?.name || 'Unknown',
-                                    status: 'active',
+                                    
+                                    // IT Portal specific fields (matching your actual field names)
+                                    device_type: device.type?.name || device.deviceType || 'Unknown',
+                                    name: device.name || 'Unnamed Device',
+                                    host_name: device.hostName || device.hostname || '',
+                                    description: device.description || `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
+                                    domain: device.domain || device.realm || '',
+                                    realm: device.realm || device.domain || '', // Alternative field name
+                                    facility: device.facility || '',
+                                    username: device.username || device.user || '',
+                                    preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
+                                    access_method: device.accessMethod || device.access_method || device.preferredAccess || '', // Alternative field name
+                                    credentials: device.credentials || device.credential || '',
+                                    
+                                    // Standard Zendesk asset fields for compatibility
+                                    manufacturer: device.type?.name || device.manufacturer || 'Unknown',
+                                    model: device.model || device.type?.name || 'Unknown',
+                                    serial_number: device.serialNumber || device.serial_number || '',
+                                    status: device.status || 'active',
+                                    
+                                    // Metadata fields
                                     source: 'SiPortal',
                                     imported_date: new Date().toISOString(),
                                     notes: device.notes || '',
-                                    serial_number: device.serialNumber,
-                                    device_type: device.type?.name,
-                                    assigned_user: device.assignedUser,
+                                    assigned_user: device.assignedUser || device.assigned_user || '',
+                                    
+                                    // Company info for debugging
                                     company_name: companyInfo.name,
-                                    company_id: companyInfo.id
+                                    company_id: companyInfo.id,
+                                    
+                                    // Additional fields that might be useful
+                                    location: device.location || '',
+                                    ip_address: device.ipAddress || device.ip_address || '',
+                                    mac_address: device.macAddress || device.mac_address || '',
+                                    os: device.operatingSystem || device.os || '',
+                                    last_seen: device.lastSeen || device.last_seen || ''
                                 }));
                                 
                                 console.log(`[API] Returning ${transformedAssets.length} devices via direct search`);
@@ -801,23 +826,53 @@ router.get('/it-portal-assets', async (req, res) => {
                 message: `No devices found in IT Portal for ${matchingCompany.name}`
             });
         }
-        // Transform SiPortal device data
-        const assets = (siPortalData.data?.results || []).map(device => ({
+
+        // Debug: Log sample device data to see actual API structure
+        if (devices.length > 0) {
+            console.log('[Debug] Sample device data from SiPortal:', JSON.stringify(devices[0], null, 2));
+        }
+
+        // Transform SiPortal device data with improved field mapping
+        const assets = devices.map(device => ({
+            // Basic identification
             id: device.id,
             asset_tag: device.name || device.hostName || device.id,
-            description: `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
-            manufacturer: device.type?.name || 'Unknown',
-            model: device.type?.name || 'Unknown',
-            status: 'active', // Adjust based on actual device status field
+            
+            // IT Portal specific fields (matching your actual field names)
+            device_type: device.type?.name || device.deviceType || 'Unknown',
+            name: device.name || 'Unnamed Device',
+            host_name: device.hostName || device.hostname || '',
+            description: device.description || `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
+            domain: device.domain || device.realm || '',
+            realm: device.realm || device.domain || '', // Alternative field name
+            facility: device.facility || '',
+            username: device.username || device.user || '',
+            preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
+            access_method: device.accessMethod || device.access_method || device.preferredAccess || '', // Alternative field name
+            credentials: device.credentials || device.credential || '',
+            
+            // Standard Zendesk asset fields for compatibility
+            manufacturer: device.type?.name || device.manufacturer || 'Unknown',
+            model: device.model || device.type?.name || 'Unknown',
+            serial_number: device.serialNumber || device.serial_number || '',
+            status: device.status || 'active',
+            
+            // Metadata fields
             source: 'SiPortal',
             imported_date: new Date().toISOString(),
             notes: device.notes || '',
-            serial_number: device.serialNumber,
-            device_type: device.type?.name,
-            assigned_user: device.assignedUser,
-            // Include company info for debugging
+            assigned_user: device.assignedUser || device.assigned_user || '',
+            
+            // Company info for debugging
             company_name: matchingCompany.name,
-            company_id: matchingCompany.id
+            company_id: matchingCompany.id,
+            
+            // Additional fields that might be useful
+            location: device.location || '',
+            ip_address: device.ipAddress || device.ip_address || '',
+            mac_address: device.macAddress || device.mac_address || '',
+            os: device.operatingSystem || device.os || '',
+            last_seen: device.lastSeen || device.last_seen || ''
         }));
 
         console.log(`[API] Returning ${assets.length} SiPortal devices for ${matchingCompany.name}`);
@@ -1076,19 +1131,28 @@ router.post('/import-siportal-devices', async (req, res) => {
                     continue;
                 }
 
-                // Create asset data
+                // Create asset data with improved field mapping
                 const assetData = {
                     name: device.name || device.hostName || `Device ${device.id}`,
                     asset_tag: device.name || device.hostName || device.id,
-                    description: `${device.name || ''} ${device.hostName || ''}`.trim() || 'Imported from SiPortal',
+                    description: device.description || `${device.name || ''} ${device.hostName || ''}`.trim() || 'Imported from SiPortal',
                     status: 'active',
                     assigned_user_id: user_id,
                     organization_id: orgId,
-                    manufacturer: device.type?.name || 'Unknown',
-                    model: device.type?.name || 'Unknown',
-                    serial_number: device.serialNumber || '',
+                    manufacturer: device.type?.name || device.manufacturer || 'Unknown',
+                    model: device.model || device.type?.name || 'Unknown',
+                    serial_number: device.serialNumber || device.serial_number || '',
                     purchase_date: device.purchaseDate || null,
-                    notes: `Imported from SiPortal\nSiPortal ID: ${device.id}\nDevice Type: ${device.type?.name || 'Unknown'}\nAssigned User: ${device.assignedUser || 'Unassigned'}`,
+                    notes: `Imported from SiPortal
+SiPortal ID: ${device.id}
+Device Type: ${device.type?.name || 'Unknown'}
+Host Name: ${device.hostName || device.hostname || 'Not specified'}
+Domain/Realm: ${device.domain || device.realm || 'Not specified'}
+Facility: ${device.facility || 'Not specified'}
+Username: ${device.username || device.user || 'Not specified'}
+Preferred Access: ${device.preferredAccess || device.preferred_access || device.accessMethod || 'Not specified'}
+Credentials: ${device.credentials || device.credential || 'Not specified'}
+Assigned User: ${device.assignedUser || device.assigned_user || 'Unassigned'}`,
                     source: 'SiPortal'
                 };
 
@@ -1295,7 +1359,7 @@ router.get('/preview-siportal-import', async (req, res) => {
         // Get existing assets to check for duplicates
         const existingAssets = user_id ? await zendeskService.getUserAssetsById(user_id) : [];
 
-        // Preview what would be imported
+        // Preview what would be imported with improved field mapping
         const preview = devices.map(device => {
             const assetExists = existingAssets?.some(asset => 
                 asset.serial_number === device.serialNumber ||
@@ -1304,10 +1368,16 @@ router.get('/preview-siportal-import', async (req, res) => {
 
             return {
                 device_id: device.id,
-                name: device.name || device.hostName || `Device ${device.id}`,
-                serial_number: device.serialNumber || '',
-                device_type: device.type?.name || 'Unknown',
-                assigned_user: device.assignedUser || 'Unassigned',
+                name: device.name || 'Unnamed Device',
+                host_name: device.hostName || device.hostname || '',
+                device_type: device.type?.name || device.deviceType || 'Unknown',
+                serial_number: device.serialNumber || device.serial_number || '',
+                assigned_user: device.assignedUser || device.assigned_user || 'Unassigned',
+                domain: device.domain || device.realm || '',
+                facility: device.facility || '',
+                username: device.username || device.user || '',
+                preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
+                credentials: device.credentials || device.credential || '',
                 status: assetExists ? 'exists' : 'new'
             };
         });
