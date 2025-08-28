@@ -726,10 +726,17 @@ router.get('/it-portal-assets', async (req, res) => {
                                     device_type: device.type?.name || device.deviceType || 'Unknown',
                                     name: device.name || 'Unnamed Device',
                                     host_name: device.hostName || device.hostname || '',
-                                    description: device.description || `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
+                                    description: (device.description && 
+                                                 device.description !== 'Active' && 
+                                                 device.description !== 'Inactive' && 
+                                                 device.description !== device.status &&
+                                                 device.description.toLowerCase() !== 'active' &&
+                                                 device.description.toLowerCase() !== 'inactive') ? 
+                                                device.description : 
+                                                '',
                                     domain: device.domain || device.realm || '',
                                     realm: device.realm || device.domain || '', // Alternative field name
-                                    facility: device.facility || '',
+                                    facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
                                     username: device.username || device.user || '',
                                     preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
                                     access_method: device.accessMethod || device.access_method || device.preferredAccess || '', // Alternative field name
@@ -739,12 +746,14 @@ router.get('/it-portal-assets', async (req, res) => {
                                     manufacturer: device.type?.name || device.manufacturer || 'Unknown',
                                     model: device.model || device.type?.name || 'Unknown',
                                     serial_number: device.serialNumber || device.serial_number || '',
-                                    status: device.status || 'active',
+                                    status: device.status || 
+                                           (device.description && (device.description.toLowerCase() === 'active' || device.description.toLowerCase() === 'inactive') ? 
+                                            device.description.toLowerCase() : 'active'),
                                     
                                     // Metadata fields
                                     source: 'SiPortal',
                                     imported_date: new Date().toISOString(),
-                                    notes: device.notes || '',
+                                    notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
                                     assigned_user: device.assignedUser || device.assigned_user || '',
                                     
                                     // Company info for debugging
@@ -752,7 +761,7 @@ router.get('/it-portal-assets', async (req, res) => {
                                     company_id: companyInfo.id,
                                     
                                     // Additional fields that might be useful
-                                    location: device.location || '',
+                                    location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
                                     ip_address: device.ipAddress || device.ip_address || '',
                                     mac_address: device.macAddress || device.mac_address || '',
                                     os: device.operatingSystem || device.os || '',
@@ -842,7 +851,14 @@ router.get('/it-portal-assets', async (req, res) => {
             device_type: device.type?.name || device.deviceType || 'Unknown',
             name: device.name || 'Unnamed Device',
             host_name: device.hostName || device.hostname || '',
-            description: device.description || `${device.name || ''} ${device.hostName || ''}`.trim() || 'IT Portal Device',
+            description: (device.description && 
+                         device.description !== 'Active' && 
+                         device.description !== 'Inactive' && 
+                         device.description !== device.status &&
+                         device.description.toLowerCase() !== 'active' &&
+                         device.description.toLowerCase() !== 'inactive') ? 
+                        device.description : 
+                        '',
             domain: device.domain || device.realm || '',
             realm: device.realm || device.domain || '', // Alternative field name
             facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
@@ -855,7 +871,9 @@ router.get('/it-portal-assets', async (req, res) => {
             manufacturer: device.type?.name || device.manufacturer || 'Unknown',
             model: device.model || device.type?.name || 'Unknown',
             serial_number: device.serialNumber || device.serial_number || '',
-            status: device.status || 'active',
+            status: device.status || 
+                   (device.description && (device.description.toLowerCase() === 'active' || device.description.toLowerCase() === 'inactive') ? 
+                    device.description.toLowerCase() : 'active'),
             
             // Metadata fields
             source: 'SiPortal',
@@ -1135,7 +1153,14 @@ router.post('/import-siportal-devices', async (req, res) => {
                 const assetData = {
                     name: device.name || device.hostName || `Device ${device.id}`,
                     asset_tag: device.name || device.hostName || device.id,
-                    description: device.description || `${device.name || ''} ${device.hostName || ''}`.trim() || 'Imported from SiPortal',
+                    description: (device.description && 
+                                 device.description !== 'Active' && 
+                                 device.description !== 'Inactive' && 
+                                 device.description !== device.status &&
+                                 device.description.toLowerCase() !== 'active' &&
+                                 device.description.toLowerCase() !== 'inactive') ? 
+                                device.description : 
+                                'Imported from SiPortal',
                     status: 'active',
                     assigned_user_id: user_id,
                     organization_id: orgId,
@@ -1148,10 +1173,11 @@ SiPortal ID: ${device.id}
 Device Type: ${device.type?.name || 'Unknown'}
 Host Name: ${device.hostName || device.hostname || 'Not specified'}
 Domain/Realm: ${device.domain || device.realm || 'Not specified'}
-Facility: ${device.facility || 'Not specified'}
+Facility: ${typeof device.facility === 'object' ? (device.facility?.name || 'Not specified') : (device.facility || 'Not specified')}
 Username: ${device.username || device.user || 'Not specified'}
 Preferred Access: ${device.preferredAccess || device.preferred_access || device.accessMethod || 'Not specified'}
 Credentials: ${device.credentials || device.credential || 'Not specified'}
+Status: ${device.status || 'Active'}
 Assigned User: ${device.assignedUser || device.assigned_user || 'Unassigned'}`,
                     source: 'SiPortal'
                 };
