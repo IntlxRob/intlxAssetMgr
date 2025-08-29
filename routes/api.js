@@ -916,6 +916,127 @@ router.get('/it-portal-assets', async (req, res) => {
 });
 
 /**
+ * Endpoint to update an IT Portal (SiPortal) device
+ * PUT /api/it-portal-assets/:id
+ */
+router.put('/it-portal-assets/:id', async (req, res) => {
+    try {
+        const deviceId = req.params.id;
+        const updateData = req.body;
+        
+        console.log(`[API] Updating SiPortal device ${deviceId} with:`, updateData);
+        
+        // Map form fields back to SiPortal API format
+        const siPortalUpdateData = {};
+        
+        // Only include fields that are provided and map them correctly
+        if (updateData.type !== undefined) {
+            siPortalUpdateData.deviceType = updateData.type;
+        }
+        if (updateData.name !== undefined) {
+            siPortalUpdateData.name = updateData.name;
+        }
+        if (updateData.host_name !== undefined) {
+            siPortalUpdateData.hostName = updateData.host_name;
+            siPortalUpdateData.hostname = updateData.host_name; // Alternative field
+        }
+        if (updateData.description !== undefined) {
+            siPortalUpdateData.description = updateData.description;
+        }
+        if (updateData.domain !== undefined) {
+            siPortalUpdateData.domain = updateData.domain;
+            siPortalUpdateData.realm = updateData.domain; // Alternative field
+        }
+        if (updateData.facility !== undefined) {
+            siPortalUpdateData.facility = updateData.facility;
+            siPortalUpdateData.location = updateData.facility; // Alternative field
+        }
+        if (updateData.username !== undefined) {
+            siPortalUpdateData.username = updateData.username;
+            siPortalUpdateData.user = updateData.username; // Alternative field
+        }
+        if (updateData.preferred_access !== undefined) {
+            siPortalUpdateData.preferredAccess = updateData.preferred_access;
+            siPortalUpdateData.accessMethod = updateData.preferred_access; // Alternative field
+        }
+        
+        console.log(`[API] Mapped SiPortal update data:`, siPortalUpdateData);
+        
+        // Make the update request to SiPortal API
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices/${deviceId}`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(siPortalUpdateData)
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[API] SiPortal update failed (${response.status}):`, errorText);
+            throw new Error(`SiPortal API returned ${response.status}: ${errorText}`);
+        }
+        
+        const updatedDevice = await response.json();
+        console.log(`[API] SiPortal device ${deviceId} updated successfully:`, updatedDevice);
+        
+        // Transform the response back to our format
+        const transformedDevice = {
+            id: updatedDevice.id,
+            asset_tag: updatedDevice.name || updatedDevice.hostName || updatedDevice.id,
+            device_type: updatedDevice.type?.name || updatedDevice.deviceType || 'Unknown',
+            name: updatedDevice.name || 'Unnamed Device',
+            host_name: updatedDevice.hostName || updatedDevice.hostname || '',
+            description: updatedDevice.description || '',
+            domain: updatedDevice.domain || updatedDevice.realm || '',
+            realm: updatedDevice.realm || updatedDevice.domain || '',
+            facility: typeof updatedDevice.facility === 'object' ? 
+                     (updatedDevice.facility?.name || '') : 
+                     (updatedDevice.facility || ''),
+            username: updatedDevice.username || updatedDevice.user || '',
+            preferred_access: updatedDevice.preferredAccess || updatedDevice.preferred_access || 
+                             updatedDevice.accessMethod || '',
+            access_method: updatedDevice.accessMethod || updatedDevice.access_method || 
+                         updatedDevice.preferredAccess || '',
+            credentials: updatedDevice.credentials || updatedDevice.credential || '',
+            manufacturer: updatedDevice.type?.name || updatedDevice.manufacturer || 'Unknown',
+            model: updatedDevice.model || updatedDevice.type?.name || 'Unknown',
+            serial_number: updatedDevice.serialNumber || updatedDevice.serial_number || '',
+            status: updatedDevice.status || 'active',
+            source: 'SiPortal',
+            imported_date: new Date().toISOString(),
+            notes: Array.isArray(updatedDevice.notes) ? 
+                   updatedDevice.notes.join(', ') : 
+                   (updatedDevice.notes || ''),
+            assigned_user: updatedDevice.assignedUser || updatedDevice.assigned_user || '',
+            company_name: updatedDevice.company?.name || 'Unknown',
+            company_id: updatedDevice.company?.id || null,
+            location: typeof updatedDevice.location === 'object' ? 
+                     (updatedDevice.location?.name || '') : 
+                     (updatedDevice.location || ''),
+            ip_address: updatedDevice.ipAddress || updatedDevice.ip_address || '',
+            mac_address: updatedDevice.macAddress || updatedDevice.mac_address || '',
+            os: updatedDevice.operatingSystem || updatedDevice.os || '',
+            last_seen: updatedDevice.lastSeen || updatedDevice.last_seen || ''
+        };
+        
+        res.json({
+            success: true,
+            message: 'IT Portal device updated successfully',
+            device: transformedDevice
+        });
+        
+    } catch (error) {
+        console.error('[API] Error updating SiPortal device:', error.message);
+        res.status(500).json({
+            error: 'Failed to update IT Portal device',
+            details: error.message
+        });
+    }
+});
+
+/**
  * SiPortal webhook endpoint
  * Receives webhook notifications from SiPortal when devices are updated
  */
