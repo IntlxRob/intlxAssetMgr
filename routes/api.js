@@ -695,93 +695,126 @@ router.get('/it-portal-assets', async (req, res) => {
             if (!matchingCompany) {
                 console.log(`[API] No match found in cache for "${orgName}", trying direct search`);
                 
-                // Try direct search by company name as fallback
+                // Try direct search by company name as fallback with pagination
                 try {
-                    const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}`, {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': process.env.SIPORTAL_API_KEY,
-                            'Content-Type': 'application/json'
-                        }
-                    });
-                    
-                    if (directResponse.ok) {
-                        const directData = await directResponse.json();
-                        const devices = directData.data?.results || [];
+                    console.log(`[API] Starting paginated direct search for: ${orgName}`);
+                    let allDevices = [];
+                    let page = 1;
+                    let hasMore = true;
+
+                    while (hasMore && page <= 20) {
+                        console.log(`[API] Direct search page ${page}`);
                         
-                        if (devices.length > 0) {
-                            // Extract company info from the first device
-                            const companyInfo = devices[0].company;
-                            if (companyInfo && companyInfo.id) {
-                                matchingCompany = companyInfo;
-                                console.log(`[API] Direct search found: "${companyInfo.name}" (ID: ${companyInfo.id}) with ${devices.length} devices`);
-                                
-                                // Return the devices directly since we already have them
-                                const transformedAssets = devices.map(device => ({
-                                    // Basic identification
-                                    id: device.id,
-                                    asset_tag: device.name || device.hostName || device.id,
-                                    
-                                    // IT Portal specific fields (matching your actual field names)
-                                    device_type: device.type?.name || device.deviceType || 'Unknown',
-                                    name: device.name || 'Unnamed Device',
-                                    host_name: device.hostName || device.hostname || '',
-                                    description: (device.description && 
-                                                 device.description !== 'Active' && 
-                                                 device.description !== 'Inactive' && 
-                                                 device.description !== device.status &&
-                                                 device.description.toLowerCase() !== 'active' &&
-                                                 device.description.toLowerCase() !== 'inactive') ? 
-                                                device.description : 
-                                                '',
-                                    domain: device.domain || device.realm || '',
-                                    realm: device.realm || device.domain || '', // Alternative field name
-                                    facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
-                                    username: device.username || device.user || '',
-                                    preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
-                                    access_method: device.accessMethod || device.access_method || device.preferredAccess || '', // Alternative field name
-                                    credentials: device.credentials || device.credential || '',
-                                    
-                                    // Standard Zendesk asset fields for compatibility
-                                    manufacturer: device.type?.name || device.manufacturer || 'Unknown',
-                                    model: device.model || device.type?.name || 'Unknown',
-                                    serial_number: device.serialNumber || device.serial_number || '',
-                                    status: device.status || 
-                                           (device.description && (device.description.toLowerCase() === 'active' || device.description.toLowerCase() === 'inactive') ? 
-                                            device.description.toLowerCase() : 'active'),
-                                    
-                                    // Metadata fields
-                                    source: 'SiPortal',
-                                    imported_date: new Date().toISOString(),
-                                    notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
-                                    assigned_user: device.assignedUser || device.assigned_user || '',
-                                    
-                                    // Company info for debugging
-                                    company_name: companyInfo.name,
-                                    company_id: companyInfo.id,
-                                    
-                                    // Additional fields that might be useful
-                                    location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
-                                    ip_address: device.ipAddress || device.ip_address || '',
-                                    mac_address: device.macAddress || device.mac_address || '',
-                                    os: device.operatingSystem || device.os || '',
-                                    last_seen: device.lastSeen || device.last_seen || ''
-                                }));
-                                
-                                console.log(`[API] Returning ${transformedAssets.length} devices via direct search`);
-                                return res.json({
-                                    assets: transformedAssets,
-                                    company: {
-                                        name: companyInfo.name,
-                                        id: companyInfo.id
-                                    },
-                                    organization: {
-                                        name: orgName,
-                                        id: user.organization_id
-                                    },
-                                    search_method: 'direct_search'
-                                });
+                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&page=${page}`, {
+                            method: 'GET',
+                            headers: {
+                                'Authorization': process.env.SIPORTAL_API_KEY,
+                                'Content-Type': 'application/json'
                             }
+                        });
+                        
+                        if (!directResponse.ok) {
+                            console.log(`[API] Direct search failed on page ${page}: ${directResponse.status}`);
+                            break;
+                        }
+                        
+                        const directData = await directResponse.json();
+                        const pageDevices = directData.data?.results || [];
+                        
+                        if (pageDevices.length === 0) {
+                            console.log(`[API] Direct search page ${page}: No devices found, stopping`);
+                            hasMore = false;
+                        } else {
+                            allDevices.push(...pageDevices);
+                            console.log(`[API] Direct search page ${page}: Found ${pageDevices.length} devices (total: ${allDevices.length})`);
+                            
+                            // Check for more pages
+                            hasMore = directData.data?.has_more || 
+                                     directData.meta?.has_more || 
+                                     pageDevices.length === 20;
+                            
+                            page++;
+                        }
+                        
+                        // Small delay to avoid rate limiting
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+
+                    const devices = allDevices;
+                    console.log(`[API] Direct search completed: ${devices.length} total devices found`);
+                    
+                    if (devices.length > 0) {
+                        // Extract company info from the first device
+                        const companyInfo = devices[0].company;
+                        if (companyInfo && companyInfo.id) {
+                            matchingCompany = companyInfo;
+                            console.log(`[API] Direct search found: "${companyInfo.name}" (ID: ${companyInfo.id}) with ${devices.length} devices`);
+                            
+                            // Return the devices directly since we already have them
+                            const transformedAssets = devices.map(device => ({
+                                // Basic identification
+                                id: device.id,
+                                asset_tag: device.name || device.hostName || device.id,
+                                
+                                // IT Portal specific fields (matching your actual field names)
+                                device_type: device.type?.name || device.deviceType || 'Unknown',
+                                name: device.name || 'Unnamed Device',
+                                host_name: device.hostName || device.hostname || '',
+                                description: (device.description && 
+                                             device.description !== 'Active' && 
+                                             device.description !== 'Inactive' && 
+                                             device.description !== device.status &&
+                                             device.description.toLowerCase() !== 'active' &&
+                                             device.description.toLowerCase() !== 'inactive') ? 
+                                            device.description : 
+                                            '',
+                                domain: device.domain || device.realm || '',
+                                realm: device.realm || device.domain || '', // Alternative field name
+                                facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
+                                username: device.username || device.user || '',
+                                preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
+                                access_method: device.accessMethod || device.access_method || device.preferredAccess || '', // Alternative field name
+                                credentials: device.credentials || device.credential || '',
+                                
+                                // Standard Zendesk asset fields for compatibility
+                                manufacturer: device.type?.name || device.manufacturer || 'Unknown',
+                                model: device.model || device.type?.name || 'Unknown',
+                                serial_number: device.serialNumber || device.serial_number || '',
+                                status: device.status || 
+                                       (device.description && (device.description.toLowerCase() === 'active' || device.description.toLowerCase() === 'inactive') ? 
+                                        device.description.toLowerCase() : 'active'),
+                                
+                                // Metadata fields
+                                source: 'SiPortal',
+                                imported_date: new Date().toISOString(),
+                                notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
+                                assigned_user: device.assignedUser || device.assigned_user || '',
+                                
+                                // Company info for debugging
+                                company_name: companyInfo.name,
+                                company_id: companyInfo.id,
+                                
+                                // Additional fields that might be useful
+                                location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
+                                ip_address: device.ipAddress || device.ip_address || '',
+                                mac_address: device.macAddress || device.mac_address || '',
+                                os: device.operatingSystem || device.os || '',
+                                last_seen: device.lastSeen || device.last_seen || ''
+                            }));
+                            
+                            console.log(`[API] Returning ${transformedAssets.length} devices via direct search`);
+                            return res.json({
+                                assets: transformedAssets,
+                                company: {
+                                    name: companyInfo.name,
+                                    id: companyInfo.id
+                                },
+                                organization: {
+                                    name: orgName,
+                                    id: user.organization_id
+                                },
+                                search_method: 'direct_search'
+                            });
                         }
                     }
                 } catch (directError) {
@@ -803,52 +836,52 @@ router.get('/it-portal-assets', async (req, res) => {
         console.log(`[API] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
 
         // Step 3: Fetch devices for the matching company with pagination
-console.log(`[API] Fetching all devices for company ${matchingCompany.name} (ID: ${matchingCompany.id})`);
+        console.log(`[API] Fetching all devices for company ${matchingCompany.name} (ID: ${matchingCompany.id})`);
 
-let allDevices = [];
-let page = 1;
-let hasMore = true;
+        let allDevices = [];
+        let page = 1;
+        let hasMore = true;
 
-while (hasMore && page <= 20) { // Safety limit
-    console.log(`[API] Fetching devices page ${page}`);
-    
-    const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&page=${page}`, {
-        method: 'GET',
-        headers: {
-            'Authorization': process.env.SIPORTAL_API_KEY,
-            'Content-Type': 'application/json'
+        while (hasMore && page <= 20) { // Safety limit
+            console.log(`[API] Fetching devices page ${page}`);
+            
+            const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&page=${page}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`SiPortal Devices API returned ${response.status}: ${response.statusText}`);
+            }
+
+            const siPortalData = await response.json();
+            const pageDevices = siPortalData.data?.results || [];
+            
+            if (pageDevices.length === 0) {
+                console.log(`[API] Page ${page}: No devices found, stopping pagination`);
+                hasMore = false;
+            } else {
+                allDevices.push(...pageDevices);
+                console.log(`[API] Page ${page}: Found ${pageDevices.length} devices (total: ${allDevices.length})`);
+                
+                // Check if there are more pages
+                hasMore = siPortalData.data?.has_more || 
+                         siPortalData.meta?.has_more || 
+                         siPortalData.pagination?.has_more ||
+                         pageDevices.length === 20; // Assume 20 is page size
+                
+                page++;
+            }
+            
+            // Add small delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
-    });
 
-    if (!response.ok) {
-        throw new Error(`SiPortal Devices API returned ${response.status}: ${response.statusText}`);
-    }
-
-    const siPortalData = await response.json();
-    const pageDevices = siPortalData.data?.results || [];
-    
-    if (pageDevices.length === 0) {
-        console.log(`[API] Page ${page}: No devices found, stopping pagination`);
-        hasMore = false;
-    } else {
-        allDevices.push(...pageDevices);
-        console.log(`[API] Page ${page}: Found ${pageDevices.length} devices (total: ${allDevices.length})`);
-        
-        // Check if there are more pages
-        hasMore = siPortalData.data?.has_more || 
-                 siPortalData.meta?.has_more || 
-                 siPortalData.pagination?.has_more ||
-                 pageDevices.length === 20; // Assume 20 is page size
-        
-        page++;
-    }
-    
-    // Add small delay to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 100));
-}
-
-console.log(`[API] Total devices fetched for ${matchingCompany.name}: ${allDevices.length}`);
-const devices = allDevices;
+        console.log(`[API] Total devices fetched for ${matchingCompany.name}: ${allDevices.length}`);
+        const devices = allDevices;
         
         // Handle empty device list gracefully
         if (devices.length === 0) {
@@ -883,7 +916,7 @@ const devices = allDevices;
             name: device.name || 'Unnamed Device',
             host_name: device.hostName || device.hostname || '',
             
-            // NEW - Show actual value from IT Portal
+            // Show actual value from IT Portal
             description: device.description || '',
             domain: device.domain || device.realm || '',
             realm: device.realm || device.domain || '', // Alternative field name
@@ -1205,7 +1238,6 @@ router.post('/import-siportal-devices', async (req, res) => {
         
         let allCompanies = [];
         let page = 1;
-        let totalPages = 1;
 
         // Fetch all companies with proper pagination
         while (page <= 20) { // Safety limit
@@ -1473,7 +1505,6 @@ router.get('/preview-siportal-import', async (req, res) => {
         
         let allCompanies = [];
         let page = 1;
-        let totalPages = 1;
 
         // Fetch all companies with proper pagination
         while (page <= 20) { // Safety limit
