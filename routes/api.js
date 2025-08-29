@@ -802,22 +802,53 @@ router.get('/it-portal-assets', async (req, res) => {
 
         console.log(`[API] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
 
-        // Step 3: Fetch devices for the matching company
-        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
-            method: 'GET',
-            headers: {
-                'Authorization': process.env.SIPORTAL_API_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
+        // Step 3: Fetch devices for the matching company with pagination
+console.log(`[API] Fetching all devices for company ${matchingCompany.name} (ID: ${matchingCompany.id})`);
 
-        if (!devicesResponse.ok) {
-            throw new Error(`SiPortal Devices API returned ${devicesResponse.status}: ${devicesResponse.statusText}`);
+let allDevices = [];
+let page = 1;
+let hasMore = true;
+
+while (hasMore && page <= 20) { // Safety limit
+    console.log(`[API] Fetching devices page ${page}`);
+    
+    const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&page=${page}`, {
+        method: 'GET',
+        headers: {
+            'Authorization': process.env.SIPORTAL_API_KEY,
+            'Content-Type': 'application/json'
         }
+    });
 
-        const siPortalData = await devicesResponse.json();
-        const devices = siPortalData.data?.results || [];
-        console.log(`[API] SiPortal response: ${devices.length} devices for ${matchingCompany.name}`);
+    if (!response.ok) {
+        throw new Error(`SiPortal Devices API returned ${response.status}: ${response.statusText}`);
+    }
+
+    const siPortalData = await response.json();
+    const pageDevices = siPortalData.data?.results || [];
+    
+    if (pageDevices.length === 0) {
+        console.log(`[API] Page ${page}: No devices found, stopping pagination`);
+        hasMore = false;
+    } else {
+        allDevices.push(...pageDevices);
+        console.log(`[API] Page ${page}: Found ${pageDevices.length} devices (total: ${allDevices.length})`);
+        
+        // Check if there are more pages
+        hasMore = siPortalData.data?.has_more || 
+                 siPortalData.meta?.has_more || 
+                 siPortalData.pagination?.has_more ||
+                 pageDevices.length === 20; // Assume 20 is page size
+        
+        page++;
+    }
+    
+    // Add small delay to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 100));
+}
+
+console.log(`[API] Total devices fetched for ${matchingCompany.name}: ${allDevices.length}`);
+const devices = allDevices;
         
         // Handle empty device list gracefully
         if (devices.length === 0) {
