@@ -851,14 +851,9 @@ router.get('/it-portal-assets', async (req, res) => {
             device_type: device.type?.name || device.deviceType || 'Unknown',
             name: device.name || 'Unnamed Device',
             host_name: device.hostName || device.hostname || '',
-            description: (device.description && 
-                         device.description !== 'Active' && 
-                         device.description !== 'Inactive' && 
-                         device.description !== device.status &&
-                         device.description.toLowerCase() !== 'active' &&
-                         device.description.toLowerCase() !== 'inactive') ? 
-                        device.description : 
-                        '',
+            
+            // NEW - Show actual value from IT Portal
+            description: device.description || '',
             domain: device.domain || device.realm || '',
             realm: device.realm || device.domain || '', // Alternative field name
             facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
