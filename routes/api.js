@@ -958,10 +958,9 @@ router.put('/it-portal-assets/:id', async (req, res) => {
         
         // Test multiple possible endpoints and methods
         const endpoints = [
-            { method: 'PUT', url: `https://www.siportal.net/api/2.0/devices/${deviceId}` },
-            { method: 'PATCH', url: `https://www.siportal.net/api/2.0/devices/${deviceId}` },
-            { method: 'POST', url: `https://www.siportal.net/api/2.0/devices/${deviceId}/update` },
-            { method: 'PUT', url: `https://www.siportal.net/api/2.0/device/${deviceId}` }, // singular
+             { method: 'PATCH', url: `https://www.siportal.net/api/2.0/devices/${deviceId}` }, // Primary method
+             { method: 'PUT', url: `https://www.siportal.net/api/2.0/devices/${deviceId}` },   // Fallback
+             { method: 'POST', url: `https://www.siportal.net/api/2.0/devices/${deviceId}/update` },
         ];
         
         let lastError = null;
