@@ -692,215 +692,107 @@ router.get('/it-portal-assets', async (req, res) => {
                 }
             }
 
+            // Step 5: Direct search with company ID lookup if no cache match
             if (!matchingCompany) {
-                console.log(`[API] No match found in cache for "${orgName}", trying direct search`);
+                console.log(`[API] No match found in cache for "${orgName}", trying direct company search`);
                 
-                // Try direct search by company name as fallback with pagination
                 try {
-                    console.log(`[API] Starting paginated direct search for: ${orgName}`);
-                    let allDevices = [];
-                    let deviceIds = new Set(); // Track device IDs to prevent duplicates
-                    let page = 1;
-                    let hasMore = true;
-                    let companiesFound = new Set(); // Track which companies we're getting results from
-                    let consecutiveBadPages = 0; // Track pages with no valid devices
+                    // Search for company by name to get company ID
+                    console.log(`[API] Searching for company: "${orgName}"`);
+                    let companyPage = 1;
+                    let foundCompany = null;
 
-                    while (hasMore && page <= 5) { // Reduced to 5 pages to limit results
-                        console.log(`[API] Direct search page ${page}`);
-                        
-                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&page=${page}`, {
-                            method: 'GET',
-                            headers: {
-                                'Authorization': process.env.SIPORTAL_API_KEY,
-                                'Content-Type': 'application/json'
+                    while (companyPage <= 10 && !foundCompany) {
+                        try {
+                            const companyResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${companyPage}`, {
+                                method: 'GET',
+                                headers: {
+                                    'Authorization': process.env.SIPORTAL_API_KEY,
+                                    'Content-Type': 'application/json'
+                                }
+                            });
+
+                            if (!companyResponse.ok) {
+                                console.log(`[API] Company search page ${companyPage} failed: ${companyResponse.status}`);
+                                break;
                             }
-                        });
-                        
-                        if (!directResponse.ok) {
-                            console.log(`[API] Direct search failed on page ${page}: ${directResponse.status}`);
+
+                            const companyData = await companyResponse.json();
+                            const companies = companyData.data?.results || [];
+                            
+                            if (companies.length === 0) {
+                                console.log(`[API] No more companies on page ${companyPage}`);
+                                break;
+                            }
+
+                            // Look for company name match
+                            const lowerOrgName = orgName.toLowerCase();
+                            foundCompany = companies.find(company => {
+                                if (!company.name) return false;
+                                const lowerCompanyName = company.name.toLowerCase();
+                                
+                                // Try exact match first
+                                if (lowerCompanyName === lowerOrgName) return true;
+                                
+                                // Try contains match
+                                if (lowerCompanyName.includes(lowerOrgName) || lowerOrgName.includes(lowerCompanyName)) return true;
+                                
+                                // Try word-based matching for complex company names
+                                const orgWords = lowerOrgName.split(' ').filter(w => w.length > 3);
+                                const companyWords = lowerCompanyName.split(' ').filter(w => w.length > 3);
+                                
+                                return orgWords.some(orgWord => companyWords.some(compWord => 
+                                    compWord.includes(orgWord) || orgWord.includes(compWord)
+                                ));
+                            });
+
+                            if (foundCompany) {
+                                console.log(`[API] Found company "${foundCompany.name}" (ID: ${foundCompany.id}) on page ${companyPage}`);
+                                matchingCompany = foundCompany;
+                                break;
+                            }
+
+                            companyPage++;
+                            await new Promise(resolve => setTimeout(resolve, 50));
+
+                        } catch (err) {
+                            console.log(`[API] Company search page ${companyPage} error: ${err.message}`);
                             break;
                         }
-                        
-                        const directData = await directResponse.json();
-                        const pageDevices = directData.data?.results || [];
-                        
-                        if (pageDevices.length === 0) {
-                            console.log(`[API] Direct search page ${page}: No devices found, stopping`);
-                            hasMore = false;
-                        } else {
-                            // Check what companies are in this page
-                            const pageCompanies = [...new Set(pageDevices.map(d => d.company?.name).filter(Boolean))];
-                            pageCompanies.forEach(c => companiesFound.add(c));
-                            console.log(`[API] Direct search page ${page}: Found ${pageDevices.length} devices from companies: ${pageCompanies.join(', ')}`);
-                            
-                            // Filter out duplicates and validate companies
-                            const validDevices = pageDevices.filter(device => {
-                                // Check if we already have this device
-                                if (deviceIds.has(device.id)) {
-                                    console.log(`[API] Skipping duplicate device ID: ${device.id}`);
-                                    return false;
-                                }
-                                
-                                // Validate company match - accept any reasonable match
-                                if (!device.company || !device.company.name) {
-                                    return false;
-                                }
-                                
-                                const deviceCompanyName = device.company.name.toLowerCase().trim();
-                                const searchTermLower = orgName.toLowerCase().trim();
-                                
-                                // Be more permissive - if the API returned it, it's probably relevant
-                                const isReasonableMatch = 
-                                    deviceCompanyName.includes(searchTermLower) ||
-                                    searchTermLower.includes(deviceCompanyName) ||
-                                    searchTermLower.split(' ').some(word => 
-                                        word.length > 3 && deviceCompanyName.includes(word)
-                                    ) ||
-                                    deviceCompanyName.split(' ').some(word => 
-                                        word.length > 3 && searchTermLower.includes(word)
-                                    );
-                                
-                                if (!isReasonableMatch) {
-                                    console.log(`[API] Rejecting device from unrelated company: "${device.company.name}"`);
-                                    return false;
-                                }
-                                
-                                return true;
-                            });
-                            
-                            validDevices.forEach(device => deviceIds.add(device.id));
-                            allDevices.push(...validDevices);
-                            
-                            console.log(`[API] Direct search page ${page}: Added ${validDevices.length} valid devices (total: ${allDevices.length})`);
-                            
-                            // Track consecutive pages with no valid devices
-                            if (validDevices.length === 0) {
-                                consecutiveBadPages++;
-                                console.log(`[API] Page ${page} had no valid devices (consecutive bad pages: ${consecutiveBadPages})`);
-                                
-                                // If we've had 2 consecutive pages with no valid devices, stop searching
-                                if (consecutiveBadPages >= 2) {
-                                    console.log(`[API] Stopping search after ${consecutiveBadPages} consecutive pages with no relevant devices`);
-                                    hasMore = false;
-                                }
-                            } else {
-                                consecutiveBadPages = 0; // Reset counter when we find valid devices
-                            }
-                            
-                            // Check for more pages (only continue if we haven't hit our bad page limit)
-                            if (hasMore) {
-                                hasMore = directData.data?.has_more || 
-                                         directData.meta?.has_more || 
-                                         pageDevices.length === 20;
-                            }
-                            
-                            page++;
-                        }
-                        
-                        // Small delay to avoid rate limiting
-                        await new Promise(resolve => setTimeout(resolve, 100));
                     }
 
-                    const devices = allDevices;
-                    console.log(`[API] Direct search completed: ${devices.length} unique devices found from companies: ${Array.from(companiesFound).join(', ')}`);
-                    
-                    if (devices.length > 0) {
-                        // Extract company info from the first device
-                        const companyInfo = devices[0].company;
-                        if (companyInfo && companyInfo.id) {
-                            matchingCompany = companyInfo;
-                            console.log(`[API] Using company from devices: "${companyInfo.name}" (ID: ${companyInfo.id})`);
-                        }
-                        
-                        if (matchingCompany) {
-                            
-                            // Return the devices directly since we already have them
-                            const transformedAssets = devices.map(device => ({
-                                // Basic identification
-                                id: device.id,
-                                asset_tag: device.name || device.hostName || device.id,
-                                
-                                // IT Portal specific fields (matching your actual field names)
-                                device_type: device.type?.name || device.deviceType || 'Unknown',
-                                name: device.name || 'Unnamed Device',
-                                host_name: device.hostName || device.hostname || '',
-                                description: (device.description && 
-                                             device.description !== 'Active' && 
-                                             device.description !== 'Inactive' && 
-                                             device.description !== device.status &&
-                                             device.description.toLowerCase() !== 'active' &&
-                                             device.description.toLowerCase() !== 'inactive') ? 
-                                            device.description : 
-                                            '',
-                                domain: device.domain || device.realm || '',
-                                realm: device.realm || device.domain || '', // Alternative field name
-                                facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
-                                username: device.username || device.user || '',
-                                preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
-                                access_method: device.accessMethod || device.access_method || device.preferredAccess || '', // Alternative field name
-                                credentials: device.credentials || device.credential || '',
-                                
-                                // Standard Zendesk asset fields for compatibility
-                                manufacturer: device.type?.name || device.manufacturer || 'Unknown',
-                                model: device.model || device.type?.name || 'Unknown',
-                                serial_number: device.serialNumber || device.serial_number || '',
-                                status: device.status || 
-                                       (device.description && (device.description.toLowerCase() === 'active' || device.description.toLowerCase() === 'inactive') ? 
-                                        device.description.toLowerCase() : 'active'),
-                                
-                                // Metadata fields
-                                source: 'SiPortal',
-                                imported_date: new Date().toISOString(),
-                                notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
-                                assigned_user: device.assignedUser || device.assigned_user || '',
-                                
-                                // Company info for debugging
-                                company_name: companyInfo.name,
-                                company_id: companyInfo.id,
-                                
-                                // Additional fields that might be useful
-                                location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
-                                ip_address: device.ipAddress || device.ip_address || '',
-                                mac_address: device.macAddress || device.mac_address || '',
-                                os: device.operatingSystem || device.os || '',
-                                last_seen: device.lastSeen || device.last_seen || ''
-                            }));
-                            
-                            console.log(`[API] Returning ${transformedAssets.length} devices via direct search`);
-                            return res.json({
-                                assets: transformedAssets,
-                                company: {
-                                    name: companyInfo.name,
-                                    id: companyInfo.id
-                                },
-                                organization: {
-                                    name: orgName,
-                                    id: user.organization_id
-                                },
-                                search_method: 'direct_search'
-                            });
-                        }
+                    if (!matchingCompany) {
+                        console.log(`[API] No matching company found for "${orgName}" after searching ${companyPage - 1} pages`);
+                        return res.json({
+                            assets: [],
+                            message: `No matching IT Portal company found for "${orgName}"`,
+                            search_method: 'company_search_failed',
+                            organization: {
+                                name: orgName,
+                                id: user.organization_id
+                            }
+                        });
                     }
+
                 } catch (directError) {
-                    console.log(`[API] Direct search failed: ${directError.message}`);
+                    console.log(`[API] Direct company search failed: ${directError.message}`);
+                    return res.json({ 
+                        assets: [],
+                        message: `No matching IT Portal company found for "${orgName}". Contact support if this company should be in IT Portal.`,
+                        search_method: 'direct_search_failed',
+                        organization: {
+                            name: orgName,
+                            id: user.organization_id
+                        }
+                    });
                 }
-                
-                console.log(`[API] No match found for "${orgName}"`);
-                return res.json({ 
-                    assets: [],
-                    message: companiesCache.companies.length > 0 ?
-                        `No matching IT Portal company found for "${orgName}". Contact support if this company should be in IT Portal.` :
-                        `Searching IT Portal companies... Please refresh in a moment or contact support if "${orgName}" should be in IT Portal.`,
-                    search_method: companiesCache.companies.length > 0 ? 'cache_search' : 'fallback_search',
-                    companies_searched: companiesCache.companies.length || 20
-                });
             }
         }
 
         console.log(`[API] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
 
-        // Step 3: Fetch devices for the matching company with pagination
-        console.log(`[API] Fetching all devices for company ${matchingCompany.name} (ID: ${matchingCompany.id})`);
+        // Step 6: Fetch ALL devices for the matching company with proper pagination
+        console.log(`[API] Fetching all devices for company "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
 
         let allDevices = [];
         let page = 1;
