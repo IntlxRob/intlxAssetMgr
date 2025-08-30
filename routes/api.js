@@ -1831,6 +1831,205 @@ router.get('/debug-siportal-company/:id', async (req, res) => {
     }
 });
 
+/**
+ * DIAGNOSTIC endpoint to debug SiPortal pagination issues
+ * GET /api/debug-siportal-pagination
+ */
+router.get('/debug-siportal-pagination', async (req, res) => {
+    try {
+        console.log(`[Diagnostic] Testing SiPortal pagination...`);
+        
+        const results = [];
+        
+        // Test first 5 pages and examine the responses in detail
+        for (let page = 1; page <= 5; page++) {
+            console.log(`[Diagnostic] Testing page ${page}...`);
+            
+            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                results.push({
+                    page: page,
+                    error: `API returned ${response.status}: ${response.statusText}`
+                });
+                continue;
+            }
+
+            const data = await response.json();
+            const companies = data.data?.results || [];
+            
+            // Get detailed info about this page
+            const pageInfo = {
+                page: page,
+                companies_count: companies.length,
+                companies: companies.map(c => ({ id: c.id, name: c.name })),
+                
+                // Check for pagination metadata
+                meta: data.meta || null,
+                pagination: data.pagination || null,
+                links: data.links || null,
+                
+                // Raw response structure (first 3 keys only to avoid huge output)
+                raw_structure: Object.keys(data).slice(0, 10),
+                
+                // Check if any company IDs repeat from page 1
+                repeated_from_page_1: page > 1 ? 
+                    companies.filter(c => results[0]?.companies?.some(p1c => p1c.id === c.id)).length : 
+                    0
+            };
+            
+            results.push(pageInfo);
+            
+            console.log(`[Diagnostic] Page ${page}: ${companies.length} companies, ${pageInfo.repeated_from_page_1} repeated from page 1`);
+        }
+        
+        // Try different pagination approaches
+        console.log(`[Diagnostic] Testing alternative pagination methods...`);
+        
+        const alternatives = [];
+        
+        // Method 1: Try offset/limit instead of page
+        try {
+            const offsetResponse = await fetch(`https://www.siportal.net/api/2.0/companies?offset=20&limit=20`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (offsetResponse.ok) {
+                const offsetData = await offsetResponse.json();
+                alternatives.push({
+                    method: 'offset/limit',
+                    success: true,
+                    companies_count: offsetData.data?.results?.length || 0,
+                    raw_structure: Object.keys(offsetData)
+                });
+            } else {
+                alternatives.push({
+                    method: 'offset/limit',
+                    success: false,
+                    error: `${offsetResponse.status}: ${offsetResponse.statusText}`
+                });
+            }
+        } catch (err) {
+            alternatives.push({
+                method: 'offset/limit',
+                success: false,
+                error: err.message
+            });
+        }
+        
+        // Method 2: Try per_page parameter
+        try {
+            const perPageResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=2&per_page=20`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (perPageResponse.ok) {
+                const perPageData = await perPageResponse.json();
+                alternatives.push({
+                    method: 'page/per_page',
+                    success: true,
+                    companies_count: perPageData.data?.results?.length || 0,
+                    raw_structure: Object.keys(perPageData)
+                });
+            } else {
+                alternatives.push({
+                    method: 'page/per_page',
+                    success: false,
+                    error: `${perPageResponse.status}: ${perPageResponse.statusText}`
+                });
+            }
+        } catch (err) {
+            alternatives.push({
+                method: 'page/per_page',
+                success: false,
+                error: err.message
+            });
+        }
+        
+        res.json({
+            success: true,
+            diagnosis: "SiPortal API pagination test",
+            page_results: results,
+            alternative_methods: alternatives,
+            summary: {
+                total_unique_companies: [...new Set(results.flatMap(r => r.companies?.map(c => c.id) || []))].length,
+                pages_with_data: results.filter(r => r.companies_count > 0).length,
+                pagination_appears_broken: results.length > 1 && results.every((r, i) => i === 0 || r.repeated_from_page_1 === r.companies_count),
+                recommendation: results.length > 1 && results.every((r, i) => i === 0 || r.repeated_from_page_1 === r.companies_count) ? 
+                    "API pagination is broken - same results on every page" : 
+                    "Pagination might be working"
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Diagnostic] Error testing pagination:', error.message);
+        res.status(500).json({
+            error: 'Failed to test pagination',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * SIMPLE endpoint to get companies without pagination (just page 1)
+ * GET /api/debug-siportal-simple
+ */
+router.get('/debug-siportal-simple', async (req, res) => {
+    try {
+        console.log(`[Simple] Fetching companies from page 1 only...`);
+        
+        const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=1`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        console.log(`[Simple] Raw API response structure:`, Object.keys(data));
+        console.log(`[Simple] Companies array length:`, data.data?.results?.length || 0);
+        console.log(`[Simple] Sample company:`, JSON.stringify(data.data?.results?.[0], null, 2));
+        
+        const companies = data.data?.results || [];
+        
+        res.json({
+            success: true,
+            message: "Single page fetch from SiPortal",
+            raw_response_keys: Object.keys(data),
+            meta: data.meta || null,
+            pagination: data.pagination || null,
+            total_companies: companies.length,
+            companies: companies.map(c => ({ id: c.id, name: c.name }))
+        });
+        
+    } catch (error) {
+        console.error('[Simple] Error fetching companies:', error.message);
+        res.status(500).json({
+            error: 'Failed to fetch companies',
+            details: error.message
+        });
+    }
+});
+
 // Initialize companies cache on startup
 if (process.env.SIPORTAL_API_KEY) {
     refreshCompaniesCache().catch(err => 
