@@ -1522,7 +1522,7 @@ router.get('/it-portal-assets', async (req, res) => {
                     try {
                         console.log(`[API] Trying direct search with: "${searchVariation}"`);
                         
-                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(searchVariation)}`, {
+                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&limit=1000`, {
                             method: 'GET',
                             headers: {
                                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -1920,7 +1920,7 @@ router.post('/import-siportal-devices', async (req, res) => {
         console.log(`[Import] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`);
 
         // Step 3: Fetch devices from SiPortal
-        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&limit=1000`, {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
