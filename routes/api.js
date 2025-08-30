@@ -699,10 +699,12 @@ router.get('/it-portal-assets', async (req, res) => {
                 try {
                     console.log(`[API] Starting paginated direct search for: ${orgName}`);
                     let allDevices = [];
+                    let deviceIds = new Set(); // Track device IDs to prevent duplicates
                     let page = 1;
                     let hasMore = true;
+                    let companiesFound = new Set(); // Track which companies we're getting results from
 
-                    while (hasMore && page <= 10) { // Reduced from 20 to 10 pages max
+                    while (hasMore && page <= 5) { // Reduced to 5 pages to limit results
                         console.log(`[API] Direct search page ${page}`);
                         
                         const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&page=${page}`, {
@@ -725,8 +727,49 @@ router.get('/it-portal-assets', async (req, res) => {
                             console.log(`[API] Direct search page ${page}: No devices found, stopping`);
                             hasMore = false;
                         } else {
-                            allDevices.push(...pageDevices);
-                            console.log(`[API] Direct search page ${page}: Found ${pageDevices.length} devices (total: ${allDevices.length})`);
+                            // Check what companies are in this page
+                            const pageCompanies = [...new Set(pageDevices.map(d => d.company?.name).filter(Boolean))];
+                            pageCompanies.forEach(c => companiesFound.add(c));
+                            console.log(`[API] Direct search page ${page}: Found ${pageDevices.length} devices from companies: ${pageCompanies.join(', ')}`);
+                            
+                            // Filter out duplicates and validate companies
+                            const validDevices = pageDevices.filter(device => {
+                                // Check if we already have this device
+                                if (deviceIds.has(device.id)) {
+                                    console.log(`[API] Skipping duplicate device ID: ${device.id}`);
+                                    return false;
+                                }
+                                
+                                // Validate company match
+                                if (!device.company || !device.company.name) {
+                                    return false;
+                                }
+                                
+                                const deviceCompanyName = device.company.name.toLowerCase().trim();
+                                const searchTermLower = orgName.toLowerCase().trim();
+                                
+                                const isReasonableMatch = 
+                                    deviceCompanyName.includes(searchTermLower) ||
+                                    searchTermLower.includes(deviceCompanyName) ||
+                                    searchTermLower.split(' ').some(word => 
+                                        word.length > 3 && deviceCompanyName.includes(word)
+                                    ) ||
+                                    deviceCompanyName.split(' ').some(word => 
+                                        word.length > 3 && searchTermLower.includes(word)
+                                    );
+                                
+                                if (!isReasonableMatch) {
+                                    console.log(`[API] Rejecting device from unrelated company: "${device.company.name}"`);
+                                    return false;
+                                }
+                                
+                                return true;
+                            });
+                            
+                            validDevices.forEach(device => deviceIds.add(device.id));
+                            allDevices.push(...validDevices);
+                            
+                            console.log(`[API] Direct search page ${page}: Added ${validDevices.length} valid devices (total: ${allDevices.length})`);
                             
                             // Check for more pages
                             hasMore = directData.data?.has_more || 
@@ -741,35 +784,14 @@ router.get('/it-portal-assets', async (req, res) => {
                     }
 
                     const devices = allDevices;
-                    console.log(`[API] Direct search completed: ${devices.length} total devices found`);
+                    console.log(`[API] Direct search completed: ${devices.length} unique devices found from companies: ${Array.from(companiesFound).join(', ')}`);
                     
                     if (devices.length > 0) {
                         // Extract company info from the first device
                         const companyInfo = devices[0].company;
                         if (companyInfo && companyInfo.id) {
-                            // Validate that the returned company actually matches our search
-                            const returnedCompanyName = companyInfo.name.toLowerCase().trim();
-                            const searchTermLower = orgName.toLowerCase().trim();
-                            
-                            // Check if this is a reasonable match
-                            const isReasonableMatch = 
-                                returnedCompanyName.includes(searchTermLower) ||
-                                searchTermLower.includes(returnedCompanyName) ||
-                                // Check for word overlap
-                                searchTermLower.split(' ').some(word => 
-                                    word.length > 3 && returnedCompanyName.includes(word)
-                                ) ||
-                                returnedCompanyName.split(' ').some(word => 
-                                    word.length > 3 && searchTermLower.includes(word)
-                                );
-                            
-                            if (isReasonableMatch) {
-                                matchingCompany = companyInfo;
-                                console.log(`[API] Direct search found: "${companyInfo.name}" (ID: ${companyInfo.id}) with ${devices.length} devices`);
-                            } else {
-                                console.log(`[API] Direct search returned unrelated company: "${companyInfo.name}" for search "${orgName}" - rejecting ${devices.length} devices`);
-                                // Don't use this match as it's not actually related to our search
-                            }
+                            matchingCompany = companyInfo;
+                            console.log(`[API] Using company from devices: "${companyInfo.name}" (ID: ${companyInfo.id})`);
                         }
                         
                         if (matchingCompany) {
