@@ -492,6 +492,618 @@ router.get('/debug-siportal-companies', async (req, res) => {
 });
 
 /**
+ * DIAGNOSTIC endpoint to debug SiPortal pagination issues
+ * GET /api/debug-siportal-pagination
+ */
+router.get('/debug-siportal-pagination', async (req, res) => {
+    try {
+        console.log(`[Diagnostic] Testing SiPortal pagination...`);
+        
+        const results = [];
+        
+        // Test first 5 pages and examine the responses in detail
+        for (let page = 1; page <= 5; page++) {
+            console.log(`[Diagnostic] Testing page ${page}...`);
+            
+            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                results.push({
+                    page: page,
+                    error: `API returned ${response.status}: ${response.statusText}`
+                });
+                continue;
+            }
+
+            const data = await response.json();
+            const companies = data.data?.results || [];
+            
+            // Get detailed info about this page
+            const pageInfo = {
+                page: page,
+                companies_count: companies.length,
+                companies: companies.map(c => ({ id: c.id, name: c.name })),
+                
+                // Check for pagination metadata
+                meta: data.meta || null,
+                pagination: data.pagination || null,
+                links: data.links || null,
+                
+                // Raw response structure (first 3 keys only to avoid huge output)
+                raw_structure: Object.keys(data).slice(0, 10),
+                
+                // Check if any company IDs repeat from page 1
+                repeated_from_page_1: page > 1 ? 
+                    companies.filter(c => results[0]?.companies?.some(p1c => p1c.id === c.id)).length : 
+                    0
+            };
+            
+            results.push(pageInfo);
+            
+            console.log(`[Diagnostic] Page ${page}: ${companies.length} companies, ${pageInfo.repeated_from_page_1} repeated from page 1`);
+        }
+        
+        // Try different pagination approaches
+        console.log(`[Diagnostic] Testing alternative pagination methods...`);
+        
+        const alternatives = [];
+        
+        // Method 1: Try offset/limit instead of page
+        try {
+            const offsetResponse = await fetch(`https://www.siportal.net/api/2.0/companies?offset=20&limit=20`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (offsetResponse.ok) {
+                const offsetData = await offsetResponse.json();
+                alternatives.push({
+                    method: 'offset/limit',
+                    success: true,
+                    companies_count: offsetData.data?.results?.length || 0,
+                    raw_structure: Object.keys(offsetData)
+                });
+            } else {
+                alternatives.push({
+                    method: 'offset/limit',
+                    success: false,
+                    error: `${offsetResponse.status}: ${offsetResponse.statusText}`
+                });
+            }
+        } catch (err) {
+            alternatives.push({
+                method: 'offset/limit',
+                success: false,
+                error: err.message
+            });
+        }
+        
+        // Method 2: Try per_page parameter
+        try {
+            const perPageResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=2&per_page=20`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (perPageResponse.ok) {
+                const perPageData = await perPageResponse.json();
+                alternatives.push({
+                    method: 'page/per_page',
+                    success: true,
+                    companies_count: perPageData.data?.results?.length || 0,
+                    raw_structure: Object.keys(perPageData)
+                });
+            } else {
+                alternatives.push({
+                    method: 'page/per_page',
+                    success: false,
+                    error: `${perPageResponse.status}: ${perPageResponse.statusText}`
+                });
+            }
+        } catch (err) {
+            alternatives.push({
+                method: 'page/per_page',
+                success: false,
+                error: err.message
+            });
+        }
+        
+        res.json({
+            success: true,
+            diagnosis: "SiPortal API pagination test",
+            page_results: results,
+            alternative_methods: alternatives,
+            summary: {
+                total_unique_companies: [...new Set(results.flatMap(r => r.companies?.map(c => c.id) || []))].length,
+                pages_with_data: results.filter(r => r.companies_count > 0).length,
+                pagination_appears_broken: results.length > 1 && results.every((r, i) => i === 0 || r.repeated_from_page_1 === r.companies_count),
+                recommendation: results.length > 1 && results.every((r, i) => i === 0 || r.repeated_from_page_1 === r.companies_count) ? 
+                    "API pagination is broken - same results on every page" : 
+                    "Pagination might be working"
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Diagnostic] Error testing pagination:', error.message);
+        res.status(500).json({
+            error: 'Failed to test pagination',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * SIMPLE endpoint to get companies without pagination (just page 1)
+ * GET /api/debug-siportal-simple
+ */
+router.get('/debug-siportal-simple', async (req, res) => {
+    try {
+        console.log(`[Simple] Fetching companies from page 1 only...`);
+        
+        const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=1`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        console.log(`[Simple] Raw API response structure:`, Object.keys(data));
+        console.log(`[Simple] Companies array length:`, data.data?.results?.length || 0);
+        console.log(`[Simple] Sample company:`, JSON.stringify(data.data?.results?.[0], null, 2));
+        
+        const companies = data.data?.results || [];
+        
+        res.json({
+            success: true,
+            message: "Single page fetch from SiPortal",
+            raw_response_keys: Object.keys(data),
+            meta: data.meta || null,
+            pagination: data.pagination || null,
+            total_companies: companies.length,
+            companies: companies.map(c => ({ id: c.id, name: c.name }))
+        });
+        
+    } catch (error) {
+        console.error('[Simple] Error fetching companies:', error.message);
+        res.status(500).json({
+            error: 'Failed to fetch companies',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * COMPREHENSIVE pagination testing for SiPortal API
+ * Tests all common pagination parameter combinations
+ * GET /api/debug-all-pagination-methods
+ */
+router.get('/debug-all-pagination-methods', async (req, res) => {
+    try {
+        console.log(`[Comprehensive] Testing all possible pagination methods...`);
+        
+        const testCases = [
+            // Standard pagination patterns
+            { name: "page_only", params: "page=2" },
+            { name: "page_per_page", params: "page=2&per_page=20" },
+            { name: "page_limit", params: "page=2&limit=20" },
+            { name: "page_size", params: "page=2&size=20" },
+            { name: "page_count", params: "page=2&count=20" },
+            
+            // Offset/limit patterns
+            { name: "offset_limit", params: "offset=20&limit=20" },
+            { name: "skip_take", params: "skip=20&take=20" },
+            { name: "start_limit", params: "start=20&limit=20" },
+            
+            // Higher limits to test max page size
+            { name: "large_limit", params: "page=1&limit=100" },
+            { name: "max_limit", params: "page=1&limit=500" },
+            { name: "huge_limit", params: "page=1&limit=1000" },
+            
+            // Alternative API versions
+            { name: "v1_page", params: "page=2", version: "1.0" },
+            
+            // Search/filter parameters that might return more
+            { name: "all_companies", params: "all=true" },
+            { name: "include_inactive", params: "include_inactive=true&page=2" },
+            { name: "status_all", params: "status=all&page=2" },
+            
+            // Sort parameters that might affect results
+            { name: "sort_name", params: "page=2&sort=name" },
+            { name: "sort_id", params: "page=2&sort=id" },
+            { name: "order_by_name", params: "page=2&orderby=name" },
+        ];
+        
+        const results = [];
+        
+        for (const testCase of testCases) {
+            console.log(`[Comprehensive] Testing: ${testCase.name} (${testCase.params})`);
+            
+            try {
+                const apiVersion = testCase.version || "2.0";
+                const url = `https://www.siportal.net/api/${apiVersion}/companies?${testCase.params}`;
+                
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': process.env.SIPORTAL_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const companies = data.data?.results || [];
+                    
+                    // Check if companies are different from our known "page 1" set
+                    const knownPage1Ids = [3495, 3496, 3497, 3498, 3499]; // First 5 IDs from page 1
+                    const hasDifferentCompanies = companies.some(c => !knownPage1Ids.includes(c.id));
+                    
+                    const result = {
+                        test: testCase.name,
+                        params: testCase.params,
+                        url: url,
+                        success: true,
+                        companies_count: companies.length,
+                        has_different_companies: hasDifferentCompanies,
+                        first_company_id: companies[0]?.id,
+                        first_company_name: companies[0]?.name,
+                        unique_score: hasDifferentCompanies ? "UNIQUE" : "DUPLICATE"
+                    };
+                    
+                    results.push(result);
+                    console.log(`[Comprehensive] ${testCase.name}: ${companies.length} companies, ${result.unique_score}`);
+                    
+                } else {
+                    results.push({
+                        test: testCase.name,
+                        params: testCase.params,
+                        url: url,
+                        success: false,
+                        error: `${response.status}: ${response.statusText}`,
+                        companies_count: 0,
+                        unique_score: "ERROR"
+                    });
+                }
+                
+            } catch (err) {
+                results.push({
+                    test: testCase.name,
+                    params: testCase.params,
+                    success: false,
+                    error: err.message,
+                    companies_count: 0,
+                    unique_score: "ERROR"
+                });
+            }
+            
+            // Small delay between requests
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        
+        // Analyze results
+        const successful_tests = results.filter(r => r.success);
+        const unique_results = results.filter(r => r.unique_score === "UNIQUE");
+        const large_results = results.filter(r => r.companies_count > 20);
+        
+        res.json({
+            success: true,
+            method: "Comprehensive pagination parameter testing",
+            total_tests: testCases.length,
+            successful_tests: successful_tests.length,
+            tests_with_unique_data: unique_results.length,
+            tests_with_more_than_20: large_results.length,
+            results: results,
+            analysis: {
+                working_pagination_methods: unique_results.map(r => r.test),
+                larger_page_sizes: large_results.map(r => `${r.test}: ${r.companies_count} companies`),
+                recommendation: unique_results.length > 0 ? 
+                    `SUCCESS! Found working pagination: ${unique_results[0].params}` : 
+                    "No working pagination found - API may be limited to 20 companies"
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Comprehensive] Error testing pagination methods:', error.message);
+        res.status(500).json({
+            error: 'Failed to test pagination methods',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Test specific pagination parameters from documentation
+ * GET /api/debug-doc-pagination?method=PARAM_FROM_DOCS
+ */
+router.get('/debug-doc-pagination', async (req, res) => {
+    try {
+        const method = req.query.method;
+        
+        if (!method) {
+            return res.json({
+                error: "Missing method parameter",
+                usage: "Add ?method=YOUR_PARAMS to test specific pagination from docs",
+                examples: [
+                    "?method=page=2&pageSize=50",
+                    "?method=offset=20&max=50", 
+                    "?method=start=20&rows=50"
+                ]
+            });
+        }
+        
+        console.log(`[Doc Test] Testing documentation method: ${method}`);
+        
+        const url = `https://www.siportal.net/api/2.0/companies?${method}`;
+        
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            return res.json({
+                success: false,
+                method: method,
+                url: url,
+                error: `${response.status}: ${response.statusText}`
+            });
+        }
+        
+        const data = await response.json();
+        const companies = data.data?.results || [];
+        
+        // Check if this returns different companies than page 1
+        const knownPage1Ids = [3495, 3496, 3497, 3498, 3499];
+        const hasDifferentCompanies = companies.some(c => !knownPage1Ids.includes(c.id));
+        
+        res.json({
+            success: true,
+            method: method,
+            url: url,
+            companies_count: companies.length,
+            has_different_companies: hasDifferentCompanies,
+            result: hasDifferentCompanies ? "SUCCESS - Found different companies!" : "Same companies as page 1",
+            companies: companies.map(c => ({ id: c.id, name: c.name })),
+            raw_response_structure: Object.keys(data),
+            meta: data.meta || null,
+            pagination: data.pagination || null
+        });
+        
+    } catch (error) {
+        console.error('[Doc Test] Error testing specific method:', error.message);
+        res.status(500).json({
+            error: 'Failed to test specific pagination method',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Alternative method to discover all companies through devices endpoint
+ * Since /companies pagination is broken, we'll get companies from device records
+ * GET /api/debug-companies-from-devices
+ */
+router.get('/debug-companies-from-devices', async (req, res) => {
+    try {
+        console.log(`[Alternative] Discovering companies through devices endpoint...`);
+        
+        const uniqueCompanies = new Map();
+        let page = 1;
+        let totalDevices = 0;
+        let consecutiveEmptyPages = 0;
+        
+        // Fetch devices and extract company info
+        while (page <= 50 && consecutiveEmptyPages < 3) {
+            console.log(`[Alternative] Fetching devices page ${page}...`);
+            
+            const response = await fetch(`https://www.siportal.net/api/2.0/devices?page=${page}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                console.log(`[Alternative] Devices API error on page ${page}: ${response.status}`);
+                break;
+            }
+
+            const data = await response.json();
+            const devices = data.data?.results || [];
+            
+            if (devices.length === 0) {
+                consecutiveEmptyPages++;
+                console.log(`[Alternative] Page ${page}: Empty page (${consecutiveEmptyPages}/3)`);
+                continue;
+            } else {
+                consecutiveEmptyPages = 0;
+            }
+            
+            // Extract unique companies from devices
+            devices.forEach(device => {
+                if (device.company && device.company.id) {
+                    const companyId = device.company.id;
+                    if (!uniqueCompanies.has(companyId)) {
+                        uniqueCompanies.set(companyId, {
+                            id: companyId,
+                            name: device.company.name || `Company ${companyId}`,
+                            device_count: 1
+                        });
+                    } else {
+                        uniqueCompanies.get(companyId).device_count++;
+                    }
+                }
+            });
+            
+            totalDevices += devices.length;
+            console.log(`[Alternative] Page ${page}: ${devices.length} devices, ${uniqueCompanies.size} unique companies found`);
+            
+            page++;
+            
+            // Small delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        const companiesArray = Array.from(uniqueCompanies.values());
+        companiesArray.sort((a, b) => a.name.localeCompare(b.name));
+        
+        // Look for your target organizations
+        const targetOrgs = ['simmons', 'university', 'college', 'health', 'medical', 'hospital', 'massport', 'beth', 'israel', 'lahey'];
+        const matchingCompanies = companiesArray.filter(company => 
+            targetOrgs.some(target => 
+                company.name.toLowerCase().includes(target)
+            )
+        );
+        
+        console.log(`[Alternative] FINAL: Found ${companiesArray.length} companies from ${totalDevices} devices`);
+        
+        res.json({
+            success: true,
+            method: "Companies discovered through devices endpoint",
+            total_devices_scanned: totalDevices,
+            pages_scanned: page - 1,
+            unique_companies_found: companiesArray.length,
+            companies: companiesArray,
+            target_matches: matchingCompanies,
+            comparison_with_companies_endpoint: {
+                companies_endpoint_total: 20,
+                devices_endpoint_total: companiesArray.length,
+                difference: companiesArray.length - 20,
+                conclusion: companiesArray.length > 20 ? "Devices endpoint reveals more companies!" : "Same limited set"
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Alternative] Error discovering companies through devices:', error.message);
+        res.status(500).json({
+            error: 'Failed to discover companies through devices',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Test direct company searches for known organizations
+ * GET /api/debug-test-direct-searches
+ */
+router.get('/debug-test-direct-searches', async (req, res) => {
+    try {
+        console.log(`[Direct Search Test] Testing direct searches for target organizations...`);
+        
+        // Test organizations that should have devices
+        const testOrganizations = [
+            'Simmons University',
+            'Simmons College',
+            'Beth Israel Lahey Health',
+            'Lahey Health',
+            'Beth Israel',
+            'Massport',
+            'Massachusetts Port Authority',
+            'University of Massachusetts',
+            'UMass',
+            // Add some that we know exist from the 20 companies
+            'Aetna Life Insurance',
+            'Analog Devices'
+        ];
+        
+        const results = [];
+        
+        for (const orgName of testOrganizations) {
+            console.log(`[Direct Search Test] Testing: "${orgName}"`);
+            
+            try {
+                const response = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}`, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': process.env.SIPORTAL_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const devices = data.data?.results || [];
+                    
+                    const result = {
+                        organization: orgName,
+                        success: true,
+                        devices_found: devices.length,
+                        company_info: devices.length > 0 ? devices[0].company : null
+                    };
+                    
+                    results.push(result);
+                    console.log(`[Direct Search Test] "${orgName}": ${devices.length} devices found`);
+                } else {
+                    results.push({
+                        organization: orgName,
+                        success: false,
+                        error: `${response.status}: ${response.statusText}`,
+                        devices_found: 0
+                    });
+                }
+            } catch (err) {
+                results.push({
+                    organization: orgName,
+                    success: false,
+                    error: err.message,
+                    devices_found: 0
+                });
+            }
+            
+            // Small delay between searches
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        
+        const successful_searches = results.filter(r => r.success && r.devices_found > 0);
+        const total_devices_found = successful_searches.reduce((sum, r) => sum + r.devices_found, 0);
+        
+        res.json({
+            success: true,
+            method: "Direct company name searches",
+            organizations_tested: testOrganizations.length,
+            successful_matches: successful_searches.length,
+            total_devices_found: total_devices_found,
+            results: results,
+            summary: {
+                organizations_with_devices: successful_searches.map(r => `${r.organization} (${r.devices_found} devices)`),
+                recommendation: successful_searches.length > 0 ? 
+                    "Direct search works! Use this method to find your target organizations" : 
+                    "Target organizations not found - they may not be SiPortal customers"
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Direct Search Test] Error testing direct searches:', error.message);
+        res.status(500).json({
+            error: 'Failed to test direct searches',
+            details: error.message
+        });
+    }
+});
+
+/**
  * Endpoint to manually refresh companies cache
  */
 router.get('/refresh-companies-cache', async (req, res) => {
@@ -1826,205 +2438,6 @@ router.get('/debug-siportal-company/:id', async (req, res) => {
         console.error('[Debug] Error checking SiPortal company:', error.message);
         res.status(500).json({
             error: 'Failed to check SiPortal company',
-            details: error.message
-        });
-    }
-});
-
-/**
- * DIAGNOSTIC endpoint to debug SiPortal pagination issues
- * GET /api/debug-siportal-pagination
- */
-router.get('/debug-siportal-pagination', async (req, res) => {
-    try {
-        console.log(`[Diagnostic] Testing SiPortal pagination...`);
-        
-        const results = [];
-        
-        // Test first 5 pages and examine the responses in detail
-        for (let page = 1; page <= 5; page++) {
-            console.log(`[Diagnostic] Testing page ${page}...`);
-            
-            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': process.env.SIPORTAL_API_KEY,
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (!response.ok) {
-                results.push({
-                    page: page,
-                    error: `API returned ${response.status}: ${response.statusText}`
-                });
-                continue;
-            }
-
-            const data = await response.json();
-            const companies = data.data?.results || [];
-            
-            // Get detailed info about this page
-            const pageInfo = {
-                page: page,
-                companies_count: companies.length,
-                companies: companies.map(c => ({ id: c.id, name: c.name })),
-                
-                // Check for pagination metadata
-                meta: data.meta || null,
-                pagination: data.pagination || null,
-                links: data.links || null,
-                
-                // Raw response structure (first 3 keys only to avoid huge output)
-                raw_structure: Object.keys(data).slice(0, 10),
-                
-                // Check if any company IDs repeat from page 1
-                repeated_from_page_1: page > 1 ? 
-                    companies.filter(c => results[0]?.companies?.some(p1c => p1c.id === c.id)).length : 
-                    0
-            };
-            
-            results.push(pageInfo);
-            
-            console.log(`[Diagnostic] Page ${page}: ${companies.length} companies, ${pageInfo.repeated_from_page_1} repeated from page 1`);
-        }
-        
-        // Try different pagination approaches
-        console.log(`[Diagnostic] Testing alternative pagination methods...`);
-        
-        const alternatives = [];
-        
-        // Method 1: Try offset/limit instead of page
-        try {
-            const offsetResponse = await fetch(`https://www.siportal.net/api/2.0/companies?offset=20&limit=20`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': process.env.SIPORTAL_API_KEY,
-                    'Content-Type': 'application/json'
-                }
-            });
-            
-            if (offsetResponse.ok) {
-                const offsetData = await offsetResponse.json();
-                alternatives.push({
-                    method: 'offset/limit',
-                    success: true,
-                    companies_count: offsetData.data?.results?.length || 0,
-                    raw_structure: Object.keys(offsetData)
-                });
-            } else {
-                alternatives.push({
-                    method: 'offset/limit',
-                    success: false,
-                    error: `${offsetResponse.status}: ${offsetResponse.statusText}`
-                });
-            }
-        } catch (err) {
-            alternatives.push({
-                method: 'offset/limit',
-                success: false,
-                error: err.message
-            });
-        }
-        
-        // Method 2: Try per_page parameter
-        try {
-            const perPageResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=2&per_page=20`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': process.env.SIPORTAL_API_KEY,
-                    'Content-Type': 'application/json'
-                }
-            });
-            
-            if (perPageResponse.ok) {
-                const perPageData = await perPageResponse.json();
-                alternatives.push({
-                    method: 'page/per_page',
-                    success: true,
-                    companies_count: perPageData.data?.results?.length || 0,
-                    raw_structure: Object.keys(perPageData)
-                });
-            } else {
-                alternatives.push({
-                    method: 'page/per_page',
-                    success: false,
-                    error: `${perPageResponse.status}: ${perPageResponse.statusText}`
-                });
-            }
-        } catch (err) {
-            alternatives.push({
-                method: 'page/per_page',
-                success: false,
-                error: err.message
-            });
-        }
-        
-        res.json({
-            success: true,
-            diagnosis: "SiPortal API pagination test",
-            page_results: results,
-            alternative_methods: alternatives,
-            summary: {
-                total_unique_companies: [...new Set(results.flatMap(r => r.companies?.map(c => c.id) || []))].length,
-                pages_with_data: results.filter(r => r.companies_count > 0).length,
-                pagination_appears_broken: results.length > 1 && results.every((r, i) => i === 0 || r.repeated_from_page_1 === r.companies_count),
-                recommendation: results.length > 1 && results.every((r, i) => i === 0 || r.repeated_from_page_1 === r.companies_count) ? 
-                    "API pagination is broken - same results on every page" : 
-                    "Pagination might be working"
-            }
-        });
-        
-    } catch (error) {
-        console.error('[Diagnostic] Error testing pagination:', error.message);
-        res.status(500).json({
-            error: 'Failed to test pagination',
-            details: error.message
-        });
-    }
-});
-
-/**
- * SIMPLE endpoint to get companies without pagination (just page 1)
- * GET /api/debug-siportal-simple
- */
-router.get('/debug-siportal-simple', async (req, res) => {
-    try {
-        console.log(`[Simple] Fetching companies from page 1 only...`);
-        
-        const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=1`, {
-            method: 'GET',
-            headers: {
-                'Authorization': process.env.SIPORTAL_API_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        console.log(`[Simple] Raw API response structure:`, Object.keys(data));
-        console.log(`[Simple] Companies array length:`, data.data?.results?.length || 0);
-        console.log(`[Simple] Sample company:`, JSON.stringify(data.data?.results?.[0], null, 2));
-        
-        const companies = data.data?.results || [];
-        
-        res.json({
-            success: true,
-            message: "Single page fetch from SiPortal",
-            raw_response_keys: Object.keys(data),
-            meta: data.meta || null,
-            pagination: data.pagination || null,
-            total_companies: companies.length,
-            companies: companies.map(c => ({ id: c.id, name: c.name }))
-        });
-        
-    } catch (error) {
-        console.error('[Simple] Error fetching companies:', error.message);
-        res.status(500).json({
-            error: 'Failed to fetch companies',
             details: error.message
         });
     }
