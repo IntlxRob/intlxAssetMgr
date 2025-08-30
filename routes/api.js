@@ -725,7 +725,7 @@ router.get('/it-portal-assets', async (req, res) => {
                                 break;
                             }
 
-                            // Look for company name match
+                            // Look for company name match with stricter criteria
                             const lowerOrgName = orgName.toLowerCase();
                             foundCompany = companies.find(company => {
                                 if (!company.name) return false;
@@ -734,16 +734,26 @@ router.get('/it-portal-assets', async (req, res) => {
                                 // Try exact match first
                                 if (lowerCompanyName === lowerOrgName) return true;
                                 
-                                // Try contains match
+                                // Try contains match (both directions)
                                 if (lowerCompanyName.includes(lowerOrgName) || lowerOrgName.includes(lowerCompanyName)) return true;
                                 
-                                // Try word-based matching for complex company names
+                                // Only try word matching if we have significant overlap
                                 const orgWords = lowerOrgName.split(' ').filter(w => w.length > 3);
                                 const companyWords = lowerCompanyName.split(' ').filter(w => w.length > 3);
                                 
-                                return orgWords.some(orgWord => companyWords.some(compWord => 
-                                    compWord.includes(orgWord) || orgWord.includes(compWord)
-                                ));
+                                if (orgWords.length === 0 || companyWords.length === 0) return false;
+                                
+                                // Require at least 50% of words to match
+                                const matchingWords = orgWords.filter(orgWord => 
+                                    companyWords.some(compWord => 
+                                        orgWord === compWord || 
+                                        (orgWord.length > 4 && compWord.includes(orgWord)) ||
+                                        (compWord.length > 4 && orgWord.includes(compWord))
+                                    )
+                                );
+                                
+                                const matchRatio = matchingWords.length / orgWords.length;
+                                return matchRatio >= 0.5; // At least 50% word match required
                             });
 
                             if (foundCompany) {
