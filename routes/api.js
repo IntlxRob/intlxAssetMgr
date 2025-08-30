@@ -708,7 +708,7 @@ router.get('/it-portal-assets', async (req, res) => {
                     while (hasMore && page <= 5) { // Reduced to 5 pages to limit results
                         console.log(`[API] Direct search page ${page}`);
                         
-                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&page=${page}`, {
+                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}&page=${page}&per_page=100`, {
                             method: 'GET',
                             headers: {
                                 'Authorization': process.env.SIPORTAL_API_KEY,
