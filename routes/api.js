@@ -703,6 +703,7 @@ router.get('/it-portal-assets', async (req, res) => {
                     let page = 1;
                     let hasMore = true;
                     let companiesFound = new Set(); // Track which companies we're getting results from
+                    let consecutiveBadPages = 0; // Track pages with no valid devices
 
                     while (hasMore && page <= 5) { // Reduced to 5 pages to limit results
                         console.log(`[API] Direct search page ${page}`);
@@ -740,7 +741,7 @@ router.get('/it-portal-assets', async (req, res) => {
                                     return false;
                                 }
                                 
-                                // Validate company match
+                                // Validate company match - accept any reasonable match
                                 if (!device.company || !device.company.name) {
                                     return false;
                                 }
@@ -748,6 +749,7 @@ router.get('/it-portal-assets', async (req, res) => {
                                 const deviceCompanyName = device.company.name.toLowerCase().trim();
                                 const searchTermLower = orgName.toLowerCase().trim();
                                 
+                                // Be more permissive - if the API returned it, it's probably relevant
                                 const isReasonableMatch = 
                                     deviceCompanyName.includes(searchTermLower) ||
                                     searchTermLower.includes(deviceCompanyName) ||
@@ -771,10 +773,26 @@ router.get('/it-portal-assets', async (req, res) => {
                             
                             console.log(`[API] Direct search page ${page}: Added ${validDevices.length} valid devices (total: ${allDevices.length})`);
                             
-                            // Check for more pages
-                            hasMore = directData.data?.has_more || 
-                                     directData.meta?.has_more || 
-                                     pageDevices.length === 20;
+                            // Track consecutive pages with no valid devices
+                            if (validDevices.length === 0) {
+                                consecutiveBadPages++;
+                                console.log(`[API] Page ${page} had no valid devices (consecutive bad pages: ${consecutiveBadPages})`);
+                                
+                                // If we've had 2 consecutive pages with no valid devices, stop searching
+                                if (consecutiveBadPages >= 2) {
+                                    console.log(`[API] Stopping search after ${consecutiveBadPages} consecutive pages with no relevant devices`);
+                                    hasMore = false;
+                                }
+                            } else {
+                                consecutiveBadPages = 0; // Reset counter when we find valid devices
+                            }
+                            
+                            // Check for more pages (only continue if we haven't hit our bad page limit)
+                            if (hasMore) {
+                                hasMore = directData.data?.has_more || 
+                                         directData.meta?.has_more || 
+                                         pageDevices.length === 20;
+                            }
                             
                             page++;
                         }
