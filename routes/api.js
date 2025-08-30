@@ -45,7 +45,7 @@ let companiesCache = {
 };
 
 /**
- * Refresh the companies cache
+ * Refresh the companies cache - UPDATED to fetch ALL companies
  */
 async function refreshCompaniesCache() {
     if (companiesCache.isUpdating) {
@@ -60,8 +60,9 @@ async function refreshCompaniesCache() {
         let allCompanies = [];
         let page = 1;
         let consecutiveEmptyPages = 0;
+        const seenIds = new Set(); // Prevent duplicates
         
-        while (page <= 50) { // Increased from 25 to 50 pages = 1000 companies max
+        while (page <= 100) { // Increased safety limit from 50 to 100 pages
             const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
                 method: 'GET',
                 headers: {
@@ -80,17 +81,26 @@ async function refreshCompaniesCache() {
             
             if (companies.length === 0) {
                 consecutiveEmptyPages++;
-                if (consecutiveEmptyPages >= 2) {
-                    console.log(`[Cache] Two consecutive empty pages, stopping at page ${page}`);
+                if (consecutiveEmptyPages >= 3) { // Stop after 3 consecutive empty pages
+                    console.log(`[Cache] Three consecutive empty pages, stopping at page ${page}`);
                     break;
                 }
             } else {
                 consecutiveEmptyPages = 0;
-                allCompanies.push(...companies);
+                
+                // Only add unique companies
+                let newCompanies = 0;
+                companies.forEach(company => {
+                    if (!seenIds.has(company.id)) {
+                        seenIds.add(company.id);
+                        allCompanies.push(company);
+                        newCompanies++;
+                    }
+                });
                 
                 // Log every 10th page for progress tracking
                 if (page % 10 === 0) {
-                    console.log(`[Cache] Page ${page}: ${companies.length} companies (total: ${allCompanies.length})`);
+                    console.log(`[Cache] Page ${page}: ${companies.length} companies, ${newCompanies} new (total unique: ${allCompanies.length})`);
                 }
             }
             
@@ -102,10 +112,20 @@ async function refreshCompaniesCache() {
         
         companiesCache.companies = allCompanies;
         companiesCache.lastUpdated = new Date();
-        console.log(`[Cache] Updated companies cache with ${allCompanies.length} companies from ${page-1} pages`);
+        console.log(`[Cache] Updated companies cache with ${allCompanies.length} unique companies from ${page-1} pages`);
         
         // Log some sample company names for debugging
         console.log(`[Cache] Sample companies:`, allCompanies.slice(0, 5).map(c => c.name).join(', '));
+        
+        // Log categories for verification
+        const universitiesCount = allCompanies.filter(c => 
+            c.name && (c.name.toLowerCase().includes('university') || c.name.toLowerCase().includes('college'))
+        ).length;
+        const healthCount = allCompanies.filter(c => 
+            c.name && (c.name.toLowerCase().includes('health') || c.name.toLowerCase().includes('medical'))
+        ).length;
+        
+        console.log(`[Cache] Categories: ${universitiesCount} universities/colleges, ${healthCount} health/medical organizations`);
         
     } catch (error) {
         console.error('[Cache] Error refreshing companies cache:', error.message);
@@ -342,18 +362,24 @@ function debugCompanySearch(searchTerm) {
 }
 
 /**
- * Debug endpoint to see what companies are actually in SiPortal
+ * COMPLETE Debug endpoint - fetches ALL companies from SiPortal
  * GET /api/debug-siportal-companies?search=university
  */
 router.get('/debug-siportal-companies', async (req, res) => {
     try {
         const searchTerm = req.query.search || '';
+        const maxPages = parseInt(req.query.maxPages) || 50; // Safety limit, can be increased
         
-        console.log(`[Debug] Searching SiPortal companies for: "${searchTerm}"`);
+        console.log(`[Debug] Searching ALL SiPortal companies for: "${searchTerm}"`);
         
-        // Get first few pages of companies
         let allCompanies = [];
-        for (let page = 1; page <= 5; page++) {
+        const seenIds = new Set();
+        let page = 1;
+        let consecutiveEmptyPages = 0;
+        
+        while (page <= maxPages) {
+            console.log(`[Debug] Fetching page ${page}...`);
+            
             const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
                 method: 'GET',
                 headers: {
@@ -363,17 +389,48 @@ router.get('/debug-siportal-companies', async (req, res) => {
             });
 
             if (!response.ok) {
-                throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+                console.error(`[Debug] API error on page ${page}: ${response.status}`);
+                break;
             }
 
             const data = await response.json();
             const companies = data.data?.results || [];
             
-            if (companies.length === 0) break;
+            if (companies.length === 0) {
+                consecutiveEmptyPages++;
+                console.log(`[Debug] Page ${page}: Empty page (${consecutiveEmptyPages}/3)`);
+                
+                // Stop after 3 consecutive empty pages
+                if (consecutiveEmptyPages >= 3) {
+                    console.log(`[Debug] Stopping at page ${page} - 3 consecutive empty pages`);
+                    break;
+                }
+            } else {
+                consecutiveEmptyPages = 0;
+                
+                // Only add unique companies
+                let newCompanies = 0;
+                companies.forEach(company => {
+                    if (!seenIds.has(company.id)) {
+                        seenIds.add(company.id);
+                        allCompanies.push(company);
+                        newCompanies++;
+                    }
+                });
+                
+                console.log(`[Debug] Page ${page}: ${companies.length} companies, ${newCompanies} new (total unique: ${allCompanies.length})`);
+            }
             
-            allCompanies.push(...companies);
-            console.log(`[Debug] Page ${page}: ${companies.length} companies`);
+            page++;
+            
+            // Small delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
+        
+        console.log(`[Debug] FINAL: Fetched ${allCompanies.length} unique companies from ${page-1} pages`);
+        
+        // Sort companies by name for easier browsing
+        allCompanies.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         
         // Filter companies if search term provided
         let filteredCompanies = allCompanies;
@@ -384,11 +441,31 @@ router.get('/debug-siportal-companies', async (req, res) => {
             );
         }
         
-        // Show results
-        const results = filteredCompanies.slice(0, 50).map(company => ({
+        // Show results (limit to 200 for display, but include count)
+        const results = filteredCompanies.slice(0, 200).map(company => ({
             id: company.id,
             name: company.name
         }));
+        
+        // Also show some sample companies by category for quick analysis
+        const universitiesAndColleges = allCompanies.filter(c => 
+            c.name && (c.name.toLowerCase().includes('university') || 
+                      c.name.toLowerCase().includes('college') ||
+                      c.name.toLowerCase().includes('school'))
+        ).slice(0, 10);
+        
+        const healthAndMedical = allCompanies.filter(c => 
+            c.name && (c.name.toLowerCase().includes('health') || 
+                      c.name.toLowerCase().includes('medical') ||
+                      c.name.toLowerCase().includes('hospital'))
+        ).slice(0, 10);
+        
+        const governmentAndAuthorities = allCompanies.filter(c => 
+            c.name && (c.name.toLowerCase().includes('authority') || 
+                      c.name.toLowerCase().includes('government') ||
+                      c.name.toLowerCase().includes('city') ||
+                      c.name.toLowerCase().includes('county'))
+        ).slice(0, 10);
         
         res.json({
             success: true,
@@ -396,7 +473,13 @@ router.get('/debug-siportal-companies', async (req, res) => {
             totalCompanies: allCompanies.length,
             filteredCompanies: filteredCompanies.length,
             showing: results.length,
-            companies: results
+            pagesSearched: page - 1,
+            companies: results,
+            samples: {
+                universities: universitiesAndColleges.map(c => ({ id: c.id, name: c.name })),
+                health: healthAndMedical.map(c => ({ id: c.id, name: c.name })),
+                government: governmentAndAuthorities.map(c => ({ id: c.id, name: c.name }))
+            }
         });
         
     } catch (error) {
