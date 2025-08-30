@@ -702,7 +702,7 @@ router.get('/it-portal-assets', async (req, res) => {
                     let page = 1;
                     let hasMore = true;
 
-                    while (hasMore && page <= 20) {
+                    while (hasMore && page <= 10) { // Reduced from 20 to 10 pages max
                         console.log(`[API] Direct search page ${page}`);
                         
                         const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&page=${page}`, {
@@ -747,8 +747,32 @@ router.get('/it-portal-assets', async (req, res) => {
                         // Extract company info from the first device
                         const companyInfo = devices[0].company;
                         if (companyInfo && companyInfo.id) {
-                            matchingCompany = companyInfo;
-                            console.log(`[API] Direct search found: "${companyInfo.name}" (ID: ${companyInfo.id}) with ${devices.length} devices`);
+                            // Validate that the returned company actually matches our search
+                            const returnedCompanyName = companyInfo.name.toLowerCase().trim();
+                            const searchTermLower = orgName.toLowerCase().trim();
+                            
+                            // Check if this is a reasonable match
+                            const isReasonableMatch = 
+                                returnedCompanyName.includes(searchTermLower) ||
+                                searchTermLower.includes(returnedCompanyName) ||
+                                // Check for word overlap
+                                searchTermLower.split(' ').some(word => 
+                                    word.length > 3 && returnedCompanyName.includes(word)
+                                ) ||
+                                returnedCompanyName.split(' ').some(word => 
+                                    word.length > 3 && searchTermLower.includes(word)
+                                );
+                            
+                            if (isReasonableMatch) {
+                                matchingCompany = companyInfo;
+                                console.log(`[API] Direct search found: "${companyInfo.name}" (ID: ${companyInfo.id}) with ${devices.length} devices`);
+                            } else {
+                                console.log(`[API] Direct search returned unrelated company: "${companyInfo.name}" for search "${orgName}" - rejecting ${devices.length} devices`);
+                                // Don't use this match as it's not actually related to our search
+                            }
+                        }
+                        
+                        if (matchingCompany) {
                             
                             // Return the devices directly since we already have them
                             const transformedAssets = devices.map(device => ({
