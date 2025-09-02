@@ -37,7 +37,6 @@ router.get('/debug-search-companies/:searchText', async (req, res) => {
 
 /**
  * Cache for SiPortal companies - refreshed periodically
- * This is now optional/secondary - primary method is direct company ID
  */
 let companiesCache = {
     companies: [],
@@ -46,7 +45,21 @@ let companiesCache = {
 };
 
 /**
- * Refresh the companies cache (optional - for company lookup helper)
+ * Special company name mappings for known mismatches
+ */
+const COMPANY_NAME_MAPPINGS = {
+    'arbella service company inc., and its affiliates': 'Arbella Insurance Group',
+    'arbella service company': 'Arbella Insurance Group',
+    'arbella service company inc': 'Arbella Insurance Group',
+    'keep me home, llc': 'Keep Me Home',
+    'keep me home,llc': 'Keep Me Home',
+    'intlx solutions, llc': 'intlx Solutions, LLC',
+    'intlx solutions': 'intlx Solutions, LLC',
+    // Add more mappings as needed
+};
+
+/**
+ * Refresh the companies cache - FIXED VERSION
  */
 async function refreshCompaniesCache() {
     if (companiesCache.isUpdating) {
@@ -56,14 +69,265 @@ async function refreshCompaniesCache() {
 
     try {
         companiesCache.isUpdating = true;
-        console.log('[Cache] Refreshing companies cache...');
+        console.log('[Cache] Starting comprehensive companies cache refresh...');
         
         let allCompanies = [];
         let page = 1;
-        let hasMore = true;
+        let consecutiveEmptyPages = 0;
+        const MAX_PAGES = 200; // Increased from whatever it was before
+        const PER_PAGE = 100; // Get more per page
         
-        while (hasMore && page <= 100) { // Increased limit for complete coverage
-            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=50`, {
+        while (page <= MAX_PAGES) {
+            try {
+                const url = `https://www.siportal.net/api/2.0/companies?page=${page}&per_page=${PER_PAGE}`;
+                console.log(`[Cache] Fetching page ${page}: ${url}`);
+                
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': process.env.SIPORTAL_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    console.log(`[Cache] API error on page ${page}: ${response.status} ${response.statusText}`);
+                    break;
+                }
+
+                const data = await response.json();
+                console.log(`[Cache] Page ${page} response structure:`, {
+                    hasData: !!data.data,
+                    hasResults: !!(data.data?.results),
+                    resultCount: data.data?.results?.length || 0,
+                    hasMeta: !!data.meta,
+                    hasPagination: !!data.pagination
+                });
+                
+                // Try different response structures
+                const companies = data.data?.results || data.results || data.data || data || [];
+                
+                if (!Array.isArray(companies)) {
+                    console.log(`[Cache] Page ${page}: Response is not an array, breaking`);
+                    break;
+                }
+                
+                if (companies.length === 0) {
+                    consecutiveEmptyPages++;
+                    console.log(`[Cache] Page ${page}: Empty page (${consecutiveEmptyPages} consecutive)`);
+                    
+                    if (consecutiveEmptyPages >= 3) {
+                        console.log(`[Cache] Three consecutive empty pages, stopping`);
+                        break;
+                    }
+                } else {
+                    consecutiveEmptyPages = 0;
+                    allCompanies.push(...companies);
+                    console.log(`[Cache] Page ${page}: Added ${companies.length} companies (total: ${allCompanies.length})`);
+                    
+                    // Log every 5 pages for progress
+                    if (page % 5 === 0) {
+                        console.log(`[Cache] Progress: ${allCompanies.length} companies loaded so far`);
+                        // Log some company names to verify we're getting real data
+                        const sampleNames = companies.slice(0, 3).map(c => c.name).filter(Boolean);
+                        console.log(`[Cache] Sample from page ${page}:`, sampleNames);
+                    }
+                }
+                
+                // Check various pagination indicators
+                const hasMore = data.meta?.has_more || 
+                              data.pagination?.has_more || 
+                              data.has_more ||
+                              companies.length === PER_PAGE; // If we got a full page, there might be more
+                
+                if (!hasMore && companies.length < PER_PAGE) {
+                    console.log(`[Cache] Page ${page}: Incomplete page (${companies.length}/${PER_PAGE}), likely last page`);
+                    break;
+                }
+                
+                page++;
+                
+                // Small delay to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+            } catch (pageError) {
+                console.error(`[Cache] Error fetching page ${page}:`, pageError.message);
+                // Try to continue with next page
+                page++;
+                consecutiveEmptyPages++;
+                
+                if (consecutiveEmptyPages >= 3) {
+                    console.log('[Cache] Too many consecutive errors, stopping');
+                    break;
+                }
+            }
+        }
+        
+        // Remove duplicates if any
+        const uniqueCompanies = [];
+        const seenIds = new Set();
+        
+        for (const company of allCompanies) {
+            if (company.id && !seenIds.has(company.id)) {
+                seenIds.add(company.id);
+                uniqueCompanies.push(company);
+            }
+        }
+        
+        companiesCache.companies = uniqueCompanies;
+        companiesCache.lastUpdated = new Date();
+        
+        console.log('[Cache] ========================================');
+        console.log(`[Cache] Cache refresh completed:`);
+        console.log(`[Cache]   - Pages fetched: ${page - 1}`);
+        console.log(`[Cache]   - Total companies: ${uniqueCompanies.length}`);
+        console.log(`[Cache]   - Duplicates removed: ${allCompanies.length - uniqueCompanies.length}`);
+        console.log('[Cache] ========================================');
+        
+        // Log all company names if we have less than expected
+        if (uniqueCompanies.length < 100) {
+            console.log('[Cache] All company names:', uniqueCompanies.map(c => c.name));
+        } else {
+            // Log first 20 and last 20 for verification
+            console.log('[Cache] First 20 companies:', uniqueCompanies.slice(0, 20).map(c => c.name));
+            console.log('[Cache] Last 20 companies:', uniqueCompanies.slice(-20).map(c => c.name));
+        }
+        
+        // Check if Arbella is in the cache
+        const arbellaCompanies = uniqueCompanies.filter(c => 
+            c.name?.toLowerCase().includes('arbella')
+        );
+        console.log('[Cache] Arbella-related companies found:', arbellaCompanies.map(c => ({ id: c.id, name: c.name })));
+        
+    } catch (error) {
+        console.error('[Cache] Fatal error refreshing companies cache:', error);
+    } finally {
+        companiesCache.isUpdating = false;
+    }
+}
+
+/**
+ * Advanced company name normalization
+ */
+function normalizeCompanyName(name) {
+    if (!name) return '';
+    
+    return name
+        .toLowerCase()
+        .trim()
+        // Remove "and its affiliates" and similar phrases
+        .replace(/[,.]?\s*(and its affiliates|and affiliates|& affiliates)\.?$/i, '')
+        // Remove common suffixes
+        .replace(/[,.]?\s*(llc|inc|corp|ltd|limited|corporation|company|co\.|co)\.?$/i, '')
+        // Normalize punctuation
+        .replace(/[.,&]/g, ' ')
+        // Handle "and" variations
+        .replace(/\s+and\s+/g, ' ')
+        .replace(/\s+&\s+/g, ' ')
+        // Remove extra spaces
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * Find matching company with special mappings and fuzzy logic
+ */
+async function findMatchingCompany(orgName) {
+    // Ensure cache is populated
+    if (companiesCache.companies.length === 0 && !companiesCache.isUpdating) {
+        console.log('[API] Cache empty, refreshing...');
+        await refreshCompaniesCache();
+    }
+    
+    // Check special mappings first
+    const normalizedOrgName = orgName.toLowerCase().trim();
+    const mappedName = COMPANY_NAME_MAPPINGS[normalizedOrgName];
+    
+    if (mappedName) {
+        console.log(`[API] Using special mapping: "${orgName}" -> "${mappedName}"`);
+        const exactMatch = companiesCache.companies.find(c => 
+            c.name?.toLowerCase() === mappedName.toLowerCase()
+        );
+        if (exactMatch) {
+            return { company: exactMatch, score: 100, method: 'special_mapping' };
+        }
+    }
+    
+    // Try normalized matching
+    const normalizedSearch = normalizeCompanyName(orgName);
+    let bestMatch = null;
+    let bestScore = 0;
+    let bestMethod = '';
+    
+    for (const company of companiesCache.companies) {
+        if (!company.name) continue;
+        
+        const normalizedCompany = normalizeCompanyName(company.name);
+        
+        // Exact match after normalization
+        if (normalizedCompany === normalizedSearch) {
+            return { company, score: 100, method: 'exact_normalized' };
+        }
+        
+        // Calculate similarity score
+        let score = 0;
+        let method = '';
+        
+        // Substring matching
+        if (normalizedCompany.includes(normalizedSearch) || normalizedSearch.includes(normalizedCompany)) {
+            score = 85;
+            method = 'substring';
+        }
+        
+        // Word-based matching
+        const searchWords = normalizedSearch.split(/\s+/);
+        const companyWords = normalizedCompany.split(/\s+/);
+        
+        if (searchWords.length > 0 && companyWords.length > 0) {
+            const matchingWords = searchWords.filter(word => 
+                companyWords.some(cWord => 
+                    cWord === word || 
+                    (word.length > 2 && cWord.includes(word)) ||
+                    (cWord.length > 2 && word.includes(cWord))
+                )
+            );
+            
+            const matchRatio = matchingWords.length / Math.max(searchWords.length, companyWords.length);
+            if (matchRatio >= 0.7) {
+                const wordScore = 70 + (matchRatio - 0.7) * 50;
+                if (wordScore > score) {
+                    score = wordScore;
+                    method = 'word_matching';
+                }
+            }
+        }
+        
+        if (score > bestScore) {
+            bestMatch = company;
+            bestScore = score;
+            bestMethod = method;
+        }
+    }
+    
+    if (bestMatch && bestScore >= 60) {
+        return { company: bestMatch, score: bestScore, method: bestMethod };
+    }
+    
+    return null;
+}
+
+/**
+ * IT Portal Assets endpoint with automatic company matching and caching
+ */
+router.get('/it-portal-assets', async (req, res) => {
+    try {
+        const { company_id, user_id } = req.query;
+        
+        // If direct company_id provided, use it
+        if (company_id) {
+            console.log(`[API] Using provided company ID: ${company_id}`);
+            
+            const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company_id}`, {
                 method: 'GET',
                 headers: {
                     'Authorization': process.env.SIPORTAL_API_KEY,
@@ -72,64 +336,280 @@ async function refreshCompaniesCache() {
             });
 
             if (!response.ok) {
-                console.log(`[Cache] API error on page ${page}: ${response.status}`);
-                break;
+                if (response.status === 404) {
+                    return res.json({ 
+                        assets: [],
+                        message: `No company found with ID ${company_id}`,
+                        company_id: company_id,
+                        error_type: 'company_not_found'
+                    });
+                }
+                throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
             }
 
-            const data = await response.json();
-            const companies = data.data?.results || data.data || [];
+            const siPortalData = await response.json();
+            const devices = siPortalData.data?.results || [];
             
-            if (companies.length === 0) {
-                hasMore = false;
-                console.log(`[Cache] No more companies at page ${page}`);
-            } else {
-                allCompanies.push(...companies);
-                
-                // Log progress every 10 pages
-                if (page % 10 === 0) {
-                    console.log(`[Cache] Page ${page}: ${companies.length} companies (total: ${allCompanies.length})`);
-                }
-                
-                // Check for pagination indicators
-                hasMore = data.meta?.has_more || data.pagination?.has_more || companies.length === 50;
+            // Transform devices to standard format
+            const assets = devices.map(device => ({
+                id: device.id,
+                asset_tag: device.name || device.hostName || device.id,
+                device_type: device.type?.name || device.deviceType || 'Unknown',
+                name: device.name || 'Unnamed Device',
+                host_name: device.hostName || device.hostname || '',
+                description: device.description || '',
+                domain: device.domain || device.realm || '',
+                realm: device.realm || device.domain || '',
+                facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
+                username: device.username || device.user || '',
+                preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
+                access_method: device.accessMethod || device.access_method || device.preferredAccess || '',
+                credentials: device.credentials || device.credential || '',
+                manufacturer: device.type?.name || device.manufacturer || 'Unknown',
+                model: device.model || device.type?.name || 'Unknown',
+                serial_number: device.serialNumber || device.serial_number || '',
+                status: device.status || 'active',
+                source: 'SiPortal',
+                imported_date: new Date().toISOString(),
+                notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
+                assigned_user: device.assignedUser || device.assigned_user || '',
+                company_id: company_id,
+                location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
+                ip_address: device.ipAddress || device.ip_address || '',
+                mac_address: device.macAddress || device.mac_address || '',
+                os: device.operatingSystem || device.os || '',
+                last_seen: device.lastSeen || device.last_seen || ''
+            }));
+
+            return res.json({ 
+                assets,
+                company_id: company_id,
+                method: 'direct_id',
+                total: assets.length
+            });
+        }
+        
+        // AUTOMATIC MATCHING: Look up organization and find matching company
+        if (user_id) {
+            console.log(`[API] Auto-matching IT Portal company for user: ${user_id}`);
+            
+            const user = await zendeskService.getUserById(user_id);
+            if (!user.organization_id) {
+                return res.json({ 
+                    assets: [],
+                    message: 'User has no organization associated',
+                    error_type: 'no_organization'
+                });
+            }
+
+            const organization = await zendeskService.getOrganizationById(user.organization_id);
+            const orgName = organization?.name;
+            
+            if (!orgName) {
+                return res.json({ 
+                    assets: [],
+                    message: 'Organization has no name',
+                    error_type: 'no_org_name'
+                });
             }
             
-            page++;
+            console.log(`[API] Organization name: "${orgName}"`);
             
-            // Small delay to avoid rate limiting
-            await new Promise(resolve => setTimeout(resolve, 50));
+            // Check if we already have a cached company ID
+            let itPortalCompanyId = organization?.organization_fields?.it_portal_company_id;
+            let itPortalCompanyName = organization?.organization_fields?.it_portal_company_name;
+            
+            if (!itPortalCompanyId) {
+                console.log(`[API] No cached company ID, searching for: "${orgName}"`);
+                
+                // Try to find matching company
+                const match = await findMatchingCompany(orgName);
+                
+                if (match) {
+                    itPortalCompanyId = match.company.id;
+                    itPortalCompanyName = match.company.name;
+                    console.log(`[API] Found match: "${match.company.name}" (ID: ${itPortalCompanyId}, Score: ${match.score}, Method: ${match.method})`);
+                    
+                    // Save the matched ID to the organization for future use
+                    try {
+                        await zendeskService.updateOrganization(user.organization_id, {
+                            organization_fields: {
+                                ...organization.organization_fields,
+                                it_portal_company_id: itPortalCompanyId.toString(),
+                                it_portal_company_name: itPortalCompanyName
+                            }
+                        });
+                        console.log(`[API] Saved company ID ${itPortalCompanyId} to organization`);
+                    } catch (saveError) {
+                        console.error('[API] Failed to save company ID to organization:', saveError.message);
+                        // Continue anyway - we have the ID for this request
+                    }
+                } else {
+                    console.log(`[API] No automatic match found for "${orgName}"`);
+                    
+                    // Return possible matches for manual selection
+                    const searchWords = orgName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+                    const possibleMatches = companiesCache.companies
+                        .filter(c => {
+                            const name = c.name?.toLowerCase() || '';
+                            return searchWords.some(word => name.includes(word));
+                        })
+                        .slice(0, 10)
+                        .map(c => ({ id: c.id, name: c.name }));
+                    
+                    return res.json({
+                        assets: [],
+                        message: `No automatic match found for "${orgName}". Please select the correct company.`,
+                        possible_matches: possibleMatches,
+                        error_type: 'no_match_found',
+                        organization: {
+                            id: user.organization_id,
+                            name: orgName
+                        }
+                    });
+                }
+            } else {
+                console.log(`[API] Using cached company ID: ${itPortalCompanyId}`);
+            }
+            
+            // Now fetch devices with the company ID
+            if (itPortalCompanyId) {
+                const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${itPortalCompanyId}`, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': process.env.SIPORTAL_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        // Company ID exists but no devices found or company not found
+                        return res.json({
+                            assets: [],
+                            company_id: itPortalCompanyId,
+                            company_name: itPortalCompanyName,
+                            message: `No devices found for company ID ${itPortalCompanyId}`,
+                            organization: {
+                                id: user.organization_id,
+                                name: orgName
+                            }
+                        });
+                    }
+                    throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
+                }
+
+                const siPortalData = await response.json();
+                const devices = siPortalData.data?.results || [];
+                
+                console.log(`[API] Found ${devices.length} devices for company "${itPortalCompanyName}" (ID: ${itPortalCompanyId})`);
+                
+                // Transform devices
+                const assets = devices.map(device => ({
+                    id: device.id,
+                    asset_tag: device.name || device.hostName || device.id,
+                    device_type: device.type?.name || device.deviceType || 'Unknown',
+                    name: device.name || 'Unnamed Device',
+                    host_name: device.hostName || device.hostname || '',
+                    description: device.description || '',
+                    domain: device.domain || device.realm || '',
+                    realm: device.realm || device.domain || '',
+                    facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
+                    username: device.username || device.user || '',
+                    preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
+                    access_method: device.accessMethod || device.access_method || device.preferredAccess || '',
+                    credentials: device.credentials || device.credential || '',
+                    manufacturer: device.type?.name || device.manufacturer || 'Unknown',
+                    model: device.model || device.type?.name || 'Unknown',
+                    serial_number: device.serialNumber || device.serial_number || '',
+                    status: device.status || 'active',
+                    source: 'SiPortal',
+                    imported_date: new Date().toISOString(),
+                    notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
+                    assigned_user: device.assignedUser || device.assigned_user || '',
+                    company_id: itPortalCompanyId,
+                    company_name: itPortalCompanyName,
+                    location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
+                    ip_address: device.ipAddress || device.ip_address || '',
+                    mac_address: device.macAddress || device.mac_address || '',
+                    os: device.operatingSystem || device.os || '',
+                    last_seen: device.lastSeen || device.last_seen || ''
+                }));
+
+                return res.json({
+                    assets,
+                    company_id: itPortalCompanyId,
+                    company_name: itPortalCompanyName,
+                    organization: {
+                        id: user.organization_id,
+                        name: orgName
+                    },
+                    method: 'auto_matched'
+                });
+            }
+            
+            // No company ID found at all
+            return res.json({
+                assets: [],
+                message: `Unable to determine IT Portal company for "${orgName}"`,
+                error_type: 'no_company_id',
+                organization: {
+                    id: user.organization_id,
+                    name: orgName
+                }
+            });
         }
         
-        companiesCache.companies = allCompanies;
-        companiesCache.lastUpdated = new Date();
-        console.log(`[Cache] Updated companies cache with ${allCompanies.length} companies from ${page-1} pages`);
-        
-        // Log some sample company names for debugging
-        if (allCompanies.length > 0) {
-            console.log(`[Cache] Sample companies:`, allCompanies.slice(0, 5).map(c => c.name).join(', '));
-        }
+        return res.status(400).json({ 
+            error: 'Missing required parameters',
+            message: 'Either company_id or user_id parameter is required'
+        });
         
     } catch (error) {
-        console.error('[Cache] Error refreshing companies cache:', error.message);
-    } finally {
-        companiesCache.isUpdating = false;
+        console.error('[API] Error fetching SiPortal devices:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to fetch IT Portal assets',
+            details: error.message 
+        });
     }
-}
-
-/**
- * Endpoint to manually refresh companies cache
- */
-router.get('/refresh-companies-cache', async (req, res) => {
-    await refreshCompaniesCache();
-    res.json({
-        success: true,
-        companies_count: companiesCache.companies.length,
-        last_updated: companiesCache.lastUpdated
-    });
 });
 
 /**
- * Endpoint to list all SiPortal companies (for company lookup helper)
+ * Search for SiPortal companies by name
+ */
+router.get('/search-siportal-companies', async (req, res) => {
+    try {
+        const { q } = req.query;
+        
+        if (!q) {
+            return res.status(400).json({ error: 'Search query required' });
+        }
+        
+        // Ensure cache is populated
+        if (companiesCache.companies.length === 0) {
+            await refreshCompaniesCache();
+        }
+        
+        const searchTerm = q.toLowerCase();
+        const matches = companiesCache.companies
+            .filter(c => c.name?.toLowerCase().includes(searchTerm))
+            .slice(0, 20)
+            .map(c => ({ id: c.id, name: c.name }));
+        
+        res.json({
+            companies: matches,
+            total: matches.length,
+            search_term: q
+        });
+        
+    } catch (error) {
+        console.error('[API] Search error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Get all SiPortal companies (for dropdown)
  */
 router.get('/siportal-companies', async (req, res) => {
     try {
@@ -163,6 +643,18 @@ router.get('/siportal-companies', async (req, res) => {
             details: error.message
         });
     }
+});
+
+/**
+ * Manually refresh companies cache
+ */
+router.get('/refresh-companies-cache', async (req, res) => {
+    await refreshCompaniesCache();
+    res.json({
+        success: true,
+        companies_count: companiesCache.companies.length,
+        last_updated: companiesCache.lastUpdated
+    });
 });
 
 /**
@@ -456,390 +948,6 @@ router.get('/assets/schema', async (req, res) => {
     } catch (error) {
         console.error('Error fetching asset schema:', error.message);
         res.status(500).json({ error: 'Failed to fetch schema.', details: error.message });
-    }
-});
-
-/**
- * Advanced company name normalization for better matching
- */
-function normalizeCompanyName(name) {
-    if (!name) return '';
-    
-    return name
-        .toLowerCase()
-        .trim()
-        // Remove "and its affiliates" and similar phrases
-        .replace(/[,.]?\s*(and its affiliates|and affiliates|& affiliates)\.?$/i, '')
-        // Remove common suffixes
-        .replace(/[,.]?\s*(llc|inc|corp|ltd|limited|corporation|company|co\.|co)\.?$/i, '')
-        // Normalize punctuation
-        .replace(/[.,&]/g, ' ')
-        // Handle "and" variations
-        .replace(/\s+and\s+/g, ' ')
-        .replace(/\s+&\s+/g, ' ')
-        // Remove extra spaces
-        .replace(/\s+/g, ' ')
-        .trim();
-}
-
-/**
- * Search for matching company in cache with fuzzy matching
- */
-async function findMatchingCompany(orgName) {
-    // Ensure cache is populated
-    if (companiesCache.companies.length === 0 && !companiesCache.isUpdating) {
-        console.log('[API] Cache empty, refreshing...');
-        await refreshCompaniesCache();
-    }
-    
-    const normalizedSearch = normalizeCompanyName(orgName);
-    let bestMatch = null;
-    let bestScore = 0;
-    
-    for (const company of companiesCache.companies) {
-        if (!company.name) continue;
-        
-        const normalizedCompany = normalizeCompanyName(company.name);
-        
-        // Exact match after normalization
-        if (normalizedCompany === normalizedSearch) {
-            return { company, score: 100, method: 'exact_normalized' };
-        }
-        
-        // Calculate similarity score
-        let score = 0;
-        
-        // Substring matching
-        if (normalizedCompany.includes(normalizedSearch) || normalizedSearch.includes(normalizedCompany)) {
-            score = 85;
-        }
-        
-        // Word-based matching
-        const searchWords = normalizedSearch.split(/\s+/);
-        const companyWords = normalizedCompany.split(/\s+/);
-        
-        if (searchWords.length > 0 && companyWords.length > 0) {
-            const matchingWords = searchWords.filter(word => 
-                companyWords.some(cWord => 
-                    cWord === word || 
-                    (word.length > 2 && cWord.includes(word)) ||
-                    (cWord.length > 2 && word.includes(cWord))
-                )
-            );
-            
-            const matchRatio = matchingWords.length / Math.max(searchWords.length, companyWords.length);
-            if (matchRatio >= 0.7) {
-                score = Math.max(score, 70 + (matchRatio - 0.7) * 50);
-            }
-        }
-        
-        if (score > bestScore) {
-            bestMatch = company;
-            bestScore = score;
-        }
-    }
-    
-    // Return match if confidence is high enough
-    if (bestMatch && bestScore >= 70) {
-        return { company: bestMatch, score: bestScore };
-    }
-    
-    return null;
-}
-
-/**
- * IT Portal Assets endpoint with automatic company matching
- * Automatically finds and caches the matching SiPortal company
- */
-router.get('/it-portal-assets', async (req, res) => {
-    try {
-        const { company_id, user_id } = req.query;
-        
-        // If direct company_id provided, use it
-        if (company_id) {
-            console.log(`[API] Using provided company ID: ${company_id}`);
-            
-            const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company_id}`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': process.env.SIPORTAL_API_KEY,
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (!response.ok) {
-                if (response.status === 404) {
-                    return res.json({ 
-                        assets: [],
-                        message: `No company found with ID ${company_id}`,
-                        company_id: company_id,
-                        error_type: 'company_not_found'
-                    });
-                }
-                throw new Error(`SiPortal API returned ${response.status}: ${response.statusText}`);
-            }
-
-            const siPortalData = await response.json();
-            const devices = siPortalData.data?.results || [];
-            
-            // Transform devices to standard format
-            const assets = devices.map(device => ({
-                id: device.id,
-                asset_tag: device.name || device.hostName || device.id,
-                device_type: device.type?.name || device.deviceType || 'Unknown',
-                name: device.name || 'Unnamed Device',
-                host_name: device.hostName || device.hostname || '',
-                description: (device.description && 
-                             device.description !== 'Active' && 
-                             device.description !== 'Inactive' && 
-                             device.description !== device.status &&
-                             device.description.toLowerCase() !== 'active' &&
-                             device.description.toLowerCase() !== 'inactive') ? 
-                            device.description : '',
-                domain: device.domain || device.realm || '',
-                realm: device.realm || device.domain || '',
-                facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
-                username: device.username || device.user || '',
-                preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
-                access_method: device.accessMethod || device.access_method || device.preferredAccess || '',
-                credentials: device.credentials || device.credential || '',
-                manufacturer: device.type?.name || device.manufacturer || 'Unknown',
-                model: device.model || device.type?.name || 'Unknown',
-                serial_number: device.serialNumber || device.serial_number || '',
-                status: device.status || 'active',
-                source: 'SiPortal',
-                imported_date: new Date().toISOString(),
-                notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
-                assigned_user: device.assignedUser || device.assigned_user || '',
-                company_id: company_id,
-                location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
-                ip_address: device.ipAddress || device.ip_address || '',
-                mac_address: device.macAddress || device.mac_address || '',
-                os: device.operatingSystem || device.os || '',
-                last_seen: device.lastSeen || device.last_seen || ''
-            }));
-
-            return res.json({ 
-                assets,
-                company_id: company_id,
-                method: 'direct_id',
-                total: assets.length
-            });
-        }
-        
-        // AUTOMATIC MATCHING: Look up organization and find matching company
-        if (user_id) {
-            console.log(`[API] Auto-matching IT Portal company for user: ${user_id}`);
-            
-            const user = await zendeskService.getUserById(user_id);
-            if (!user.organization_id) {
-                return res.json({ 
-                    assets: [],
-                    message: 'User has no organization associated',
-                    error_type: 'no_organization'
-                });
-            }
-
-            const organization = await zendeskService.getOrganizationById(user.organization_id);
-            const orgName = organization?.name;
-            
-            if (!orgName) {
-                return res.json({ 
-                    assets: [],
-                    message: 'Organization has no name',
-                    error_type: 'no_org_name'
-                });
-            }
-            
-            // Check if we already have a cached company ID for this org
-            let itPortalCompanyId = organization?.organization_fields?.it_portal_company_id;
-            
-            if (!itPortalCompanyId) {
-                console.log(`[API] No cached company ID, searching for: "${orgName}"`);
-                
-                // Try to find matching company
-                const match = await findMatchingCompany(orgName);
-                
-                if (match) {
-                    console.log(`[API] Found match: "${match.company.name}" (ID: ${match.company.id}, Score: ${match.score})`);
-                    itPortalCompanyId = match.company.id;
-                    
-                    // Save the matched ID to the organization for future use
-                    try {
-                        await zendeskService.updateOrganization(user.organization_id, {
-                            organization_fields: {
-                                ...organization.organization_fields,
-                                it_portal_company_id: itPortalCompanyId.toString()
-                            }
-                        });
-                        console.log(`[API] Saved company ID ${itPortalCompanyId} to organization`);
-                    } catch (saveError) {
-                        console.error('[API] Failed to save company ID to organization:', saveError.message);
-                        // Continue anyway - we have the ID for this request
-                    }
-                } else {
-                    console.log(`[API] No match found for "${orgName}"`);
-                    
-                    // Try searching more pages if cache might be incomplete
-                    if (companiesCache.companies.length < 500) {
-                        console.log('[API] Cache might be incomplete, refreshing...');
-                        await refreshCompaniesCache();
-                        
-                        // Try matching again with fuller cache
-                        const retryMatch = await findMatchingCompany(orgName);
-                        if (retryMatch) {
-                            console.log(`[API] Found match after refresh: "${retryMatch.company.name}" (ID: ${retryMatch.company.id})`);
-                            itPortalCompanyId = retryMatch.company.id;
-                            
-                            // Try to save it
-                            try {
-                                await zendeskService.updateOrganization(user.organization_id, {
-                                    organization_fields: {
-                                        ...organization.organization_fields,
-                                        it_portal_company_id: itPortalCompanyId.toString()
-                                    }
-                                });
-                            } catch (saveError) {
-                                console.error('[API] Failed to save company ID:', saveError.message);
-                            }
-                        }
-                    }
-                }
-            } else {
-                console.log(`[API] Using cached company ID: ${itPortalCompanyId}`);
-            }
-            
-            if (!itPortalCompanyId) {
-                // Return list of possible matches for manual selection
-                const searchResults = companiesCache.companies
-                    .filter(c => {
-                        const name = c.name?.toLowerCase() || '';
-                        const search = orgName.toLowerCase();
-                        const searchWords = search.split(/\s+/);
-                        return searchWords.some(word => word.length > 2 && name.includes(word));
-                    })
-                    .slice(0, 10)
-                    .map(c => ({ id: c.id, name: c.name }));
-                
-                return res.json({ 
-                    assets: [],
-                    message: `No automatic match found for "${orgName}"`,
-                    organization: {
-                        id: user.organization_id,
-                        name: orgName
-                    },
-                    possible_matches: searchResults,
-                    error_type: 'no_match_found'
-                });
-            }
-            
-            // Recursively call with the found company_id
-            req.query.company_id = itPortalCompanyId;
-            delete req.query.user_id;
-            return router.handle(req, res);
-        }
-        
-        return res.status(400).json({ 
-            error: 'Missing required parameters',
-            message: 'Either company_id or user_id parameter is required'
-        });
-        
-    } catch (error) {
-        console.error('[API] Error fetching SiPortal devices:', error.message);
-        res.status(500).json({ 
-            error: 'Failed to fetch IT Portal assets',
-            details: error.message 
-        });
-    }
-});
-
-/**
- * Direct company name lookup - finds exact match
- * GET /api/lookup-siportal-company?name=CompanyName
- */
-router.get('/lookup-siportal-company', async (req, res) => {
-    try {
-        const { name } = req.query;
-        
-        if (!name) {
-            return res.status(400).json({ error: 'Company name is required' });
-        }
-        
-        console.log(`[API] Looking up exact company: "${name}"`);
-        
-        // Search through all companies for exact match
-        let page = 1;
-        let found = false;
-        
-        while (page <= 200 && !found) {
-            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': process.env.SIPORTAL_API_KEY,
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (!response.ok) {
-                break;
-            }
-
-            const data = await response.json();
-            const companies = data.data?.results || [];
-            
-            if (companies.length === 0) break;
-            
-            // Look for exact match
-            for (const company of companies) {
-                if (company.name === name) {
-                    console.log(`[API] Found exact match: "${company.name}" (ID: ${company.id})`);
-                    
-                    // Automatically save to organization if user_id provided
-                    if (req.query.user_id) {
-                        try {
-                            const user = await zendeskService.getUserById(req.query.user_id);
-                            if (user.organization_id) {
-                                const org = await zendeskService.getOrganizationById(user.organization_id);
-                                await zendeskService.updateOrganization(user.organization_id, {
-                                    organization_fields: {
-                                        ...org.organization_fields,
-                                        it_portal_company_id: company.id.toString()
-                                    }
-                                });
-                                console.log(`[API] Saved company ID ${company.id} to organization`);
-                            }
-                        } catch (err) {
-                            console.error('[API] Failed to auto-save company ID:', err);
-                        }
-                    }
-                    
-                    return res.json({
-                        success: true,
-                        company: {
-                            id: company.id,
-                            name: company.name
-                        },
-                        message: `Found company "${company.name}" with ID: ${company.id}`
-                    });
-                }
-            }
-            
-            page++;
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-        
-        return res.json({
-            success: false,
-            message: `Company "${name}" not found after searching ${page - 1} pages`,
-            searched_pages: page - 1
-        });
-        
-    } catch (error) {
-        console.error('[API] Error in company lookup:', error.message);
-        res.status(500).json({
-            error: 'Failed to lookup company',
-            details: error.message
-        });
     }
 });
 
@@ -1288,7 +1396,28 @@ router.put('/organizations/:id', async (req, res) => {
     }
 });
 
-// Initialize companies cache on startup (optional - for company lookup helper)
+/**
+ * Debug endpoint to check cache status and force refresh
+ */
+router.get('/debug-cache-status', async (req, res) => {
+    const { refresh } = req.query;
+    
+    if (refresh === 'true') {
+        await refreshCompaniesCache();
+    }
+    
+    res.json({
+        cache_size: companiesCache.companies.length,
+        last_updated: companiesCache.lastUpdated,
+        is_updating: companiesCache.isUpdating,
+        sample_companies: companiesCache.companies.slice(0, 10).map(c => ({ id: c.id, name: c.name })),
+        arbella_companies: companiesCache.companies.filter(c => 
+            c.name?.toLowerCase().includes('arbella')
+        ).map(c => ({ id: c.id, name: c.name }))
+    });
+});
+
+// Initialize companies cache on startup
 if (process.env.SIPORTAL_API_KEY) {
     // Start cache refresh in background
     refreshCompaniesCache().catch(err => 
