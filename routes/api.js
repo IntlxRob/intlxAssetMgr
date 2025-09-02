@@ -45,7 +45,7 @@ let companiesCache = {
 };
 
 /**
- * Refresh the companies cache - UPDATED to fetch ALL companies
+ * FIXED - Refresh the companies cache using offset-based pagination
  */
 async function refreshCompaniesCache() {
     if (companiesCache.isUpdating) {
@@ -55,15 +55,18 @@ async function refreshCompaniesCache() {
 
     try {
         companiesCache.isUpdating = true;
-        console.log('[Cache] Refreshing companies cache...');
+        console.log('[Cache] Refreshing companies cache with offset-based pagination...');
         
         let allCompanies = [];
-        let page = 1;
-        let consecutiveEmptyPages = 0;
+        let offset = 0;
+        const batchSize = 100;
+        let consecutiveEmptyBatches = 0;
         const seenIds = new Set(); // Prevent duplicates
         
-        while (page <= 100) { // Increased safety limit from 50 to 100 pages
-            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
+        while (offset < 5000) { // Safety limit of 5000 companies
+            console.log(`[Cache] Fetching offset ${offset}, batch size ${batchSize}...`);
+            
+            const response = await fetch(`https://www.siportal.net/api/2.0/companies?limit=${batchSize}&offset=${offset}`, {
                 method: 'GET',
                 headers: {
                     'Authorization': process.env.SIPORTAL_API_KEY,
@@ -72,7 +75,7 @@ async function refreshCompaniesCache() {
             });
 
             if (!response.ok) {
-                console.log(`[Cache] API error on page ${page}: ${response.status}`);
+                console.log(`[Cache] API error at offset ${offset}: ${response.status}`);
                 break;
             }
 
@@ -80,13 +83,15 @@ async function refreshCompaniesCache() {
             const companies = data.data?.results || [];
             
             if (companies.length === 0) {
-                consecutiveEmptyPages++;
-                if (consecutiveEmptyPages >= 3) { // Stop after 3 consecutive empty pages
-                    console.log(`[Cache] Three consecutive empty pages, stopping at page ${page}`);
+                consecutiveEmptyBatches++;
+                console.log(`[Cache] Offset ${offset}: Empty batch (${consecutiveEmptyBatches}/3)`);
+                
+                if (consecutiveEmptyBatches >= 3) {
+                    console.log(`[Cache] Three consecutive empty batches, stopping at offset ${offset}`);
                     break;
                 }
             } else {
-                consecutiveEmptyPages = 0;
+                consecutiveEmptyBatches = 0;
                 
                 // Only add unique companies
                 let newCompanies = 0;
@@ -98,13 +103,16 @@ async function refreshCompaniesCache() {
                     }
                 });
                 
-                // Log every 10th page for progress tracking
-                if (page % 10 === 0) {
-                    console.log(`[Cache] Page ${page}: ${companies.length} companies, ${newCompanies} new (total unique: ${allCompanies.length})`);
+                console.log(`[Cache] Offset ${offset}: ${companies.length} companies, ${newCompanies} new (total unique: ${allCompanies.length})`);
+                
+                // If we got fewer companies than requested, we've reached the end
+                if (companies.length < batchSize) {
+                    console.log(`[Cache] Reached end of companies at offset ${offset}`);
+                    break;
                 }
             }
             
-            page++;
+            offset += batchSize;
             
             // Add small delay to avoid rate limiting
             await new Promise(resolve => setTimeout(resolve, 50));
@@ -112,7 +120,7 @@ async function refreshCompaniesCache() {
         
         companiesCache.companies = allCompanies;
         companiesCache.lastUpdated = new Date();
-        console.log(`[Cache] Updated companies cache with ${allCompanies.length} unique companies from ${page-1} pages`);
+        console.log(`[Cache] Updated companies cache with ${allCompanies.length} unique companies`);
         
         // Log some sample company names for debugging
         console.log(`[Cache] Sample companies:`, allCompanies.slice(0, 5).map(c => c.name).join(', '));
@@ -1410,7 +1418,7 @@ router.get('/assets/schema', async (req, res) => {
 });
 
 /**
- * Endpoint to fetch IT Portal (SiPortal) assets for a company/organization.
+ * FIXED - Endpoint to fetch IT Portal (SiPortal) assets for a company/organization.
  * Used by React app IT Portal Assets section.
  * NOW SUPPORTS ANY ORGANIZATION - dynamically finds matching company in SiPortal
  */
@@ -1497,7 +1505,7 @@ router.get('/it-portal-assets', async (req, res) => {
                 console.log(`[API] No cache available, will try direct search`);
             }
 
-            // Step 4: IMPROVED Direct Search with Multiple Variations
+            // Step 4: FIXED - Direct Search with Multiple Variations (NO LIMIT PARAMETER)
             if (!matchingCompany) {
                 console.log(`[API] No match found in cache for "${orgName}", trying direct company search`);
                 
@@ -1522,7 +1530,8 @@ router.get('/it-portal-assets', async (req, res) => {
                     try {
                         console.log(`[API] Trying direct search with: "${searchVariation}"`);
                         
-                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&limit=1000`, {
+                        // FIXED - REMOVED &limit=1000 from direct search (this was causing 400 errors)
+                        const directResponse = await fetch(`https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(searchVariation)}`, {
                             method: 'GET',
                             headers: {
                                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -1633,8 +1642,8 @@ router.get('/it-portal-assets', async (req, res) => {
 
         console.log(`[API] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
 
-        // Step 5: Fetch devices for the matching company
-        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
+        // Step 5: FIXED - Fetch devices for the matching company WITH LIMIT
+        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&limit=1000`, {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -1751,10 +1760,10 @@ router.post('/webhooks/siportal', async (req, res) => {
             return res.status(400).json({ error: 'company_id is required' });
         }
 
-        // Fetch updated device data from SiPortal
+        // FIXED - Fetch updated device data from SiPortal WITH LIMIT
         console.log(`[API] Fetching SiPortal devices for company ID: ${company_id}`);
         
-        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company_id}`, {
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company_id}&limit=1000`, {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -1786,7 +1795,7 @@ router.post('/webhooks/siportal', async (req, res) => {
 });
 
 /**
- * Endpoint to import SiPortal devices as Zendesk assets for an organization
+ * FIXED - Endpoint to import SiPortal devices as Zendesk assets for an organization
  * POST /api/import-siportal-devices
  * NOW SUPPORTS ANY ORGANIZATION - dynamically finds matching company
  */
@@ -1919,7 +1928,7 @@ router.post('/import-siportal-devices', async (req, res) => {
 
         console.log(`[Import] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`);
 
-        // Step 3: Fetch devices from SiPortal
+        // Step 3: FIXED - Fetch devices from SiPortal WITH LIMIT
         const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&limit=1000`, {
             method: 'GET',
             headers: {
@@ -2049,7 +2058,7 @@ Assigned User: ${device.assignedUser || device.assigned_user || 'Unassigned'}`,
 });
 
 /**
- * Endpoint to get import preview - shows what devices would be imported
+ * FIXED - Endpoint to get import preview - shows what devices would be imported
  * GET /api/preview-siportal-import?user_id=123 or ?organization_id=456
  * NOW SUPPORTS ANY ORGANIZATION - dynamically finds matching company
  */
@@ -2181,8 +2190,8 @@ router.get('/preview-siportal-import', async (req, res) => {
 
         console.log(`[Preview] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${matchScore})`);
 
-        // Step 3: Fetch devices from SiPortal
-        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}`, {
+        // Step 3: FIXED - Fetch devices from SiPortal WITH LIMIT
+        const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&limit=1000`, {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
@@ -2375,8 +2384,8 @@ router.get('/debug-siportal-company/:id', async (req, res) => {
         
         console.log(`[Debug] Checking SiPortal company ID: ${companyId}`);
         
-        // Try to fetch devices for this specific company ID
-        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}`, {
+        // FIXED - Try to fetch devices for this specific company ID WITH LIMIT
+        const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${companyId}&limit=1000`, {
             method: 'GET',
             headers: {
                 'Authorization': process.env.SIPORTAL_API_KEY,
