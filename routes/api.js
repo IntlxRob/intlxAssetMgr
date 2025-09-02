@@ -5,6 +5,28 @@ const express = require('express');
 const router = express.Router();
 const zendeskService = require('../services/zendesk');
 const googleSheetsService = require('../services/googleSheets');
+const { google } = require('googleapis');
+const calendar = google.calendar('v3');
+
+// Initialize OAuth2 client for Google Calendar
+const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+);
+
+// Use service account or OAuth2 tokens
+if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    const auth = new google.auth.GoogleAuth({
+        keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
+        scopes: ['https://www.googleapis.com/auth/calendar']
+    });
+    google.options({ auth });
+} else if (process.env.GOOGLE_REFRESH_TOKEN) {
+    oauth2Client.setCredentials({
+        refresh_token: process.env.GOOGLE_REFRESH_TOKEN
+    });
+}
 
 /**
  * Debug endpoint to search for companies containing specific text
@@ -119,6 +141,25 @@ async function refreshCompaniesCache() {
     } finally {
         companiesCache.isUpdating = false;
     }
+}
+
+// Helper functions to extract metadata from event descriptions
+function extractEventType(description) {
+    if (!description) return 'meeting';
+    const match = description.match(/\[Event Type: (.*?)\]/);
+    return match ? match[1] : 'meeting';
+}
+
+function extractTicketId(description) {
+    if (!description) return null;
+    const match = description.match(/\[Ticket: #(.*?)\]/);
+    return match ? match[1] : null;
+}
+
+function extractAssetIds(description) {
+    if (!description) return [];
+    const match = description.match(/\[Assets: (.*?)\]/);
+    return match ? match[1].split(',').map(id => id.trim()) : [];
 }
 
 /**
@@ -1597,5 +1638,36 @@ if (process.env.SIPORTAL_API_KEY) {
         console.error('[Startup] Initial cache refresh failed:', err.message)
     );
 }
+
+// ============================================
+// GOOGLE CALENDAR / OPS CALENDAR ENDPOINTS
+// ============================================
+
+/**
+ * Get OPS Calendar configuration
+ */
+router.get('/ops-calendar/config', (req, res) => {
+    // ... endpoint code here
+});
+
+/**
+ * Get events from OPS Calendar
+ */
+router.get('/ops-calendar/events', async (req, res) => {
+    // ... endpoint code here
+});
+
+// ... add all other calendar endpoints here ...
+
+/**
+ * Check free/busy time
+ */
+router.post('/ops-calendar/freebusy', async (req, res) => {
+    // ... endpoint code here
+});
+
+// ============================================
+// END OF CALENDAR ENDPOINTS
+// ============================================
 
 module.exports = router;
