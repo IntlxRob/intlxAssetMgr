@@ -754,6 +754,96 @@ router.get('/it-portal-assets', async (req, res) => {
 });
 
 /**
+ * Direct company name lookup - finds exact match
+ * GET /api/lookup-siportal-company?name=CompanyName
+ */
+router.get('/lookup-siportal-company', async (req, res) => {
+    try {
+        const { name } = req.query;
+        
+        if (!name) {
+            return res.status(400).json({ error: 'Company name is required' });
+        }
+        
+        console.log(`[API] Looking up exact company: "${name}"`);
+        
+        // Search through all companies for exact match
+        let page = 1;
+        let found = false;
+        
+        while (page <= 200 && !found) {
+            const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}&per_page=100`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': process.env.SIPORTAL_API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                break;
+            }
+
+            const data = await response.json();
+            const companies = data.data?.results || [];
+            
+            if (companies.length === 0) break;
+            
+            // Look for exact match
+            for (const company of companies) {
+                if (company.name === name) {
+                    console.log(`[API] Found exact match: "${company.name}" (ID: ${company.id})`);
+                    
+                    // Automatically save to organization if user_id provided
+                    if (req.query.user_id) {
+                        try {
+                            const user = await zendeskService.getUserById(req.query.user_id);
+                            if (user.organization_id) {
+                                const org = await zendeskService.getOrganizationById(user.organization_id);
+                                await zendeskService.updateOrganization(user.organization_id, {
+                                    organization_fields: {
+                                        ...org.organization_fields,
+                                        it_portal_company_id: company.id.toString()
+                                    }
+                                });
+                                console.log(`[API] Saved company ID ${company.id} to organization`);
+                            }
+                        } catch (err) {
+                            console.error('[API] Failed to auto-save company ID:', err);
+                        }
+                    }
+                    
+                    return res.json({
+                        success: true,
+                        company: {
+                            id: company.id,
+                            name: company.name
+                        },
+                        message: `Found company "${company.name}" with ID: ${company.id}`
+                    });
+                }
+            }
+            
+            page++;
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        
+        return res.json({
+            success: false,
+            message: `Company "${name}" not found after searching ${page - 1} pages`,
+            searched_pages: page - 1
+        });
+        
+    } catch (error) {
+        console.error('[API] Error in company lookup:', error.message);
+        res.status(500).json({
+            error: 'Failed to lookup company',
+            details: error.message
+        });
+    }
+});
+
+/**
  * Update IT Portal asset (SiPortal device)
  * This endpoint would need to be implemented with SiPortal's update API
  */
