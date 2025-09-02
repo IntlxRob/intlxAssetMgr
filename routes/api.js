@@ -59,7 +59,7 @@ const COMPANY_NAME_MAPPINGS = {
 };
 
 /**
- * Refresh the companies cache - FIXED VERSION
+ * Refresh the companies cache - FIXED with correct API parameter
  */
 async function refreshCompaniesCache() {
     if (companiesCache.isUpdating) {
@@ -69,18 +69,19 @@ async function refreshCompaniesCache() {
 
     try {
         companiesCache.isUpdating = true;
-        console.log('[Cache] Starting comprehensive companies cache refresh...');
+        console.log('[Cache] Starting companies cache refresh...');
         
         let allCompanies = [];
         let page = 1;
         let consecutiveEmptyPages = 0;
-        const MAX_PAGES = 200; // Increased from whatever it was before
-        const PER_PAGE = 100; // Get more per page
+        const LIMIT = 100; // Use limit parameter, not per_page
+        const MAX_PAGES = 50; // Should be enough for ~5000 companies
         
         while (page <= MAX_PAGES) {
             try {
-                const url = `https://www.siportal.net/api/2.0/companies?page=${page}&per_page=${PER_PAGE}`;
-                console.log(`[Cache] Fetching page ${page}: ${url}`);
+                // Use 'limit' parameter instead of 'per_page'
+                const url = `https://www.siportal.net/api/2.0/companies?page=${page}&limit=${LIMIT}`;
+                console.log(`[Cache] Fetching page ${page}...`);
                 
                 const response = await fetch(url, {
                     method: 'GET',
@@ -91,57 +92,30 @@ async function refreshCompaniesCache() {
                 });
 
                 if (!response.ok) {
-                    console.log(`[Cache] API error on page ${page}: ${response.status} ${response.statusText}`);
+                    console.log(`[Cache] API error on page ${page}: ${response.status}`);
                     break;
                 }
 
                 const data = await response.json();
-                console.log(`[Cache] Page ${page} response structure:`, {
-                    hasData: !!data.data,
-                    hasResults: !!(data.data?.results),
-                    resultCount: data.data?.results?.length || 0,
-                    hasMeta: !!data.meta,
-                    hasPagination: !!data.pagination
-                });
+                const companies = data.data?.results || data.results || data.data || [];
                 
-                // Try different response structures
-                const companies = data.data?.results || data.results || data.data || data || [];
-                
-                if (!Array.isArray(companies)) {
-                    console.log(`[Cache] Page ${page}: Response is not an array, breaking`);
-                    break;
-                }
-                
-                if (companies.length === 0) {
+                if (!Array.isArray(companies) || companies.length === 0) {
                     consecutiveEmptyPages++;
-                    console.log(`[Cache] Page ${page}: Empty page (${consecutiveEmptyPages} consecutive)`);
+                    console.log(`[Cache] Page ${page}: No companies found`);
                     
-                    if (consecutiveEmptyPages >= 3) {
-                        console.log(`[Cache] Three consecutive empty pages, stopping`);
+                    if (consecutiveEmptyPages >= 2) {
+                        console.log(`[Cache] Two consecutive empty pages, stopping`);
                         break;
                     }
                 } else {
                     consecutiveEmptyPages = 0;
                     allCompanies.push(...companies);
                     console.log(`[Cache] Page ${page}: Added ${companies.length} companies (total: ${allCompanies.length})`);
-                    
-                    // Log every 5 pages for progress
-                    if (page % 5 === 0) {
-                        console.log(`[Cache] Progress: ${allCompanies.length} companies loaded so far`);
-                        // Log some company names to verify we're getting real data
-                        const sampleNames = companies.slice(0, 3).map(c => c.name).filter(Boolean);
-                        console.log(`[Cache] Sample from page ${page}:`, sampleNames);
-                    }
                 }
                 
-                // Check various pagination indicators
-                const hasMore = data.meta?.has_more || 
-                              data.pagination?.has_more || 
-                              data.has_more ||
-                              companies.length === PER_PAGE; // If we got a full page, there might be more
-                
-                if (!hasMore && companies.length < PER_PAGE) {
-                    console.log(`[Cache] Page ${page}: Incomplete page (${companies.length}/${PER_PAGE}), likely last page`);
+                // If we got less than the limit, we've reached the end
+                if (companies.length < LIMIT) {
+                    console.log(`[Cache] Page ${page} has less than ${LIMIT} companies, assuming last page`);
                     break;
                 }
                 
@@ -152,18 +126,11 @@ async function refreshCompaniesCache() {
                 
             } catch (pageError) {
                 console.error(`[Cache] Error fetching page ${page}:`, pageError.message);
-                // Try to continue with next page
-                page++;
-                consecutiveEmptyPages++;
-                
-                if (consecutiveEmptyPages >= 3) {
-                    console.log('[Cache] Too many consecutive errors, stopping');
-                    break;
-                }
+                break;
             }
         }
         
-        // Remove duplicates if any
+        // Remove duplicates
         const uniqueCompanies = [];
         const seenIds = new Set();
         
@@ -177,30 +144,26 @@ async function refreshCompaniesCache() {
         companiesCache.companies = uniqueCompanies;
         companiesCache.lastUpdated = new Date();
         
-        console.log('[Cache] ========================================');
-        console.log(`[Cache] Cache refresh completed:`);
-        console.log(`[Cache]   - Pages fetched: ${page - 1}`);
-        console.log(`[Cache]   - Total companies: ${uniqueCompanies.length}`);
-        console.log(`[Cache]   - Duplicates removed: ${allCompanies.length - uniqueCompanies.length}`);
-        console.log('[Cache] ========================================');
+        console.log(`[Cache] Cache refresh completed: ${uniqueCompanies.length} companies from ${page-1} pages`);
         
-        // Log all company names if we have less than expected
-        if (uniqueCompanies.length < 100) {
-            console.log('[Cache] All company names:', uniqueCompanies.map(c => c.name));
-        } else {
-            // Log first 20 and last 20 for verification
-            console.log('[Cache] First 20 companies:', uniqueCompanies.slice(0, 20).map(c => c.name));
-            console.log('[Cache] Last 20 companies:', uniqueCompanies.slice(-20).map(c => c.name));
-        }
-        
-        // Check if Arbella is in the cache
+        // Look for Arbella companies
         const arbellaCompanies = uniqueCompanies.filter(c => 
             c.name?.toLowerCase().includes('arbella')
         );
-        console.log('[Cache] Arbella-related companies found:', arbellaCompanies.map(c => ({ id: c.id, name: c.name })));
+        
+        if (arbellaCompanies.length > 0) {
+            console.log('[Cache] Arbella companies found:', arbellaCompanies.map(c => ({ id: c.id, name: c.name })));
+        } else {
+            console.log('[Cache] No Arbella companies found in cache');
+            // Try other insurance companies to verify we have real data
+            const insuranceCompanies = uniqueCompanies.filter(c => 
+                c.name?.toLowerCase().includes('insurance')
+            );
+            console.log(`[Cache] Found ${insuranceCompanies.length} companies with "insurance" in name`);
+        }
         
     } catch (error) {
-        console.error('[Cache] Fatal error refreshing companies cache:', error);
+        console.error('[Cache] Error refreshing companies cache:', error.message);
     } finally {
         companiesCache.isUpdating = false;
     }
