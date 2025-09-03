@@ -16,16 +16,27 @@ const oauth2Client = new google.auth.OAuth2(
 );
 
 // Use service account or OAuth2 tokens
-if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    // For Render.com deployment - JSON stored as env variable
+    const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    const auth = new google.auth.GoogleAuth({
+        credentials: serviceAccount,
+        scopes: ['https://www.googleapis.com/auth/calendar']
+    });
+    google.options({ auth });
+} else if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    // For local development - JSON file path
     const auth = new google.auth.GoogleAuth({
         keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
         scopes: ['https://www.googleapis.com/auth/calendar']
     });
     google.options({ auth });
 } else if (process.env.GOOGLE_REFRESH_TOKEN) {
+    // OAuth2 with refresh token
     oauth2Client.setCredentials({
         refresh_token: process.env.GOOGLE_REFRESH_TOKEN
     });
+    google.options({ auth: oauth2Client });
 }
 
 /**
@@ -1647,23 +1658,567 @@ if (process.env.SIPORTAL_API_KEY) {
  * Get OPS Calendar configuration
  */
 router.get('/ops-calendar/config', (req, res) => {
-    // ... endpoint code here
+    res.json({
+        calendarId: process.env.OPS_CALENDAR_ID || 'primary',
+        timezone: process.env.OPS_CALENDAR_TIMEZONE || 'America/New_York',
+        workingHours: {
+            start: '09:00',
+            end: '17:00'
+        },
+        eventTypes: [
+            { value: 'meeting', label: 'Meeting', color: '#4285f4' },
+            { value: 'maintenance', label: 'Maintenance', color: '#ea4335' },
+            { value: 'deployment', label: 'Deployment', color: '#fbbc04' },
+            { value: 'training', label: 'Training', color: '#34a853' },
+            { value: 'outage', label: 'Outage', color: '#ff6d00' },
+            { value: 'other', label: 'Other', color: '#9e9e9e' }
+        ]
+    });
 });
 
 /**
  * Get events from OPS Calendar
  */
 router.get('/ops-calendar/events', async (req, res) => {
-    // ... endpoint code here
+    try {
+        const { 
+            calendarId = process.env.OPS_CALENDAR_ID || 'primary',
+            timeMin = new Date().toISOString(),
+            timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            maxResults = 250,
+            q: searchQuery
+        } = req.query;
+
+        console.log(`[Calendar] Fetching events from ${calendarId} between ${timeMin} and ${timeMax}`);
+
+        const response = await calendar.events.list({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            timeMin: timeMin,
+            timeMax: timeMax,
+            maxResults: parseInt(maxResults),
+            singleEvents: true,
+            orderBy: 'startTime',
+            q: searchQuery // Optional search query
+        });
+
+        const events = response.data.items || [];
+        
+        // Transform events to include extracted metadata
+        const transformedEvents = events.map(event => ({
+            id: event.id,
+            summary: event.summary,
+            description: event.description,
+            location: event.location,
+            start: event.start,
+            end: event.end,
+            status: event.status,
+            htmlLink: event.htmlLink,
+            created: event.created,
+            updated: event.updated,
+            creator: event.creator,
+            organizer: event.organizer,
+            attendees: event.attendees || [],
+            reminders: event.reminders,
+            // Extract custom metadata
+            eventType: extractEventType(event.description),
+            ticketId: extractTicketId(event.description),
+            assetIds: extractAssetIds(event.description),
+            // Additional useful fields
+            isAllDay: !event.start?.dateTime,
+            duration: event.start?.dateTime && event.end?.dateTime ? 
+                (new Date(event.end.dateTime) - new Date(event.start.dateTime)) / 60000 : null
+        }));
+
+        console.log(`[Calendar] Retrieved ${transformedEvents.length} events`);
+
+        res.json({
+            success: true,
+            events: transformedEvents,
+            calendar: calendarId,
+            range: {
+                start: timeMin,
+                end: timeMax
+            }
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error fetching events:', error.message);
+        res.status(500).json({
+            error: 'Failed to fetch calendar events',
+            details: error.message
+        });
+    }
 });
 
-// ... add all other calendar endpoints here ...
+/**
+ * Get a single event by ID
+ */
+router.get('/ops-calendar/events/:eventId', async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const calendarId = req.query.calendarId || process.env.OPS_CALENDAR_ID || 'primary';
+
+        const response = await calendar.events.get({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            eventId: eventId
+        });
+
+        const event = response.data;
+        
+        res.json({
+            success: true,
+            event: {
+                ...event,
+                eventType: extractEventType(event.description),
+                ticketId: extractTicketId(event.description),
+                assetIds: extractAssetIds(event.description)
+            }
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error fetching event:', error.message);
+        
+        if (error.code === 404) {
+            res.status(404).json({
+                error: 'Event not found',
+                eventId: req.params.eventId
+            });
+        } else {
+            res.status(500).json({
+                error: 'Failed to fetch event',
+                details: error.message
+            });
+        }
+    }
+});
 
 /**
- * Check free/busy time
+ * Create a new calendar event
+ */
+router.post('/ops-calendar/events', async (req, res) => {
+    try {
+        const {
+            summary,
+            description,
+            location,
+            startDateTime,
+            endDateTime,
+            startDate, // For all-day events
+            endDate,   // For all-day events
+            attendees = [],
+            eventType = 'meeting',
+            ticketId,
+            assetIds = [],
+            reminders = { useDefault: true },
+            calendarId = process.env.OPS_CALENDAR_ID || 'primary'
+        } = req.body;
+
+        // Build enhanced description with metadata
+        let enhancedDescription = description || '';
+        if (eventType) {
+            enhancedDescription += `\n[Event Type: ${eventType}]`;
+        }
+        if (ticketId) {
+            enhancedDescription += `\n[Ticket: #${ticketId}]`;
+        }
+        if (assetIds.length > 0) {
+            enhancedDescription += `\n[Assets: ${assetIds.join(',')}]`;
+        }
+
+        // Build event object
+        const event = {
+            summary: summary || 'New OPS Event',
+            description: enhancedDescription,
+            location: location,
+            reminders: reminders
+        };
+
+        // Handle date/time
+        if (startDateTime && endDateTime) {
+            // Timed event
+            event.start = { dateTime: startDateTime, timeZone: process.env.OPS_CALENDAR_TIMEZONE || 'America/New_York' };
+            event.end = { dateTime: endDateTime, timeZone: process.env.OPS_CALENDAR_TIMEZONE || 'America/New_York' };
+        } else if (startDate && endDate) {
+            // All-day event
+            event.start = { date: startDate };
+            event.end = { date: endDate };
+        } else {
+            return res.status(400).json({
+                error: 'Invalid date/time format',
+                message: 'Provide either startDateTime/endDateTime or startDate/endDate'
+            });
+        }
+
+        // Add attendees if provided
+        if (attendees.length > 0) {
+            event.attendees = attendees.map(email => ({ email }));
+            event.sendNotifications = true;
+        }
+
+        console.log(`[Calendar] Creating event in calendar ${calendarId}:`, event.summary);
+
+        const response = await calendar.events.insert({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            resource: event,
+            sendNotifications: true
+        });
+
+        console.log(`[Calendar] Event created successfully: ${response.data.id}`);
+
+        res.status(201).json({
+            success: true,
+            event: response.data,
+            message: 'Event created successfully'
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error creating event:', error.message);
+        res.status(500).json({
+            error: 'Failed to create event',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Update an existing calendar event
+ */
+router.put('/ops-calendar/events/:eventId', async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const {
+            summary,
+            description,
+            location,
+            startDateTime,
+            endDateTime,
+            startDate,
+            endDate,
+            attendees,
+            eventType,
+            ticketId,
+            assetIds,
+            calendarId = process.env.OPS_CALENDAR_ID || 'primary'
+        } = req.body;
+
+        // First, get the existing event
+        const existingResponse = await calendar.events.get({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            eventId: eventId
+        });
+
+        const event = existingResponse.data;
+
+        // Update fields if provided
+        if (summary !== undefined) event.summary = summary;
+        if (location !== undefined) event.location = location;
+
+        // Handle description with metadata
+        if (description !== undefined || eventType !== undefined || ticketId !== undefined || assetIds !== undefined) {
+            let baseDescription = description !== undefined ? description : 
+                (event.description ? event.description.split('\n[')[0] : '');
+            
+            let enhancedDescription = baseDescription;
+            
+            if (eventType) {
+                enhancedDescription += `\n[Event Type: ${eventType}]`;
+            } else if (event.description && event.description.includes('[Event Type:')) {
+                const existingType = extractEventType(event.description);
+                if (existingType) enhancedDescription += `\n[Event Type: ${existingType}]`;
+            }
+            
+            if (ticketId) {
+                enhancedDescription += `\n[Ticket: #${ticketId}]`;
+            } else if (event.description && event.description.includes('[Ticket:')) {
+                const existingTicket = extractTicketId(event.description);
+                if (existingTicket) enhancedDescription += `\n[Ticket: #${existingTicket}]`;
+            }
+            
+            if (assetIds && assetIds.length > 0) {
+                enhancedDescription += `\n[Assets: ${assetIds.join(',')}]`;
+            } else if (event.description && event.description.includes('[Assets:')) {
+                const existingAssets = extractAssetIds(event.description);
+                if (existingAssets.length > 0) enhancedDescription += `\n[Assets: ${existingAssets.join(',')}]`;
+            }
+            
+            event.description = enhancedDescription;
+        }
+
+        // Update date/time if provided
+        if (startDateTime && endDateTime) {
+            event.start = { dateTime: startDateTime, timeZone: process.env.OPS_CALENDAR_TIMEZONE || 'America/New_York' };
+            event.end = { dateTime: endDateTime, timeZone: process.env.OPS_CALENDAR_TIMEZONE || 'America/New_York' };
+        } else if (startDate && endDate) {
+            event.start = { date: startDate };
+            event.end = { date: endDate };
+        }
+
+        // Update attendees if provided
+        if (attendees !== undefined) {
+            event.attendees = attendees.map(email => 
+                typeof email === 'string' ? { email } : email
+            );
+        }
+
+        console.log(`[Calendar] Updating event ${eventId} in calendar ${calendarId}`);
+
+        const response = await calendar.events.update({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            eventId: eventId,
+            resource: event,
+            sendNotifications: true
+        });
+
+        console.log(`[Calendar] Event updated successfully: ${eventId}`);
+
+        res.json({
+            success: true,
+            event: response.data,
+            message: 'Event updated successfully'
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error updating event:', error.message);
+        
+        if (error.code === 404) {
+            res.status(404).json({
+                error: 'Event not found',
+                eventId: req.params.eventId
+            });
+        } else {
+            res.status(500).json({
+                error: 'Failed to update event',
+                details: error.message
+            });
+        }
+    }
+});
+
+/**
+ * Delete a calendar event
+ */
+router.delete('/ops-calendar/events/:eventId', async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const calendarId = req.query.calendarId || process.env.OPS_CALENDAR_ID || 'primary';
+        const sendNotifications = req.query.sendNotifications !== 'false'; // Default true
+
+        console.log(`[Calendar] Deleting event ${eventId} from calendar ${calendarId}`);
+
+        await calendar.events.delete({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            eventId: eventId,
+            sendNotifications: sendNotifications
+        });
+
+        console.log(`[Calendar] Event deleted successfully: ${eventId}`);
+
+        res.json({
+            success: true,
+            message: 'Event deleted successfully',
+            eventId: eventId
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error deleting event:', error.message);
+        
+        if (error.code === 404) {
+            res.status(404).json({
+                error: 'Event not found',
+                eventId: req.params.eventId
+            });
+        } else {
+            res.status(500).json({
+                error: 'Failed to delete event',
+                details: error.message
+            });
+        }
+    }
+});
+
+/**
+ * Check free/busy time for multiple calendars
  */
 router.post('/ops-calendar/freebusy', async (req, res) => {
-    // ... endpoint code here
+    try {
+        const {
+            timeMin = new Date().toISOString(),
+            timeMax = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            calendars = [{ id: process.env.OPS_CALENDAR_ID || 'primary' }]
+        } = req.body;
+
+        console.log(`[Calendar] Checking free/busy for ${calendars.length} calendars`);
+
+        const response = await calendar.freebusy.query({
+            auth: oauth2Client,
+            resource: {
+                timeMin: timeMin,
+                timeMax: timeMax,
+                items: calendars
+            }
+        });
+
+        res.json({
+            success: true,
+            timeMin: timeMin,
+            timeMax: timeMax,
+            calendars: response.data.calendars
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error checking free/busy:', error.message);
+        res.status(500).json({
+            error: 'Failed to check free/busy time',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Get list of available calendars
+ */
+router.get('/ops-calendar/list', async (req, res) => {
+    try {
+        console.log('[Calendar] Fetching calendar list');
+
+        const response = await calendar.calendarList.list({
+            auth: oauth2Client,
+            minAccessRole: 'reader'
+        });
+
+        const calendars = response.data.items || [];
+
+        res.json({
+            success: true,
+            calendars: calendars.map(cal => ({
+                id: cal.id,
+                summary: cal.summary,
+                description: cal.description,
+                primary: cal.primary,
+                accessRole: cal.accessRole,
+                backgroundColor: cal.backgroundColor,
+                foregroundColor: cal.foregroundColor,
+                timeZone: cal.timeZone
+            }))
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error fetching calendar list:', error.message);
+        res.status(500).json({
+            error: 'Failed to fetch calendar list',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Quick add event using natural language
+ */
+router.post('/ops-calendar/quickadd', async (req, res) => {
+    try {
+        const {
+            text,
+            calendarId = process.env.OPS_CALENDAR_ID || 'primary'
+        } = req.body;
+
+        if (!text) {
+            return res.status(400).json({
+                error: 'Missing required field: text'
+            });
+        }
+
+        console.log(`[Calendar] Quick adding event: "${text}"`);
+
+        const response = await calendar.events.quickAdd({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            text: text
+        });
+
+        console.log(`[Calendar] Quick add successful: ${response.data.id}`);
+
+        res.status(201).json({
+            success: true,
+            event: response.data,
+            message: 'Event created via quick add'
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error with quick add:', error.message);
+        res.status(500).json({
+            error: 'Failed to quick add event',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Get upcoming events (next 7 days)
+ */
+router.get('/ops-calendar/upcoming', async (req, res) => {
+    try {
+        const calendarId = req.query.calendarId || process.env.OPS_CALENDAR_ID || 'primary';
+        const days = parseInt(req.query.days) || 7;
+        
+        const timeMin = new Date().toISOString();
+        const timeMax = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+        console.log(`[Calendar] Fetching upcoming events for next ${days} days`);
+
+        const response = await calendar.events.list({
+            auth: oauth2Client,
+            calendarId: calendarId,
+            timeMin: timeMin,
+            timeMax: timeMax,
+            maxResults: 50,
+            singleEvents: true,
+            orderBy: 'startTime'
+        });
+
+        const events = response.data.items || [];
+
+        // Group events by day
+        const eventsByDay = {};
+        events.forEach(event => {
+            const startDate = event.start?.dateTime || event.start?.date;
+            const dayKey = new Date(startDate).toLocaleDateString();
+            
+            if (!eventsByDay[dayKey]) {
+                eventsByDay[dayKey] = [];
+            }
+            
+            eventsByDay[dayKey].push({
+                id: event.id,
+                summary: event.summary,
+                start: event.start,
+                end: event.end,
+                location: event.location,
+                attendees: event.attendees?.length || 0,
+                eventType: extractEventType(event.description),
+                isAllDay: !event.start?.dateTime
+            });
+        });
+
+        res.json({
+            success: true,
+            days: days,
+            totalEvents: events.length,
+            eventsByDay: eventsByDay
+        });
+
+    } catch (error) {
+        console.error('[Calendar] Error fetching upcoming events:', error.message);
+        res.status(500).json({
+            error: 'Failed to fetch upcoming events',
+            details: error.message
+        });
+    }
 });
 
 // ============================================
