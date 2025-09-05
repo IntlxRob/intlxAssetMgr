@@ -8,6 +8,15 @@ const googleSheetsService = require('../services/googleSheets');
 const { google } = require('googleapis');
 const calendar = google.calendar('v3');
 
+//Agent status cache definition
+let agentStatusCache = {
+    statuses: new Map(),
+    lastUpdated: new Map(),
+    accessToken: null,
+    tokenExpiry: null
+};
+const CACHE_DURATION = 30000; // 30 seconds
+
 // Initialize OAuth2 client for Google Calendar
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -377,6 +386,53 @@ function levenshteinDistance(str1, str2) {
     }
     
     return matrix[str2.length][str1.length];
+}
+
+// Helper to get Intermedia access token
+async function getIntermediaToken() {
+    try {
+        // Check cache
+        if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
+            console.log('[Intermedia] Using cached token');
+            return agentStatusCache.accessToken;
+        }
+        
+        console.log('[Intermedia] Requesting new access token');
+        
+        // OAuth2 client credentials flow
+        const tokenResponse = await fetch('https://api.intermedia.net/auth/oauth/v2/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET
+            })
+        });
+        
+        console.log('[Intermedia] Token response status:', tokenResponse.status);
+        
+        if (!tokenResponse.ok) {
+            const errorText = await tokenResponse.text();
+            console.error('[Intermedia] Token error response:', errorText);
+            throw new Error(`Token request failed: ${tokenResponse.status} - ${errorText}`);
+        }
+        
+        const tokenData = await tokenResponse.json();
+        console.log('[Intermedia] Token obtained, expires in:', tokenData.expires_in);
+        
+        // Cache token
+        agentStatusCache.accessToken = tokenData.access_token;
+        agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+        
+        return tokenData.access_token;
+        
+    } catch (error) {
+        console.error('[Intermedia] Failed to get token:', error);
+        throw error;
+    }
 }
 
 /**
@@ -2207,6 +2263,156 @@ router.get('/ops-calendar/upcoming', async (req, res) => {
 
 // ============================================
 // END OF CALENDAR ENDPOINTS
+// ============================================
+
+// ============================================
+// INTERMEDIA ELEVATE AGENT STATUS ENDPOINTS  
+// ============================================
+
+/**
+ * Get agent phone status from Intermedia Elevate
+ */
+router.get('/agent-status/:agentId?', async (req, res) => {
+    try {
+        const email = req.query.email;
+        const agentId = req.params.agentId;
+        
+        if (!email && !agentId) {
+            return res.status(400).json({ error: 'Email or agent ID is required' });
+        }
+        
+        // Check cache first
+        const cacheKey = agentId || email;
+        const cached = agentStatusCache.statuses.get(cacheKey);
+        const lastUpdated = agentStatusCache.lastUpdated.get(cacheKey);
+        
+        if (cached && lastUpdated && (Date.now() - lastUpdated < CACHE_DURATION)) {
+            console.log(`[Agent Status] Returning cached status for ${cacheKey}`);
+            return res.json(cached);
+        }
+        
+        console.log(`[Agent Status] Fetching fresh status for ${cacheKey}`);
+        
+        // Get access token using the new OAuth method
+        let token;
+        try {
+            token = await getIntermediaToken();
+        } catch (tokenError) {
+            console.error('[Agent Status] Token error:', tokenError);
+            return res.status(500).json({ 
+                error: 'Authentication failed',
+                details: tokenError.message 
+            });
+        }
+        
+        // Call Intermedia API with OAuth token
+        console.log('[Agent Status] Calling Intermedia API...');
+        
+        // Try different possible endpoints
+        let response = await fetch('https://api.intermedia.net/voice/v2/agents/status', {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        console.log('[Agent Status] API response status:', response.status);
+        
+        if (response.status === 404) {
+            // Try alternate endpoint
+            response = await fetch('https://api.intermedia.net/api/v1/voice/agents', {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json'
+                }
+            });
+            console.log('[Agent Status] Alternate endpoint status:', response.status);
+        }
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('[Agent Status] API error:', errorText);
+            
+            // Return degraded status
+            return res.json({
+                agentId: cacheKey,
+                name: email ? email.split('@')[0] : 'Unknown',
+                email: email || '',
+                phoneStatus: 'unknown',
+                availability: 'Unable to fetch status',
+                onCall: false,
+                callDuration: 0,
+                queue: 'Unknown',
+                lastActivity: new Date().toISOString(),
+                extension: 'N/A',
+                skills: []
+            });
+        }
+        
+        const data = await response.json();
+        console.log('[Agent Status] API response data:', JSON.stringify(data, null, 2));
+        
+        // Find the specific agent
+        let agentStatus = null;
+        if (data.agents) {
+            if (agentId) {
+                agentStatus = data.agents.find(agent => agent.id === agentId);
+            } else if (email) {
+                agentStatus = data.agents.find(agent => 
+                    agent.email?.toLowerCase() === email.toLowerCase()
+                );
+            }
+        } else if (Array.isArray(data)) {
+            if (email) {
+                agentStatus = data.find(agent => 
+                    agent.email?.toLowerCase() === email.toLowerCase()
+                );
+            }
+        }
+        
+        if (!agentStatus) {
+            // Return offline status if agent not found
+            agentStatus = {
+                id: agentId || email,
+                name: 'Unknown Agent',
+                email: email || '',
+                status: 'offline'
+            };
+        }
+        
+        // Transform the status data
+        const transformedStatus = {
+            agentId: agentStatus.id || agentId || email,
+            name: agentStatus.name || agentStatus.displayName || 'Agent',
+            email: agentStatus.email || email || '',
+            phoneStatus: agentStatus.status || agentStatus.phoneStatus || 'unknown',
+            availability: agentStatus.availability || 'unknown',
+            onCall: agentStatus.onCall || agentStatus.inCall || false,
+            callDuration: agentStatus.callDuration || 0,
+            queue: agentStatus.queue || agentStatus.currentQueue || null,
+            lastActivity: agentStatus.lastActivity || agentStatus.lastStatusChange || new Date().toISOString(),
+            extension: agentStatus.extension || agentStatus.phoneExtension || '',
+            skills: agentStatus.skills || []
+        };
+        
+        // Update cache
+        agentStatusCache.statuses.set(cacheKey, transformedStatus);
+        agentStatusCache.lastUpdated.set(cacheKey, Date.now());
+        
+        console.log('[Agent Status] Returning status:', transformedStatus);
+        res.json(transformedStatus);
+        
+    } catch (error) {
+        console.error('[Agent Status] Unexpected error:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch agent status',
+            details: error.message 
+        });
+    }
+});
+
+// ============================================
+// END OF INTERMEDIA ELEVATE AGENT STATUS ENDPOINTS
 // ============================================
 
 module.exports = router;
