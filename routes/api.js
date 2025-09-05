@@ -2325,25 +2325,22 @@ router.get('/ops-calendar/upcoming', async (req, res) => {
  * Get agent phone status from Intermedia Elevate
  */
 router.get('/agent-status/:agentId?', async (req, res) => {
+    // ... your existing code stays exactly as is ...
+});
+
+/**
+ * Get status for multiple agents
+ * POST /api/agents-status-batch
+ */
+router.post('/agents-status-batch', async (req, res) => {
     try {
-        const email = req.query.email;
-        const agentId = req.params.agentId;
+        const { emails } = req.body;
         
-        if (!email && !agentId) {
-            return res.status(400).json({ error: 'Email or agent ID is required' });
+        if (!emails || !Array.isArray(emails)) {
+            return res.status(400).json({ error: 'Emails array is required' });
         }
         
-        // Check cache first
-        const cacheKey = agentId || email;
-        const cached = agentStatusCache.statuses.get(cacheKey);
-        const lastUpdated = agentStatusCache.lastUpdated.get(cacheKey);
-        
-        if (cached && lastUpdated && (Date.now() - lastUpdated < CACHE_DURATION)) {
-            console.log(`[Agent Status] Returning cached status for ${cacheKey}`);
-            return res.json(cached);
-        }
-        
-        console.log(`[Agent Status] Fetching fresh status for ${cacheKey}`);
+        console.log(`[Agent Status] Fetching status for ${emails.length} agents`);
         
         // Get access token
         let token;
@@ -2357,10 +2354,7 @@ router.get('/agent-status/:agentId?', async (req, res) => {
             });
         }
         
-        // Call Elevate Calling API - Get all users/agents
-        console.log('[Agent Status] Calling Elevate API...');
-        
-        // According to docs, the users endpoint should be at:
+        // Get all users from Elevate API
         const apiUrl = 'https://api.elevate.services/v1/users';
         
         const response = await fetch(apiUrl, {
@@ -2376,83 +2370,68 @@ router.get('/agent-status/:agentId?', async (req, res) => {
             const errorText = await response.text();
             console.error('[Agent Status] API error:', errorText);
             
-            // Return degraded status  
-            return res.json({
-                agentId: cacheKey,
-                name: email ? email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'Unknown',
-                email: email || '',
+            // Return offline status for all agents
+            const offlineStatuses = emails.map(email => ({
+                agentId: email,
+                name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+                email: email,
                 phoneStatus: 'unknown',
-                availability: 'Unable to fetch status',
+                availability: 'Unable to fetch',
                 onCall: false,
-                callDuration: 0,
-                queue: 'Unknown',
-                lastActivity: new Date().toISOString(),
-                extension: 'N/A',
-                skills: [],
-                error: 'Check API permissions or endpoint'
-            });
+                extension: 'N/A'
+            }));
+            
+            return res.json({ agents: offlineStatuses });
         }
         
         const data = await response.json();
-        console.log('[Agent Status] API response data:', JSON.stringify(data, null, 2).substring(0, 500));
+        console.log(`[Agent Status] Found ${data.length || 0} users in Elevate`);
         
-        // Find the specific user/agent
-        let agentData = null;
-        
-        // Handle different response structures based on Elevate API
-        if (Array.isArray(data)) {
-            agentData = data.find(user => 
-                user.email?.toLowerCase() === email?.toLowerCase() ||
-                user.id === agentId
-            );
-        } else if (data.users) {
-            agentData = data.users.find(user => 
-                user.email?.toLowerCase() === email?.toLowerCase() ||
-                user.id === agentId
-            );
-        } else if (data.data) {
-            agentData = data.data.find(user => 
-                user.email?.toLowerCase() === email?.toLowerCase() ||
-                user.id === agentId
-            );
-        }
-        
-        if (!agentData) {
-            console.log('[Agent Status] User not found in response, returning offline status');
-            agentData = {
-                id: agentId || email,
-                name: email ? email.split('@')[0].replace(/\./g, ' ') : 'Unknown',
-                email: email || '',
-                status: 'offline'
+        // Match Zendesk agents with Elevate users
+        const agentStatuses = emails.map(email => {
+            let userData = null;
+            
+            // Find user in Elevate response
+            if (Array.isArray(data)) {
+                userData = data.find(user => 
+                    user.email?.toLowerCase() === email.toLowerCase()
+                );
+            }
+            
+            if (!userData) {
+                // Agent not found in Elevate
+                return {
+                    agentId: email,
+                    name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+                    email: email,
+                    phoneStatus: 'offline',
+                    availability: 'Not in Elevate',
+                    onCall: false,
+                    extension: 'N/A'
+                };
+            }
+            
+            // Transform to our format
+            return {
+                agentId: userData.id || email,
+                name: userData.name || userData.display_name || email.split('@')[0],
+                email: email,
+                phoneStatus: userData.presence || userData.status || 'unknown',
+                availability: userData.availability || userData.presence_status || 'Unknown',
+                onCall: userData.on_call || userData.inCall || false,
+                callDuration: userData.call_duration || 0,
+                extension: userData.extension || userData.phone_number || '',
+                queue: userData.queue || userData.department || 'General'
             };
-        }
+        });
         
-        // Transform to our format (based on Elevate API structure)
-        const transformedStatus = {
-            agentId: agentData.id || agentId || email,
-            name: agentData.name || agentData.display_name || agentData.fullName || 'Agent',
-            email: agentData.email || email || '',
-            phoneStatus: agentData.presence || agentData.status || 'unknown',
-            availability: agentData.availability || agentData.presence_status || 'Unknown',
-            onCall: agentData.on_call || agentData.inCall || false,
-            callDuration: agentData.call_duration || 0,
-            queue: agentData.queue || agentData.department || 'General',
-            lastActivity: agentData.last_activity || agentData.updated_at || new Date().toISOString(),
-            extension: agentData.extension || agentData.phone_number || '',
-            skills: agentData.skills || agentData.groups || []
-        };
-        
-        // Update cache
-        agentStatusCache.statuses.set(cacheKey, transformedStatus);
-        agentStatusCache.lastUpdated.set(cacheKey, Date.now());
-        
-        console.log('[Agent Status] Returning status:', transformedStatus);
-        res.json(transformedStatus);
+        console.log(`[Agent Status] Returning status for ${agentStatuses.length} agents`);
+        res.json({ agents: agentStatuses });
         
     } catch (error) {
-        console.error('[Agent Status] Unexpected error:', error);
+        console.error('[Agent Status] Batch error:', error);
         res.status(500).json({ 
-            error: 'Failed to fetch agent status',
+            error: 'Failed to fetch agent statuses',
             details: error.message 
         });
     }
