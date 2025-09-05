@@ -69,6 +69,54 @@ router.get('/debug-search-companies/:searchText', async (req, res) => {
 });
 
 /**
+ * Debug endpoint to test BILH company discovery
+ * GET /api/debug-bilh-companies
+ */
+router.get('/debug-bilh-companies', async (req, res) => {
+    try {
+        // Ensure cache is populated
+        if (companiesCache.companies.length === 0) {
+            console.log('[Debug BILH] Cache empty, refreshing...');
+            await refreshCompaniesCache();
+        }
+        
+        // Find all BILH companies
+        const bilhCompanies = companiesCache.companies.filter(company => {
+            const companyName = company.name || '';
+            return companyName.toUpperCase().startsWith('BILH-') || 
+                   companyName.toUpperCase().startsWith('BILH ') ||
+                   companyName.toLowerCase() === 'bilh';
+        });
+        
+        // Format hospital names for display
+        const bilhHospitals = bilhCompanies.map(company => ({
+            id: company.id,
+            full_name: company.name,
+            hospital_name: company.name.replace(/^BILH[-\s]+/i, ''),
+        }));
+        
+        res.json({
+            success: true,
+            summary: {
+                total_companies_in_cache: companiesCache.companies.length,
+                bilh_companies_found: bilhCompanies.length,
+                cache_last_updated: companiesCache.lastUpdated
+            },
+            bilh_hospitals: bilhHospitals.sort((a, b) => 
+                a.hospital_name.localeCompare(b.hospital_name)
+            )
+        });
+        
+    } catch (error) {
+        console.error('[Debug BILH] Error:', error.message);
+        res.status(500).json({
+            error: 'Failed to debug BILH companies',
+            details: error.message
+        });
+    }
+});
+
+/**
  * Cache for SiPortal companies - refreshed periodically
  */
 let companiesCache = {
@@ -636,401 +684,182 @@ router.get('/assets/schema', async (req, res) => {
     }
 });
 
+// Add this debug endpoint to api.js for testing BILH company discovery
+// Place it near other debug endpoints (around line 30-50)
+
 /**
- * Endpoint to fetch IT Portal (SiPortal) assets for a company/organization.
- * FIXED: Now uses offset/limit pagination instead of page parameter for devices
+ * Debug endpoint to test BILH company discovery
+ * GET /api/debug-bilh-companies
  */
-router.get('/it-portal-assets', async (req, res) => {
+router.get('/debug-bilh-companies', async (req, res) => {
     try {
-        const { user_id } = req.query;
-        
-        if (!user_id) {
-            return res.status(400).json({ error: 'user_id parameter is required' });
+        // Ensure cache is populated
+        if (companiesCache.companies.length === 0) {
+            console.log('[Debug BILH] Cache empty, refreshing...');
+            await refreshCompaniesCache();
         }
-
-        // Get the user's organization from Zendesk
-        const user = await zendeskService.getUserById(user_id);
         
-        if (!user.organization_id) {
-            console.log(`[API] User ${user_id} has no organization, returning empty assets`);
-            return res.json({ assets: [] });
-        }
-
-        // Get organization details
-        const organization = await zendeskService.getOrganizationById(user.organization_id);
-        const orgName = organization.name;
+        // Find all BILH companies
+        const bilhCompanies = companiesCache.companies.filter(company => {
+            const companyName = company.name || '';
+            return companyName.toUpperCase().startsWith('BILH-') || 
+                   companyName.toUpperCase().startsWith('BILH ') ||
+                   companyName.toLowerCase() === 'bilh';
+        });
         
-        console.log(`[API] Fetching SiPortal devices for organization: ${orgName}`);
-
-        // Step 1: Try known company mappings first (instant lookup)
-        console.log(`[API] Searching SiPortal for organization: "${orgName}"`);
+        // Also search for companies that might be BILH but don't follow the pattern
+        const possibleBilhCompanies = companiesCache.companies.filter(company => {
+            const companyName = (company.name || '').toLowerCase();
+            return (companyName.includes('beth israel') || 
+                    companyName.includes('lahey') ||
+                    companyName.includes('bilh')) &&
+                   !bilhCompanies.some(bc => bc.id === company.id);
+        });
         
-        const lowerOrgName = orgName.toLowerCase().trim();
-        const knownMappings = {
-            // Exact mappings
-            'keep me home, llc': 3632,
-            'keep me home,llc': 3632,
-            'intlx solutions, llc': 3492,
-            
-            // Name variation mappings (Zendesk name -> SiPortal company ID)
-            'starling physicians mso, llc': 4133,
-            'rockland trust company': null, // Set to null to search by name variations
-            
-            // Common patterns
-            'university of massachusetts': null,
-            'mass general brigham': null,
-        };
-
-        let matchingCompany = null;
+        // Get device counts for each BILH company (optional - may be slow)
+        const withDeviceCounts = req.query.counts === 'true';
+        let companiesWithCounts = [];
         
-        if (knownMappings[lowerOrgName]) {
-            console.log(`[API] Using known mapping for "${orgName}" -> Company ID ${knownMappings[lowerOrgName]}`);
-            matchingCompany = {
-                id: knownMappings[lowerOrgName],
-                name: orgName
-            };
-        } else {
-            // Step 2: Check if cache needs refresh (refresh every 6 hours)
-            const cacheAge = companiesCache.lastUpdated ? 
-                (Date.now() - companiesCache.lastUpdated.getTime()) : 
-                Infinity;
-            const CACHE_MAX_AGE = 6 * 60 * 60 * 1000; // 6 hours
+        if (withDeviceCounts && bilhCompanies.length > 0) {
+            console.log('[Debug BILH] Fetching device counts...');
             
-            if (cacheAge > CACHE_MAX_AGE && !companiesCache.isUpdating) {
-                console.log('[API] Cache is stale, refreshing in background...');
-                // Don't await - refresh in background
-                refreshCompaniesCache().catch(err => 
-                    console.error('[API] Background cache refresh failed:', err.message)
-                );
-            }
-            
-            // Step 3: Search in cache if available
-            if (companiesCache.companies.length > 0) {
-                console.log(`[API] Searching in cache (${companiesCache.companies.length} companies)`);
-                const cacheResult = searchCompaniesInCache(orgName);
-                
-                if (cacheResult) {
-                    matchingCompany = cacheResult.company;
-                    console.log(`[API] Cache match found: "${matchingCompany.name}" (ID: ${matchingCompany.id}, Score: ${cacheResult.score}, Method: ${cacheResult.method})`);
-                }
-            } else {
-                // Step 4: Fallback to single page search if no cache
-                console.log(`[API] No cache available, performing single page search`);
-                
-                const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=1`, {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': process.env.SIPORTAL_API_KEY,
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                if (companiesResponse.ok) {
-                    const companiesData = await companiesResponse.json();
-                    const companies = companiesData.data?.results || [];
-                    
-                    // Look for exact matches only in first page
-                    for (const company of companies) {
-                        const companyName = company.name?.toLowerCase().trim();
-                        if (!companyName) continue;
-
-                        if (companyName === lowerOrgName) {
-                            matchingCompany = company;
-                            console.log(`[API] Exact match found: "${company.name}" (ID: ${company.id})`);
-                            break;
-                        }
-                    }
-                }
-                
-                // Start cache refresh for next time
-                if (!companiesCache.isUpdating) {
-                    refreshCompaniesCache().catch(err => 
-                        console.error('[API] Cache refresh failed:', err.message)
-                    );
-                }
-            }
-
-            if (!matchingCompany) {
-                console.log(`[API] No match found in cache for "${orgName}", trying direct search with offset pagination`);
-                
-                // Try direct search by company name as fallback
+            const countPromises = bilhCompanies.slice(0, 10).map(async (company) => { // Limit to 10 for speed
                 try {
-                    let allDevices = [];
-                    let offset = 0;
-                    const limit = 20;
-                    let hasMore = true;
-                    
-                    while (hasMore && offset < 200) { // Safety limit
-                        const directResponse = await fetch(
-                            `https://www.siportal.net/api/2.0/devices?company=${encodeURIComponent(orgName)}&offset=${offset}&limit=${limit}`, 
-                            {
-                                method: 'GET',
-                                headers: {
-                                    'Authorization': process.env.SIPORTAL_API_KEY,
-                                    'Content-Type': 'application/json'
-                                }
-                            }
-                        );
-                        
-                        if (directResponse.ok) {
-                            const directData = await directResponse.json();
-                            const devices = directData.data?.results || [];
-                            
-                            console.log(`[API] Direct search offset ${offset}: Found ${devices.length} devices`);
-                            
-                            if (devices.length > 0) {
-                                // Extract company info from the first device (only once)
-                                if (offset === 0) {
-                                    const companyInfo = devices[0].company;
-                                    if (companyInfo && companyInfo.id) {
-                                        matchingCompany = companyInfo;
-                                        console.log(`[API] Direct search found company: "${companyInfo.name}" (ID: ${companyInfo.id})`);
-                                    }
-                                }
-                                
-                                // Check for duplicates
-                                const existingIds = new Set(allDevices.map(d => d.id));
-                                const newDevices = devices.filter(d => !existingIds.has(d.id));
-                                
-                                if (newDevices.length === 0) {
-                                    console.log(`[API] All devices at offset ${offset} are duplicates, stopping`);
-                                    hasMore = false;
-                                } else {
-                                    allDevices.push(...newDevices);
-                                    hasMore = devices.length === limit;
-                                    offset += limit;
-                                }
-                            } else {
-                                hasMore = false;
-                            }
-                        } else {
-                            console.log(`[API] Direct search failed at offset ${offset}: ${directResponse.status}`);
-                            hasMore = false;
+                    const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company.id}`, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': process.env.SIPORTAL_API_KEY,
+                            'Content-Type': 'application/json'
                         }
-                    }
+                    });
                     
-                    if (allDevices.length > 0 && matchingCompany) {
-                        console.log(`[API] Direct search complete: Found ${allDevices.length} unique devices`);
-                        
-                        // Transform ALL devices
-                        const transformedAssets = allDevices.map(device => ({
-                            // Basic identification
-                            id: device.id,
-                            asset_tag: device.name || device.hostName || device.id,
-                            
-                            // IT Portal specific fields
-                            device_type: device.type?.name || device.deviceType || 'Unknown',
-                            name: device.name || 'Unnamed Device',
-                            host_name: device.hostName || device.hostname || '',
-                            description: device.description || '',
-                            domain: device.domain || device.realm || '',
-                            realm: device.realm || device.domain || '',
-                            facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
-                            username: device.username || device.user || '',
-                            preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
-                            access_method: device.accessMethod || device.access_method || device.preferredAccess || '',
-                            credentials: device.credentials || device.credential || '',
-                            
-                            // Standard fields
-                            manufacturer: device.type?.name || device.manufacturer || 'Unknown',
-                            model: device.model || device.type?.name || 'Unknown',
-                            serial_number: device.serialNumber || device.serial_number || '',
-                            status: device.status || 'active',
-                            
-                            // Metadata
-                            source: 'SiPortal',
-                            imported_date: new Date().toISOString(),
-                            notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
-                            assigned_user: device.assignedUser || device.assigned_user || '',
-                            
-                            // Company info
-                            company_name: matchingCompany.name,
-                            company_id: matchingCompany.id,
-                            
-                            // Additional fields
-                            location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
-                            ip_address: device.ipAddress || device.ip_address || '',
-                            mac_address: device.macAddress || device.mac_address || '',
-                            os: device.operatingSystem || device.os || '',
-                            last_seen: device.lastSeen || device.last_seen || ''
-                        }));
-                        
-                        console.log(`[API] Returning ${transformedAssets.length} devices via direct search with offset pagination`);
-                        return res.json({
-                            assets: transformedAssets,
-                            company: {
-                                name: matchingCompany.name,
-                                id: matchingCompany.id
-                            },
-                            organization: {
-                                name: orgName,
-                                id: user.organization_id
-                            },
-                            search_method: 'direct_search_offset_paginated'
-                        });
+                    if (response.ok) {
+                        const data = await response.json();
+                        const deviceCount = data.data?.results?.length || 0;
+                        return {
+                            ...company,
+                            device_count: deviceCount
+                        };
                     }
-                } catch (directError) {
-                    console.log(`[API] Direct search failed: ${directError.message}`);
+                    return {
+                        ...company,
+                        device_count: 'error'
+                    };
+                } catch (err) {
+                    return {
+                        ...company,
+                        device_count: 'error'
+                    };
                 }
-                
-                console.log(`[API] No match found for "${orgName}"`);
-                return res.json({ 
-                    assets: [],
-                    message: companiesCache.companies.length > 0 ?
-                        `No matching IT Portal company found for "${orgName}". Contact support if this company should be in IT Portal.` :
-                        `Searching IT Portal companies... Please refresh in a moment or contact support if "${orgName}" should be in IT Portal.`,
-                    search_method: companiesCache.companies.length > 0 ? 'cache_search' : 'fallback_search',
-                    companies_searched: companiesCache.companies.length || 20
-                });
-            }
-        }
-
-        console.log(`[API] Match found: "${matchingCompany.name}" (ID: ${matchingCompany.id})`);
-
-        // Step 3: Fetch ALL devices for the matching company using OFFSET pagination
-        let allDevices = [];
-        let offset = 0;
-        const limit = 20;
-        let hasMore = true;
-
-        while (hasMore && offset < 500) { // Safety limit of 500 devices
-            const devicesResponse = await fetch(
-                `https://www.siportal.net/api/2.0/devices?companyId=${matchingCompany.id}&offset=${offset}&limit=${limit}`, 
-                {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': process.env.SIPORTAL_API_KEY,
-                        'Content-Type': 'application/json'
-                    }
-                }
-            );
-
-            if (!devicesResponse.ok) {
-                console.log(`[API] Error fetching devices at offset ${offset}: ${devicesResponse.status}`);
-                if (offset === 0) {
-                    throw new Error(`SiPortal Devices API returned ${devicesResponse.status}: ${devicesResponse.statusText}`);
-                }
-                break; // Stop pagination on error but keep what we have
-            }
-
-            const siPortalData = await devicesResponse.json();
-            const devices = siPortalData.data?.results || [];
-            
-            console.log(`[API] Offset ${offset}: Retrieved ${devices.length} devices for ${matchingCompany.name}`);
-            
-            if (devices.length > 0) {
-                // Check for duplicates before adding
-                const existingIds = new Set(allDevices.map(d => d.id));
-                const newDevices = devices.filter(d => !existingIds.has(d.id));
-                
-                if (newDevices.length === 0) {
-                    console.log(`[API] All devices at offset ${offset} are duplicates, stopping`);
-                    hasMore = false;
-                } else {
-                    allDevices.push(...newDevices);
-                    console.log(`[API] Added ${newDevices.length} new unique devices (${allDevices.length} total)`);
-                    
-                    // Continue if we got a full page of results
-                    hasMore = devices.length === limit;
-                    offset += limit;
-                    
-                    // Small delay to avoid rate limiting
-                    if (hasMore) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
-                }
-            } else {
-                hasMore = false;
-            }
-        }
-        
-        console.log(`[API] SiPortal complete: ${allDevices.length} unique devices for ${matchingCompany.name}`);
-        
-        // Handle empty device list gracefully
-        if (allDevices.length === 0) {
-            console.log(`[API] No devices found for company ${matchingCompany.name} (ID: ${matchingCompany.id})`);
-            return res.json({ 
-                assets: [],
-                company: {
-                    name: matchingCompany.name,
-                    id: matchingCompany.id
-                },
-                organization: {
-                    name: orgName,
-                    id: user.organization_id
-                },
-                message: `No devices found in IT Portal for ${matchingCompany.name}`
             });
+            
+            companiesWithCounts = await Promise.all(countPromises);
         }
-
-        // Debug: Log sample device data to see actual API structure
-        if (allDevices.length > 0) {
-            console.log('[Debug] Sample device data from SiPortal:', JSON.stringify(allDevices[0], null, 2));
-            console.log(`[Debug] Total unique device IDs:`, new Set(allDevices.map(d => d.id)).size);
-        }
-
-        // Transform SiPortal device data with improved field mapping
-        const assets = allDevices.map(device => ({
-            // Basic identification
-            id: device.id,
-            asset_tag: device.name || device.hostName || device.id,
-            
-            // IT Portal specific fields
-            device_type: device.type?.name || device.deviceType || 'Unknown',
-            name: device.name || 'Unnamed Device',
-            host_name: device.hostName || device.hostname || '',
-            description: device.description || '',
-            domain: device.domain || device.realm || '',
-            realm: device.realm || device.domain || '',
-            facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
-            username: device.username || device.user || '',
-            preferred_access: device.preferredAccess || device.preferred_access || device.accessMethod || '',
-            access_method: device.accessMethod || device.access_method || device.preferredAccess || '',
-            credentials: device.credentials || device.credential || '',
-            
-            // Standard Zendesk asset fields for compatibility
-            manufacturer: device.type?.name || device.manufacturer || 'Unknown',
-            model: device.model || device.type?.name || 'Unknown',
-            serial_number: device.serialNumber || device.serial_number || '',
-            status: device.status || 'active',
-            
-            // Metadata fields
-            source: 'SiPortal',
-            imported_date: new Date().toISOString(),
-            notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
-            assigned_user: device.assignedUser || device.assigned_user || '',
-            
-            // Company info for debugging
-            company_name: matchingCompany.name,
-            company_id: matchingCompany.id,
-            
-            // Additional fields that might be useful
-            location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
-            ip_address: device.ipAddress || device.ip_address || '',
-            mac_address: device.macAddress || device.mac_address || '',
-            os: device.operatingSystem || device.os || '',
-            last_seen: device.lastSeen || device.last_seen || ''
+        
+        // Format hospital names for display
+        const bilhHospitals = bilhCompanies.map(company => ({
+            id: company.id,
+            full_name: company.name,
+            hospital_name: company.name.replace(/^BILH[-\s]+/i, ''),
+            pattern_match: company.name.match(/^BILH[-\s]+/i)?.[0] || 'no pattern'
         }));
-
-        console.log(`[API] Returning ${assets.length} SiPortal devices for ${matchingCompany.name}`);
-        res.json({ 
-            assets,
-            company: {
-                name: matchingCompany.name,
-                id: matchingCompany.id
+        
+        res.json({
+            success: true,
+            summary: {
+                total_companies_in_cache: companiesCache.companies.length,
+                bilh_companies_found: bilhCompanies.length,
+                possible_bilh_companies: possibleBilhCompanies.length,
+                cache_last_updated: companiesCache.lastUpdated
             },
-            organization: {
-                name: orgName,
-                id: user.organization_id
+            bilh_hospitals: bilhHospitals.sort((a, b) => 
+                a.hospital_name.localeCompare(b.hospital_name)
+            ),
+            ...(withDeviceCounts && companiesWithCounts.length > 0 ? {
+                device_counts: companiesWithCounts
+            } : {}),
+            possible_bilh_companies: possibleBilhCompanies.map(c => ({
+                id: c.id,
+                name: c.name
+            })),
+            test_urls: {
+                fetch_devices: bilhCompanies.slice(0, 3).map(c => 
+                    `/api/debug-siportal-company/${c.id}`
+                ),
+                test_user: '/api/it-portal-assets?user_id=[BILH_USER_ID]'
             },
-            total_devices: assets.length
+            instructions: {
+                add_device_counts: 'Add ?counts=true to include device counts (slower)',
+                test_specific_company: 'Use /api/debug-siportal-company/[ID] to test a specific company',
+                test_full_flow: 'Use /api/it-portal-assets?user_id=[ID] with a BILH user ID to test full flow'
+            }
         });
         
     } catch (error) {
-        console.error('[API] Error fetching SiPortal devices:', error.message);
-        res.status(500).json({ 
-            error: 'Failed to fetch IT Portal assets',
-            details: error.message 
+        console.error('[Debug BILH] Error:', error.message);
+        res.status(500).json({
+            error: 'Failed to debug BILH companies',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * Test endpoint to simulate BILH organization fetch
+ * GET /api/test-bilh-fetch
+ */
+router.get('/test-bilh-fetch', async (req, res) => {
+    try {
+        const testOrgName = req.query.org || 'Beth Israel Lahey Health';
+        
+        console.log(`[Test BILH] Simulating fetch for organization: "${testOrgName}"`);
+        
+        // Simulate the BILH detection logic
+        const lowerOrgName = testOrgName.toLowerCase().trim();
+        const isBILH = lowerOrgName === 'beth israel lahey health' || lowerOrgName.includes('bilh');
+        
+        if (!isBILH) {
+            return res.json({
+                success: false,
+                message: `"${testOrgName}" would not be detected as BILH`,
+                detection_hints: [
+                    'Organization name must be exactly "Beth Israel Lahey Health"',
+                    'Or contain "bilh" (case-insensitive)'
+                ]
+            });
+        }
+        
+        // Ensure cache
+        if (companiesCache.companies.length === 0) {
+            await refreshCompaniesCache();
+        }
+        
+        // Find BILH companies
+        const matchingCompanies = companiesCache.companies.filter(company => {
+            const companyName = company.name || '';
+            return companyName.toUpperCase().startsWith('BILH-') || 
+                   companyName.toUpperCase().startsWith('BILH ') ||
+                   companyName.toLowerCase() === 'bilh';
+        });
+        
+        res.json({
+            success: true,
+            test_organization: testOrgName,
+            is_bilh_detected: true,
+            companies_found: matchingCompanies.length,
+            companies: matchingCompanies.map(c => ({
+                id: c.id,
+                name: c.name,
+                display_name: c.name.replace(/^BILH[-\s]+/i, '')
+            })),
+            next_step: `Use /api/it-portal-assets?user_id=[USER_ID] with a user from "${testOrgName}" to see full results`
+        });
+        
+    } catch (error) {
+        console.error('[Test BILH] Error:', error.message);
+        res.status(500).json({
+            error: 'Failed to test BILH fetch',
+            details: error.message
         });
     }
 });
