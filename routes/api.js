@@ -143,7 +143,7 @@ async function refreshCompaniesCache() {
         let consecutiveEmptyPages = 0;
         
         // Companies endpoint still uses page parameter (not offset)
-        while (page <= 50) { // Safety limit of 50 pages
+        while (page <=50) { // Safety limit of 50 pages
             const response = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
                 method: 'GET',
                 headers: {
@@ -161,11 +161,12 @@ async function refreshCompaniesCache() {
             const companies = data.data?.results || [];
             
             if (companies.length === 0) {
-                consecutiveEmptyPages++;
-                if (consecutiveEmptyPages >= 2) {
-                    console.log(`[Cache] Two consecutive empty pages, stopping at page ${page}`);
-                    break;
-                }
+            consecutiveEmptyPages++;
+            console.log(`[Cache] Empty page ${page}, consecutive empty: ${consecutiveEmptyPages}`);
+            if (consecutiveEmptyPages >= 2) {
+                console.log(`[Cache] Two consecutive empty pages, stopping at page ${page}`);
+                break;
+            }
             } else {
                 consecutiveEmptyPages = 0;
                 allCompanies.push(...companies);
@@ -684,123 +685,276 @@ router.get('/assets/schema', async (req, res) => {
     }
 });
 
-// Add this debug endpoint to api.js for testing BILH company discovery
-// Place it near other debug endpoints (around line 30-50)
-
 /**
- * Debug endpoint to test BILH company discovery
- * GET /api/debug-bilh-companies
+ * Endpoint to fetch IT Portal (SiPortal) assets for a company/organization.
+ * Used by React app IT Portal Assets section.
+ * SUPPORTS BILH with direct API search
  */
-router.get('/debug-bilh-companies', async (req, res) => {
+router.get('/it-portal-assets', async (req, res) => {
     try {
-        // Ensure cache is populated
-        if (companiesCache.companies.length === 0) {
-            console.log('[Debug BILH] Cache empty, refreshing...');
-            await refreshCompaniesCache();
+        const { user_id } = req.query;
+        
+        if (!user_id) {
+            return res.status(400).json({ error: 'user_id parameter is required' });
         }
+
+        // Get the user's organization from Zendesk
+        const user = await zendeskService.getUserById(user_id);
         
-        // Find all BILH companies
-        const bilhCompanies = companiesCache.companies.filter(company => {
-            const companyName = company.name || '';
-            return companyName.toUpperCase().startsWith('BILH-') || 
-                   companyName.toUpperCase().startsWith('BILH ') ||
-                   companyName.toLowerCase() === 'bilh';
-        });
+        if (!user.organization_id) {
+            console.log(`[API] User ${user_id} has no organization, returning empty assets`);
+            return res.json({ assets: [] });
+        }
+
+        // Get organization details
+        const organization = await zendeskService.getOrganizationById(user.organization_id);
+        const orgName = organization.name;
         
-        // Also search for companies that might be BILH but don't follow the pattern
-        const possibleBilhCompanies = companiesCache.companies.filter(company => {
-            const companyName = (company.name || '').toLowerCase();
-            return (companyName.includes('beth israel') || 
-                    companyName.includes('lahey') ||
-                    companyName.includes('bilh')) &&
-                   !bilhCompanies.some(bc => bc.id === company.id);
-        });
+        console.log(`[API] Fetching SiPortal devices for organization: ${orgName}`);
+
+        // Check if this is BILH
+        const lowerOrgName = orgName.toLowerCase().trim();
+        let matchingCompanies = [];
         
-        // Get device counts for each BILH company (optional - may be slow)
-        const withDeviceCounts = req.query.counts === 'true';
-        let companiesWithCounts = [];
-        
-        if (withDeviceCounts && bilhCompanies.length > 0) {
-            console.log('[Debug BILH] Fetching device counts...');
+        // Special handling for Beth Israel Lahey Health
+        if (lowerOrgName === 'beth israel lahey health' || lowerOrgName.includes('bilh')) {
+            console.log(`[API] Detected Beth Israel Lahey Health - using direct API search with nameStartsWith`);
             
-            const countPromises = bilhCompanies.slice(0, 10).map(async (company) => { // Limit to 10 for speed
-                try {
-                    const response = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company.id}`, {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': process.env.SIPORTAL_API_KEY,
-                            'Content-Type': 'application/json'
-                        }
-                    });
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        const deviceCount = data.data?.results?.length || 0;
-                        return {
-                            ...company,
-                            device_count: deviceCount
-                        };
+            try {
+                const bilhResponse = await fetch(`https://www.siportal.net/api/2.0/companies/?nameStartsWith=bilh`, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': process.env.SIPORTAL_API_KEY,
+                        'Content-Type': 'application/json'
                     }
-                    return {
-                        ...company,
-                        device_count: 'error'
-                    };
-                } catch (err) {
-                    return {
-                        ...company,
-                        device_count: 'error'
-                    };
+                });
+                
+                if (bilhResponse.ok) {
+                    const bilhData = await bilhResponse.json();
+                    matchingCompanies = bilhData.data?.results || [];
+                    console.log(`[API] Found ${matchingCompanies.length} BILH companies via nameStartsWith search`);
+                    console.log(`[API] BILH companies:`, matchingCompanies.map(c => ({ id: c.id, name: c.name })));
+                } else {
+                    console.log(`[API] Failed to search for BILH companies: ${bilhResponse.status}`);
+                    matchingCompanies = [];
                 }
-            });
+            } catch (searchError) {
+                console.error(`[API] Error searching for BILH companies:`, searchError.message);
+                matchingCompanies = [];
+            }
             
-            companiesWithCounts = await Promise.all(countPromises);
+        } else {
+            // Single company search (existing logic)
+            console.log(`[API] Using single company search for "${orgName}"`);
+            
+            const knownMappings = {
+                'keep me home, llc': 3632,
+                'keep me home,llc': 3632,
+                'intlx solutions, llc': 3492,
+                'starling physicians mso, llc': 4133,
+            };
+
+            if (knownMappings[lowerOrgName]) {
+                matchingCompanies.push({
+                    id: knownMappings[lowerOrgName],
+                    name: orgName
+                });
+            } else {
+                // Search in cache for single company
+                if (companiesCache.companies.length === 0) {
+                    await refreshCompaniesCache();
+                }
+                
+                if (companiesCache.companies.length > 0) {
+                    console.log(`[API] Searching in cache (${companiesCache.companies.length} companies)`);
+                    const cacheResult = searchCompaniesInCache(orgName);
+                    
+                    if (cacheResult) {
+                        matchingCompanies.push(cacheResult.company);
+                        console.log(`[API] Cache match found: "${cacheResult.company.name}" (ID: ${cacheResult.company.id})`);
+                    }
+                }
+            }
         }
+
+        if (matchingCompanies.length === 0) {
+            console.log(`[API] No matching companies found for "${orgName}"`);
+            return res.json({ 
+                assets: [],
+                message: `No matching IT Portal company found for "${orgName}".`,
+                companies_searched: companiesCache.companies.length || 20
+            });
+        }
+
+        console.log(`[API] Found ${matchingCompanies.length} matching companies for ${orgName}`);
+
+        // Fetch devices from ALL matching companies in parallel
+        let allAssets = [];
+        const companiesWithAssets = [];
         
-        // Format hospital names for display
-        const bilhHospitals = bilhCompanies.map(company => ({
-            id: company.id,
-            full_name: company.name,
-            hospital_name: company.name.replace(/^BILH[-\s]+/i, ''),
-            pattern_match: company.name.match(/^BILH[-\s]+/i)?.[0] || 'no pattern'
-        }));
-        
-        res.json({
-            success: true,
-            summary: {
-                total_companies_in_cache: companiesCache.companies.length,
-                bilh_companies_found: bilhCompanies.length,
-                possible_bilh_companies: possibleBilhCompanies.length,
-                cache_last_updated: companiesCache.lastUpdated
-            },
-            bilh_hospitals: bilhHospitals.sort((a, b) => 
-                a.hospital_name.localeCompare(b.hospital_name)
-            ),
-            ...(withDeviceCounts && companiesWithCounts.length > 0 ? {
-                device_counts: companiesWithCounts
-            } : {}),
-            possible_bilh_companies: possibleBilhCompanies.map(c => ({
-                id: c.id,
-                name: c.name
-            })),
-            test_urls: {
-                fetch_devices: bilhCompanies.slice(0, 3).map(c => 
-                    `/api/debug-siportal-company/${c.id}`
-                ),
-                test_user: '/api/it-portal-assets?user_id=[BILH_USER_ID]'
-            },
-            instructions: {
-                add_device_counts: 'Add ?counts=true to include device counts (slower)',
-                test_specific_company: 'Use /api/debug-siportal-company/[ID] to test a specific company',
-                test_full_flow: 'Use /api/it-portal-assets?user_id=[ID] with a BILH user ID to test full flow'
+        const devicePromises = matchingCompanies.map(async (company) => {
+            console.log(`[API] Fetching devices for company ${company.id} (${company.name})`);
+            
+            try {
+                const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company.id}`, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': process.env.SIPORTAL_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!devicesResponse.ok) {
+                    console.log(`[API] Failed to fetch devices for company ${company.id}: ${devicesResponse.status}`);
+                    return { company, devices: [] };
+                }
+
+                const siPortalData = await devicesResponse.json();
+                const devices = siPortalData.data?.results || [];
+                
+                console.log(`[API] Found ${devices.length} devices for ${company.name}`);
+                
+                // Update company name from device data if available
+                if (devices.length > 0 && devices[0].company?.name) {
+                    company.name = devices[0].company.name;
+                }
+                
+                return { company, devices };
+                
+            } catch (deviceError) {
+                console.error(`[API] Error fetching devices for company ${company.id}:`, deviceError.message);
+                return { company, devices: [] };
             }
         });
         
-    } catch (error) {
-        console.error('[Debug BILH] Error:', error.message);
-        res.status(500).json({
-            error: 'Failed to debug BILH companies',
-            details: error.message
+        // Wait for all device fetches to complete
+        const results = await Promise.all(devicePromises);
+        
+        // Process results and transform devices
+        for (const { company, devices } of results) {
+            if (devices.length > 0) {
+                companiesWithAssets.push({
+                    id: company.id,
+                    name: company.name,
+                    device_count: devices.length
+                });
+                
+                // Transform devices
+                const transformedAssets = devices.map(device => ({
+                    // Basic identification
+                    id: device.id,
+                    asset_tag: device.name || device.hostName || device.id,
+                    
+                    // IT Portal specific fields
+                    device_type: device.type?.name || device.deviceType || 'Unknown',
+                    name: device.name || 'Unnamed Device',
+                    host_name: device.hostName || device.hostname || '',
+                    description: device.description || '',
+                    domain: device.domain || device.realm || '',
+                    realm: device.realm || device.domain || '',
+                    facility: typeof device.facility === 'object' ? (device.facility?.name || '') : (device.facility || ''),
+                    username: device.username || device.user || '',
+                    preferred_access: device.preferredAccess || device.preferred_access || '',
+                    access_method: device.accessMethod || device.access_method || '',
+                    credentials: device.credentials || device.credential || '',
+                    
+                    // Standard fields
+                    manufacturer: device.type?.name || device.manufacturer || 'Unknown',
+                    model: device.model || device.type?.name || 'Unknown',
+                    serial_number: device.serialNumber || device.serial_number || '',
+                    status: device.status || 'active',
+                    
+                    // Metadata
+                    source: 'SiPortal',
+                    imported_date: new Date().toISOString(),
+                    notes: Array.isArray(device.notes) ? device.notes.join(', ') : (device.notes || ''),
+                    assigned_user: device.assignedUser || device.assigned_user || '',
+                    
+                    // Company info
+                    company_name: company.name,
+                    company_id: company.id,
+                    hospital_name: company.name.replace(/^BILH[-\s]+/i, ''),
+                    
+                    // Additional fields
+                    location: typeof device.location === 'object' ? (device.location?.name || '') : (device.location || ''),
+                    ip_address: device.ipAddress || device.ip_address || '',
+                    mac_address: device.macAddress || device.mac_address || '',
+                    os: device.operatingSystem || device.os || '',
+                    last_seen: device.lastSeen || device.last_seen || ''
+                }));
+                
+                allAssets = allAssets.concat(transformedAssets);
+            }
+        }
+
+        console.log(`[API] Total devices across all companies: ${allAssets.length}`);
+        
+        // Sort assets by company name, then by device name
+        allAssets.sort((a, b) => {
+            const companyCompare = (a.company_name || '').localeCompare(b.company_name || '');
+            if (companyCompare !== 0) return companyCompare;
+            return (a.name || '').localeCompare(b.name || '');
         });
+
+        res.json({ 
+            assets: allAssets,
+            companies: companiesWithAssets,
+            organization: {
+                name: orgName,
+                id: user.organization_id
+            },
+            is_multi_company: matchingCompanies.length > 1,
+            is_bilh: lowerOrgName === 'beth israel lahey health' || lowerOrgName.includes('bilh')
+        });
+        
+    } catch (error) {
+        console.error('[API] Error fetching SiPortal devices:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to fetch IT Portal assets',
+            details: error.message 
+        });
+    }
+});
+
+/**
+ * Test direct BILH search using nameStartsWith
+ */
+router.get('/test-bilh-direct', async (req, res) => {
+    try {
+        console.log('[Test BILH] Searching IT Portal directly with nameStartsWith=bilh');
+        
+        const response = await fetch(`https://www.siportal.net/api/2.0/companies/?nameStartsWith=bilh`, {
+            method: 'GET',
+            headers: {
+                'Authorization': process.env.SIPORTAL_API_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            const companies = data.data?.results || [];
+            
+            console.log(`[Test BILH] Found ${companies.length} BILH companies`);
+            
+            res.json({
+                success: true,
+                companies_found: companies.length,
+                companies: companies.map(c => ({
+                    id: c.id,
+                    name: c.name,
+                    display_name: c.name.replace(/^BILH[-\s]+/i, '')
+                }))
+            });
+        } else {
+            res.status(response.status).json({ 
+                error: `API returned ${response.status}`,
+                statusText: response.statusText 
+            });
+        }
+    } catch (error) {
+        console.error('[Test BILH] Error:', error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 
