@@ -399,11 +399,27 @@ async function getIntermediaToken() {
         
         console.log('[Intermedia] Requesting new access token');
         
-        // OAuth2 client credentials flow
-        const tokenResponse = await fetch('https://api.intermedia.net/auth/oauth/v2/token', {
+        // Helper to get Intermedia access token
+async function getIntermediaToken() {
+    try {
+        // Check cache
+        if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
+            console.log('[Intermedia] Using cached token');
+            return agentStatusCache.accessToken;
+        }
+        
+        console.log('[Intermedia] Requesting new access token');
+        
+        // Correct Elevate OAuth endpoint
+        const tokenEndpoint = 'https://api.elevate.services/oauth/token';
+        
+        console.log(`[Intermedia] Calling token endpoint: ${tokenEndpoint}`);
+        
+        const tokenResponse = await fetch(tokenEndpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json'
             },
             body: new URLSearchParams({
                 grant_type: 'client_credentials',
@@ -412,7 +428,7 @@ async function getIntermediaToken() {
             })
         });
         
-        console.log('[Intermedia] Token response status:', tokenResponse.status);
+        console.log(`[Intermedia] Token response status: ${tokenResponse.status}`);
         
         if (!tokenResponse.ok) {
             const errorText = await tokenResponse.text();
@@ -421,7 +437,37 @@ async function getIntermediaToken() {
         }
         
         const tokenData = await tokenResponse.json();
-        console.log('[Intermedia] Token obtained, expires in:', tokenData.expires_in);
+        console.log('[Intermedia] Token obtained successfully, expires in:', tokenData.expires_in);
+        
+        // Cache token (usually expires in 3600 seconds = 1 hour, refresh 5 min early)
+        agentStatusCache.accessToken = tokenData.access_token;
+        agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+        
+        return tokenData.access_token;
+        
+    } catch (error) {
+        console.error('[Intermedia] Failed to get token:', error);
+        throw error;
+    }
+}
+        
+        if (!tokenResponse || !tokenResponse.ok) {
+            // If OAuth doesn't work, try using Basic Auth directly
+            console.log('[Intermedia] OAuth failed, trying Basic Auth as fallback');
+            
+            // Return a "basic auth" token that we'll handle differently
+            const basicAuth = Buffer.from(
+                `${process.env.INTERMEDIA_CLIENT_ID}:${process.env.INTERMEDIA_CLIENT_SECRET}`
+            ).toString('base64');
+            
+            agentStatusCache.accessToken = `Basic ${basicAuth}`;
+            agentStatusCache.tokenExpiry = Date.now() + (60 * 60 * 1000); // 1 hour
+            
+            return agentStatusCache.accessToken;
+        }
+        
+        const tokenData = await tokenResponse.json();
+        console.log('[Intermedia] Token obtained successfully');
         
         // Cache token
         agentStatusCache.accessToken = tokenData.access_token;
@@ -431,7 +477,13 @@ async function getIntermediaToken() {
         
     } catch (error) {
         console.error('[Intermedia] Failed to get token:', error);
-        throw error;
+        
+        // Last resort - return basic auth
+        const basicAuth = Buffer.from(
+            `${process.env.INTERMEDIA_CLIENT_ID}:${process.env.INTERMEDIA_CLIENT_SECRET}`
+        ).toString('base64');
+        
+        return `Basic ${basicAuth}`;
     }
 }
 
@@ -2293,7 +2345,7 @@ router.get('/agent-status/:agentId?', async (req, res) => {
         
         console.log(`[Agent Status] Fetching fresh status for ${cacheKey}`);
         
-        // Get access token using the new OAuth method
+        // Get access token
         let token;
         try {
             token = await getIntermediaToken();
@@ -2305,38 +2357,29 @@ router.get('/agent-status/:agentId?', async (req, res) => {
             });
         }
         
-        // Call Intermedia API with OAuth token
-        console.log('[Agent Status] Calling Intermedia API...');
+        // Call Elevate Calling API - Get all users/agents
+        console.log('[Agent Status] Calling Elevate API...');
         
-        // Try different possible endpoints
-        let response = await fetch('https://api.intermedia.net/voice/v2/agents/status', {
+        // According to docs, the users endpoint should be at:
+        const apiUrl = 'https://api.elevate.services/v1/users';
+        
+        const response = await fetch(apiUrl, {
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Accept': 'application/json'
             }
         });
         
-        console.log('[Agent Status] API response status:', response.status);
-        
-        if (response.status === 404) {
-            // Try alternate endpoint
-            response = await fetch('https://api.intermedia.net/api/v1/voice/agents', {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Accept': 'application/json'
-                }
-            });
-            console.log('[Agent Status] Alternate endpoint status:', response.status);
-        }
+        console.log(`[Agent Status] API response status: ${response.status}`);
         
         if (!response.ok) {
             const errorText = await response.text();
             console.error('[Agent Status] API error:', errorText);
             
-            // Return degraded status
+            // Return degraded status  
             return res.json({
                 agentId: cacheKey,
-                name: email ? email.split('@')[0] : 'Unknown',
+                name: email ? email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'Unknown',
                 email: email || '',
                 phoneStatus: 'unknown',
                 availability: 'Unable to fetch status',
@@ -2345,54 +2388,58 @@ router.get('/agent-status/:agentId?', async (req, res) => {
                 queue: 'Unknown',
                 lastActivity: new Date().toISOString(),
                 extension: 'N/A',
-                skills: []
+                skills: [],
+                error: 'Check API permissions or endpoint'
             });
         }
         
         const data = await response.json();
-        console.log('[Agent Status] API response data:', JSON.stringify(data, null, 2));
+        console.log('[Agent Status] API response data:', JSON.stringify(data, null, 2).substring(0, 500));
         
-        // Find the specific agent
-        let agentStatus = null;
-        if (data.agents) {
-            if (agentId) {
-                agentStatus = data.agents.find(agent => agent.id === agentId);
-            } else if (email) {
-                agentStatus = data.agents.find(agent => 
-                    agent.email?.toLowerCase() === email.toLowerCase()
-                );
-            }
-        } else if (Array.isArray(data)) {
-            if (email) {
-                agentStatus = data.find(agent => 
-                    agent.email?.toLowerCase() === email.toLowerCase()
-                );
-            }
+        // Find the specific user/agent
+        let agentData = null;
+        
+        // Handle different response structures based on Elevate API
+        if (Array.isArray(data)) {
+            agentData = data.find(user => 
+                user.email?.toLowerCase() === email?.toLowerCase() ||
+                user.id === agentId
+            );
+        } else if (data.users) {
+            agentData = data.users.find(user => 
+                user.email?.toLowerCase() === email?.toLowerCase() ||
+                user.id === agentId
+            );
+        } else if (data.data) {
+            agentData = data.data.find(user => 
+                user.email?.toLowerCase() === email?.toLowerCase() ||
+                user.id === agentId
+            );
         }
         
-        if (!agentStatus) {
-            // Return offline status if agent not found
-            agentStatus = {
+        if (!agentData) {
+            console.log('[Agent Status] User not found in response, returning offline status');
+            agentData = {
                 id: agentId || email,
-                name: 'Unknown Agent',
+                name: email ? email.split('@')[0].replace(/\./g, ' ') : 'Unknown',
                 email: email || '',
                 status: 'offline'
             };
         }
         
-        // Transform the status data
+        // Transform to our format (based on Elevate API structure)
         const transformedStatus = {
-            agentId: agentStatus.id || agentId || email,
-            name: agentStatus.name || agentStatus.displayName || 'Agent',
-            email: agentStatus.email || email || '',
-            phoneStatus: agentStatus.status || agentStatus.phoneStatus || 'unknown',
-            availability: agentStatus.availability || 'unknown',
-            onCall: agentStatus.onCall || agentStatus.inCall || false,
-            callDuration: agentStatus.callDuration || 0,
-            queue: agentStatus.queue || agentStatus.currentQueue || null,
-            lastActivity: agentStatus.lastActivity || agentStatus.lastStatusChange || new Date().toISOString(),
-            extension: agentStatus.extension || agentStatus.phoneExtension || '',
-            skills: agentStatus.skills || []
+            agentId: agentData.id || agentId || email,
+            name: agentData.name || agentData.display_name || agentData.fullName || 'Agent',
+            email: agentData.email || email || '',
+            phoneStatus: agentData.presence || agentData.status || 'unknown',
+            availability: agentData.availability || agentData.presence_status || 'Unknown',
+            onCall: agentData.on_call || agentData.inCall || false,
+            callDuration: agentData.call_duration || 0,
+            queue: agentData.queue || agentData.department || 'General',
+            lastActivity: agentData.last_activity || agentData.updated_at || new Date().toISOString(),
+            extension: agentData.extension || agentData.phone_number || '',
+            skills: agentData.skills || agentData.groups || []
         };
         
         // Update cache
