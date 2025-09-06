@@ -389,20 +389,53 @@ function levenshteinDistance(str1, str2) {
 }
 
 /**
- * Helper to get Intermedia access token
- * Since OAuth endpoints don't work, returns API key directly
+ * Get Intermedia access token using the correct endpoint
  */
 async function getIntermediaToken() {
     try {
-        console.log('[Intermedia] Client ID:', process.env.INTERMEDIA_CLIENT_ID);
-        console.log('[Intermedia] Returning API key for direct use');
+        // Check cache
+        if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
+            console.log('[Intermedia] Using cached token');
+            return agentStatusCache.accessToken;
+        }
         
-        // Since OAuth endpoints don't exist, use the credentials directly
-        return process.env.INTERMEDIA_CLIENT_ID;
+        console.log('[Intermedia] Requesting new access token');
+        
+        const tokenEndpoint = 'https://login.serverdata.net/user/connect/token';
+        
+        const response = await fetch(tokenEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.service.messaging'  // Correct scope
+            })
+        });
+        
+        console.log(`[Intermedia] Token response status: ${response.status}`);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('[Intermedia] Token error:', errorText);
+            return 'mock_token';
+        }
+        
+        const tokenData = await response.json();
+        console.log('[Intermedia] Token obtained successfully!');
+        
+        // Cache token (expires in 1 hour, refresh 5 minutes early)
+        agentStatusCache.accessToken = tokenData.access_token;
+        agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+        
+        return tokenData.access_token;
         
     } catch (error) {
-        console.error('[Intermedia] Error:', error);
-        return process.env.INTERMEDIA_CLIENT_ID;
+        console.error('[Intermedia] Token acquisition failed:', error);
+        return 'mock_token';
     }
 }
 
