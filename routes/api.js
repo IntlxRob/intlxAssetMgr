@@ -397,9 +397,10 @@ async function getIntermediaToken() {
         }
         
         console.log('[Intermedia] Requesting new access token');
+        console.log('[Intermedia] Client ID:', process.env.INTERMEDIA_CLIENT_ID);
         
-        // Correct Elevate OAuth2 endpoint from documentation
-        const tokenEndpoint = 'https://api.elevate.services/oauth2/token';
+        // According to the documentation, the correct endpoint is:
+        const tokenEndpoint = 'https://login.intermedia.net/oauth/token';
         
         console.log(`[Intermedia] Calling token endpoint: ${tokenEndpoint}`);
         
@@ -412,8 +413,7 @@ async function getIntermediaToken() {
             body: new URLSearchParams({
                 grant_type: 'client_credentials',
                 client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'read' // Add scope if needed
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET
             })
         });
         
@@ -421,8 +421,35 @@ async function getIntermediaToken() {
         
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('[Intermedia] Token error response:', errorText);
-            throw new Error(`Token request failed: ${response.status} - ${errorText}`);
+            console.error('[Intermedia] Token error:', errorText);
+            
+            // If login.intermedia.net doesn't work, try the API domain
+            console.log('[Intermedia] Trying alternate endpoint');
+            const altResponse = await fetch('https://api.intermedia.net/oauth/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json'
+                },
+                body: new URLSearchParams({
+                    grant_type: 'client_credentials',
+                    client_id: process.env.INTERMEDIA_CLIENT_ID,
+                    client_secret: process.env.INTERMEDIA_CLIENT_SECRET
+                })
+            });
+            
+            console.log(`[Intermedia] Alternate endpoint returned: ${altResponse.status}`);
+            
+            if (!altResponse.ok) {
+                const altError = await altResponse.text();
+                console.error('[Intermedia] Alternate endpoint error:', altError);
+                throw new Error('Failed to get token from both endpoints');
+            }
+            
+            const altToken = await altResponse.json();
+            agentStatusCache.accessToken = altToken.access_token;
+            agentStatusCache.tokenExpiry = Date.now() + ((altToken.expires_in - 300) * 1000);
+            return altToken.access_token;
         }
         
         const tokenData = await response.json();
