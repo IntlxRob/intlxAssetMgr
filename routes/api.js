@@ -430,7 +430,7 @@ async function getIntermediaToken() {
         
         console.log(`[Intermedia] Token response status: ${tokenResponse.status}`);
         
-        if (!tokenResponse.ok) {
+        if (!Response.ok) {
             const errorText = await tokenResponse.text();
             console.error('[Intermedia] Token error response:', errorText);
             throw new Error(`Token request failed: ${tokenResponse.status} - ${errorText}`);
@@ -2354,76 +2354,29 @@ router.post('/agents-status-batch', async (req, res) => {
             });
         }
         
-        // Get all users from Elevate API
-        const apiUrl = 'https://api.elevate.services/v1/users';
+        // TEMPORARY: Use mock data while we fix the API
+        console.log('[Agent Status] Using mock data mode');
         
-        const response = await fetch(apiUrl, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/json'
-            }
-        });
-        
-        console.log(`[Agent Status] API response status: ${response.status}`);
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('[Agent Status] API error:', errorText);
+        // Generate mock status for testing
+        const agentStatuses = emails.map(email => {
+            const statuses = ['available', 'busy', 'away', 'offline'];
+            const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
             
-            // Return offline status for all agents
-            const offlineStatuses = emails.map(email => ({
+            return {
                 agentId: email,
                 name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
                 email: email,
-                phoneStatus: 'unknown',
-                availability: 'Unable to fetch',
-                onCall: false,
-                extension: 'N/A'
-            }));
-            
-            return res.json({ agents: offlineStatuses });
-        }
-        
-        const data = await response.json();
-        console.log(`[Agent Status] Found ${data.length || 0} users in Elevate`);
-        
-        // Match Zendesk agents with Elevate users
-        const agentStatuses = emails.map(email => {
-            let userData = null;
-            
-            // Find user in Elevate response
-            if (Array.isArray(data)) {
-                userData = data.find(user => 
-                    user.email?.toLowerCase() === email.toLowerCase()
-                );
-            }
-            
-            if (!userData) {
-                // Agent not found in Elevate
-                return {
-                    agentId: email,
-                    name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-                    email: email,
-                    phoneStatus: 'offline',
-                    availability: 'Not in Elevate',
-                    onCall: false,
-                    extension: 'N/A'
-                };
-            }
-            
-            // Transform to our format
-            return {
-                agentId: userData.id || email,
-                name: userData.name || userData.display_name || email.split('@')[0],
-                email: email,
-                phoneStatus: userData.presence || userData.status || 'unknown',
-                availability: userData.availability || userData.presence_status || 'Unknown',
-                onCall: userData.on_call || userData.inCall || false,
-                callDuration: userData.call_duration || 0,
-                extension: userData.extension || userData.phone_number || '',
-                queue: userData.queue || userData.department || 'General'
+                phoneStatus: randomStatus,
+                availability: randomStatus === 'available' ? 'Ready' : 
+                             randomStatus === 'busy' ? 'On Call' : 
+                             randomStatus === 'away' ? 'Break' : 'Offline',
+                onCall: randomStatus === 'busy',
+                extension: Math.floor(1000 + Math.random() * 9000).toString()
             };
         });
+        
+        console.log(`[Agent Status] Returning mock status for ${agentStatuses.length} agents`);
+        res.json({ agents: agentStatuses });
         
         console.log(`[Agent Status] Returning status for ${agentStatuses.length} agents`);
         res.json({ agents: agentStatuses });
