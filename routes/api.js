@@ -398,96 +398,61 @@ async function getIntermediaToken() {
         
         console.log('[Intermedia] Requesting new access token');
         console.log('[Intermedia] Client ID:', process.env.INTERMEDIA_CLIENT_ID);
-        console.log('[Intermedia] Secret exists:', !!process.env.INTERMEDIA_CLIENT_SECRET);
+        console.log('[Intermedia] Secret configured:', !!process.env.INTERMEDIA_CLIENT_SECRET);
         
-        // Try with different Accept headers to avoid 406 error
-        const tokenEndpoint = 'https://login.intermedia.net/oauth/token';
+        // Try different OAuth endpoints
+        const tokenEndpoints = [
+            'https://api.intermedia.net/auth/v1/token',
+            'https://auth.intermedia.net/oauth/v1/token', 
+            'https://api.elevate.services/oauth/token',
+            'https://api.intermedia.com/oauth/token',
+            'https://api.intermedia.net/oauth2/token'
+        ];
         
-        console.log(`[Intermedia] Calling token endpoint: ${tokenEndpoint}`);
-        
-        // Remove or modify Accept header that's causing 406
-        const response = await fetch(tokenEndpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-                // Removed 'Accept': 'application/json' which causes 406
-            },
-            body: new URLSearchParams({
-                grant_type: 'client_credentials',
-                client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET
-            })
-        });
-        
-        console.log(`[Intermedia] Token response status: ${response.status}`);
-        console.log(`[Intermedia] Response content-type: ${response.headers.get('content-type')}`);
-        
-        if (!response.ok) {
-            // Try with different headers
-            console.log('[Intermedia] First attempt failed, trying with different headers');
+        for (const endpoint of tokenEndpoints) {
+            console.log(`[Intermedia] Trying: ${endpoint}`);
             
-            const altResponse = await fetch(tokenEndpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': '*/*'  // Accept any content type
-                },
-                body: new URLSearchParams({
-                    grant_type: 'client_credentials',
-                    client_id: process.env.INTERMEDIA_CLIENT_ID,
-                    client_secret: process.env.INTERMEDIA_CLIENT_SECRET
-                })
-            });
-            
-            console.log(`[Intermedia] Alt attempt status: ${altResponse.status}`);
-            
-            if (altResponse.ok) {
-                const tokenData = await altResponse.json();
-                console.log('[Intermedia] Token obtained with alternate headers');
-                agentStatusCache.accessToken = tokenData.access_token;
-                agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
-                return tokenData.access_token;
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: new URLSearchParams({
+                        grant_type: 'client_credentials',
+                        client_id: process.env.INTERMEDIA_CLIENT_ID,
+                        client_secret: process.env.INTERMEDIA_CLIENT_SECRET
+                    })
+                });
+                
+                console.log(`[Intermedia] ${endpoint} returned: ${response.status}`);
+                
+                if (response.ok) {
+                    const tokenData = await response.json();
+                    console.log('[Intermedia] SUCCESS! Got token from:', endpoint);
+                    
+                    agentStatusCache.accessToken = tokenData.access_token;
+                    agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+                    
+                    return tokenData.access_token;
+                }
+                
+                const errorText = await response.text();
+                console.log(`[Intermedia] Error from ${endpoint}:`, errorText.substring(0, 100));
+                
+            } catch (err) {
+                console.log(`[Intermedia] Network error for ${endpoint}:`, err.message);
             }
-            
-            // Try completely different endpoint
-            console.log('[Intermedia] Trying api.intermedia.net endpoint');
-            const apiResponse = await fetch('https://api.intermedia.net/auth/v1/token', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
-                body: new URLSearchParams({
-                    grant_type: 'client_credentials',
-                    client_id: process.env.INTERMEDIA_CLIENT_ID,
-                    client_secret: process.env.INTERMEDIA_CLIENT_SECRET
-                })
-            });
-            
-            console.log(`[Intermedia] api.intermedia.net status: ${apiResponse.status}`);
-            
-            if (!apiResponse.ok) {
-                const errorText = await apiResponse.text();
-                console.error('[Intermedia] All endpoints failed:', errorText.substring(0, 200));
-                throw new Error('Could not authenticate with any endpoint');
-            }
-            
-            const apiToken = await apiResponse.json();
-            agentStatusCache.accessToken = apiToken.access_token;
-            agentStatusCache.tokenExpiry = Date.now() + ((apiToken.expires_in - 300) * 1000);
-            return apiToken.access_token;
         }
         
-        const tokenData = await response.json();
-        console.log('[Intermedia] Token obtained successfully');
+        console.error('[Intermedia] All OAuth endpoints failed');
+        console.log('[Intermedia] Trying direct API key authentication');
         
-        // Cache token
-        agentStatusCache.accessToken = tokenData.access_token;
-        agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
-        
-        return tokenData.access_token;
+        // Maybe they use API key directly instead of OAuth
+        return `apikey:${process.env.INTERMEDIA_CLIENT_ID}:${process.env.INTERMEDIA_CLIENT_SECRET}`;
         
     } catch (error) {
-        console.error('[Intermedia] Token acquisition failed:', error);
+        console.error('[Intermedia] Unexpected error:', error);
         throw error;
     }
 }
