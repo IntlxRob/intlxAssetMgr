@@ -388,74 +388,89 @@ function levenshteinDistance(str1, str2) {
     return matrix[str2.length][str1.length];
 }
 
-async function getIntermediaToken() {
+router.post('/agents-status-batch', async (req, res) => {
     try {
-        // Check cache
-        if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
-            console.log('[Intermedia] Using cached token');
-            return agentStatusCache.accessToken;
+        const { emails } = req.body;
+        
+        if (!emails || !Array.isArray(emails)) {
+            return res.status(400).json({ error: 'Emails array is required' });
         }
         
-        console.log('[Intermedia] Requesting new access token');
-        console.log('[Intermedia] Client ID:', process.env.INTERMEDIA_CLIENT_ID);
-        console.log('[Intermedia] Secret configured:', !!process.env.INTERMEDIA_CLIENT_SECRET);
+        console.log(`[Agent Status] Fetching status for ${emails.length} agents`);
         
-        // Try different OAuth endpoints
-        const tokenEndpoints = [
-            'https://api.intermedia.net/auth/v1/token',
-            'https://auth.intermedia.net/oauth/v1/token', 
-            'https://api.elevate.services/oauth/token',
-            'https://api.intermedia.com/oauth/token',
-            'https://api.intermedia.net/oauth2/token'
-        ];
-        
-        for (const endpoint of tokenEndpoints) {
-            console.log(`[Intermedia] Trying: ${endpoint}`);
-            
-            try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded'
-                    },
-                    body: new URLSearchParams({
-                        grant_type: 'client_credentials',
-                        client_id: process.env.INTERMEDIA_CLIENT_ID,
-                        client_secret: process.env.INTERMEDIA_CLIENT_SECRET
-                    })
-                });
-                
-                console.log(`[Intermedia] ${endpoint} returned: ${response.status}`);
-                
-                if (response.ok) {
-                    const tokenData = await response.json();
-                    console.log('[Intermedia] SUCCESS! Got token from:', endpoint);
-                    
-                    agentStatusCache.accessToken = tokenData.access_token;
-                    agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
-                    
-                    return tokenData.access_token;
-                }
-                
-                const errorText = await response.text();
-                console.log(`[Intermedia] Error from ${endpoint}:`, errorText.substring(0, 100));
-                
-            } catch (err) {
-                console.log(`[Intermedia] Network error for ${endpoint}:`, err.message);
+        // Get token (might be OAuth or Basic Auth)
+        let authHeader;
+        try {
+            const token = await getIntermediaToken();
+            if (token.startsWith('Basic ')) {
+                authHeader = token;
+            } else {
+                authHeader = `Bearer ${token}`;
             }
+        } catch (tokenError) {
+            console.error('[Agent Status] Token error:', tokenError);
+            
+            // Use Basic Auth directly
+            const basicAuth = Buffer.from(
+                `${process.env.INTERMEDIA_CLIENT_ID}:${process.env.INTERMEDIA_CLIENT_SECRET}`
+            ).toString('base64');
+            authHeader = `Basic ${basicAuth}`;
         }
         
-        console.error('[Intermedia] All OAuth endpoints failed');
-        console.log('[Intermedia] Trying direct API key authentication');
+        console.log('[Agent Status] Using auth type:', authHeader.substring(0, 10));
         
-        // Maybe they use API key directly instead of OAuth
-        return `apikey:${process.env.INTERMEDIA_CLIENT_ID}:${process.env.INTERMEDIA_CLIENT_SECRET}`;
+        // Try to get users
+        const response = await fetch('https://api.elevate.services/v1/users', {
+            headers: {
+                'Authorization': authHeader,
+                'Accept': 'application/json'
+            }
+        });
+        
+        console.log(`[Agent Status] Users API response: ${response.status}`);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.log('[Agent Status] API error:', errorText.substring(0, 200));
+            
+            // Return degraded status
+            const degradedStatuses = emails.map(email => ({
+                agentId: email,
+                name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+                email: email,
+                phoneStatus: 'unknown',
+                availability: 'API Authentication Failed',
+                onCall: false,
+                extension: 'N/A'
+            }));
+            
+            return res.json({ agents: degradedStatuses });
+        }
+        
+        const userData = await response.json();
+        console.log('[Agent Status] Got user data:', JSON.stringify(userData).substring(0, 500));
+        
+        // Return mock status for now
+        const agentStatuses = emails.map(email => ({
+            agentId: email,
+            name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+            email: email,
+            phoneStatus: 'available',
+            availability: 'Ready',
+            onCall: false,
+            extension: '1234'
+        }));
+        
+        res.json({ agents: agentStatuses });
         
     } catch (error) {
-        console.error('[Intermedia] Unexpected error:', error);
-        throw error;
+        console.error('[Agent Status] Unexpected error:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch agent statuses',
+            details: error.message 
+        });
     }
-}
+});
 
 /**
  * Endpoint to manually refresh companies cache
