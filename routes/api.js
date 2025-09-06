@@ -388,7 +388,6 @@ function levenshteinDistance(str1, str2) {
     return matrix[str2.length][str1.length];
 }
 
-// Helper to get Intermedia access token
 async function getIntermediaToken() {
     try {
         // Check cache
@@ -398,92 +397,71 @@ async function getIntermediaToken() {
         }
         
         console.log('[Intermedia] Requesting new access token');
+        console.log('[Intermedia] Client ID:', process.env.INTERMEDIA_CLIENT_ID);
+        console.log('[Intermedia] Secret exists:', !!process.env.INTERMEDIA_CLIENT_SECRET);
         
-        // Helper to get Intermedia access token
-async function getIntermediaToken() {
-    try {
-        // Check cache
-        if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
-            console.log('[Intermedia] Using cached token');
-            return agentStatusCache.accessToken;
+        // Try multiple possible token endpoints
+        const tokenEndpoints = [
+            'https://api.intermedia.net/auth/oauth/token',
+            'https://api.intermedia.net/oauth/token',
+            'https://api.elevate.services/oauth/token',
+            'https://login.intermedia.net/oauth/token',
+            'https://api.intermedia.net/auth/token'
+        ];
+        
+        let tokenResponse = null;
+        let successEndpoint = null;
+        
+        for (const endpoint of tokenEndpoints) {
+            console.log(`[Intermedia] Trying token endpoint: ${endpoint}`);
+            
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json'
+                    },
+                    body: new URLSearchParams({
+                        grant_type: 'client_credentials',
+                        client_id: process.env.INTERMEDIA_CLIENT_ID,
+                        client_secret: process.env.INTERMEDIA_CLIENT_SECRET
+                    })
+                });
+                
+                console.log(`[Intermedia] ${endpoint} returned: ${response.status}`);
+                
+                if (response.ok) {
+                    tokenResponse = await response.json();
+                    successEndpoint = endpoint;
+                    console.log(`[Intermedia] SUCCESS - Got token from ${endpoint}`);
+                    break;
+                } else {
+                    const errorText = await response.text();
+                    console.log(`[Intermedia] Error from ${endpoint}:`, errorText.substring(0, 200));
+                }
+                
+            } catch (err) {
+                console.log(`[Intermedia] Failed to connect to ${endpoint}: ${err.message}`);
+            }
         }
         
-        console.log('[Intermedia] Requesting new access token');
-        
-        // Correct Elevate OAuth endpoint
-        const tokenEndpoint = 'https://api.elevate.services/oauth/token';
-        
-        console.log(`[Intermedia] Calling token endpoint: ${tokenEndpoint}`);
-        
-        const tokenResponse = await fetch(tokenEndpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Accept': 'application/json'
-            },
-            body: new URLSearchParams({
-                grant_type: 'client_credentials',
-                client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET
-            })
-        });
-        
-        console.log(`[Intermedia] Token response status: ${tokenResponse.status}`);
-        
-        if (!Response.ok) {
-            const errorText = await tokenResponse.text();
-            console.error('[Intermedia] Token error response:', errorText);
-            throw new Error(`Token request failed: ${tokenResponse.status} - ${errorText}`);
+        if (!tokenResponse) {
+            console.error('[Intermedia] All token endpoints failed');
+            throw new Error('Could not obtain access token from any endpoint');
         }
         
-        const tokenData = await tokenResponse.json();
-        console.log('[Intermedia] Token obtained successfully, expires in:', tokenData.expires_in);
-        
-        // Cache token (usually expires in 3600 seconds = 1 hour, refresh 5 min early)
-        agentStatusCache.accessToken = tokenData.access_token;
-        agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
-        
-        return tokenData.access_token;
-        
-    } catch (error) {
-        console.error('[Intermedia] Failed to get token:', error);
-        throw error;
-    }
-}
-        
-        if (!tokenResponse || !tokenResponse.ok) {
-            // If OAuth doesn't work, try using Basic Auth directly
-            console.log('[Intermedia] OAuth failed, trying Basic Auth as fallback');
-            
-            // Return a "basic auth" token that we'll handle differently
-            const basicAuth = Buffer.from(
-                `${process.env.INTERMEDIA_CLIENT_ID}:${process.env.INTERMEDIA_CLIENT_SECRET}`
-            ).toString('base64');
-            
-            agentStatusCache.accessToken = `Basic ${basicAuth}`;
-            agentStatusCache.tokenExpiry = Date.now() + (60 * 60 * 1000); // 1 hour
-            
-            return agentStatusCache.accessToken;
-        }
-        
-        const tokenData = await tokenResponse.json();
-        console.log('[Intermedia] Token obtained successfully');
+        console.log('[Intermedia] Token obtained, expires in:', tokenResponse.expires_in);
         
         // Cache token
-        agentStatusCache.accessToken = tokenData.access_token;
-        agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+        agentStatusCache.accessToken = tokenResponse.access_token;
+        agentStatusCache.tokenExpiry = Date.now() + ((tokenResponse.expires_in - 300) * 1000);
         
-        return tokenData.access_token;
+        return tokenResponse.access_token;
         
     } catch (error) {
-        console.error('[Intermedia] Failed to get token:', error);
-        
-        // Last resort - return basic auth
-        const basicAuth = Buffer.from(
-            `${process.env.INTERMEDIA_CLIENT_ID}:${process.env.INTERMEDIA_CLIENT_SECRET}`
-        ).toString('base64');
-        
-        return `Basic ${basicAuth}`;
+        console.error('[Intermedia] Token acquisition failed:', error);
+        throw error;
     }
 }
 
@@ -2348,41 +2326,132 @@ router.post('/agents-status-batch', async (req, res) => {
             token = await getIntermediaToken();
         } catch (tokenError) {
             console.error('[Agent Status] Token error:', tokenError);
-            return res.status(500).json({ 
-                error: 'Authentication failed',
-                details: tokenError.message 
-            });
+            // Continue with debugging even if token fails
+            token = 'debug-token';
         }
         
-        // TEMPORARY: Use mock data while we fix the API
-        console.log('[Agent Status] Using mock data mode');
+        // Try multiple possible Intermedia/Elevate endpoints
+        const possibleEndpoints = [
+            'https://api.intermedia.net/voice/v1/users',
+            'https://api.intermedia.net/api/v1/users',
+            'https://api.intermedia.net/users',
+            'https://api.elevate.services/v1/users',
+            'https://api.elevate.services/users',
+            'https://api.intermedia.net/voice/v2/users',
+            'https://api.intermedia.net/calling/v1/users'
+        ];
         
-        // Generate mock status for testing
-        const agentStatuses = emails.map(email => {
-            const statuses = ['available', 'busy', 'away', 'offline'];
-            const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
+        let successfulResponse = null;
+        let successfulEndpoint = null;
+        
+        for (const endpoint of possibleEndpoints) {
+            console.log(`[Agent Status] Trying endpoint: ${endpoint}`);
             
-            return {
+            try {
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                console.log(`[Agent Status] ${endpoint} returned: ${response.status}`);
+                
+                if (response.ok) {
+                    successfulResponse = await response.json();
+                    successfulEndpoint = endpoint;
+                    console.log(`[Agent Status] SUCCESS with ${endpoint}`);
+                    console.log(`[Agent Status] Response sample:`, JSON.stringify(successfulResponse).substring(0, 500));
+                    break;
+                } else if (response.status === 401) {
+                    console.log(`[Agent Status] 401 Unauthorized - token might be invalid`);
+                } else if (response.status === 404) {
+                    console.log(`[Agent Status] 404 Not Found - endpoint doesn't exist`);
+                }
+                
+            } catch (fetchError) {
+                console.log(`[Agent Status] Failed to fetch ${endpoint}: ${fetchError.message}`);
+            }
+        }
+        
+        if (!successfulResponse) {
+            console.log('[Agent Status] All endpoints failed, returning degraded status');
+            
+            // Return basic status for all agents
+            const degradedStatuses = emails.map(email => ({
                 agentId: email,
                 name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
                 email: email,
-                phoneStatus: randomStatus,
-                availability: randomStatus === 'available' ? 'Ready' : 
-                             randomStatus === 'busy' ? 'On Call' : 
-                             randomStatus === 'away' ? 'Break' : 'Offline',
-                onCall: randomStatus === 'busy',
-                extension: Math.floor(1000 + Math.random() * 9000).toString()
+                phoneStatus: 'unknown',
+                availability: 'API Connection Failed',
+                onCall: false,
+                extension: 'N/A'
+            }));
+            
+            return res.json({ 
+                agents: degradedStatuses,
+                error: 'Could not connect to Intermedia API',
+                triedEndpoints: possibleEndpoints
+            });
+        }
+        
+        // Parse the successful response
+        console.log(`[Agent Status] Processing response from ${successfulEndpoint}`);
+        
+        let users = [];
+        if (Array.isArray(successfulResponse)) {
+            users = successfulResponse;
+        } else if (successfulResponse.users) {
+            users = successfulResponse.users;
+        } else if (successfulResponse.data) {
+            users = successfulResponse.data;
+        } else if (successfulResponse.items) {
+            users = successfulResponse.items;
+        }
+        
+        console.log(`[Agent Status] Found ${users.length} users in response`);
+        
+        // Map emails to users
+        const agentStatuses = emails.map(email => {
+            const user = users.find(u => 
+                u.email?.toLowerCase() === email.toLowerCase() ||
+                u.emailAddress?.toLowerCase() === email.toLowerCase() ||
+                u.mail?.toLowerCase() === email.toLowerCase()
+            );
+            
+            if (!user) {
+                return {
+                    agentId: email,
+                    name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+                    email: email,
+                    phoneStatus: 'offline',
+                    availability: 'Not found in Intermedia',
+                    onCall: false,
+                    extension: 'N/A'
+                };
+            }
+            
+            // Log first user structure for debugging
+            if (emails.indexOf(email) === 0) {
+                console.log('[Agent Status] Sample user data:', JSON.stringify(user, null, 2));
+            }
+            
+            return {
+                agentId: user.id || user.userId || email,
+                name: user.name || user.displayName || user.fullName || email.split('@')[0],
+                email: email,
+                phoneStatus: user.presence || user.status || user.phoneStatus || 'unknown',
+                availability: user.availability || user.presenceStatus || 'Unknown',
+                onCall: user.onCall || user.inCall || user.busy || false,
+                extension: user.extension || user.phoneNumber || user.ext || 'N/A'
             };
         });
-        
-        console.log(`[Agent Status] Returning mock status for ${agentStatuses.length} agents`);
-        res.json({ agents: agentStatuses });
         
         console.log(`[Agent Status] Returning status for ${agentStatuses.length} agents`);
         res.json({ agents: agentStatuses });
         
     } catch (error) {
-        console.error('[Agent Status] Batch error:', error);
+        console.error('[Agent Status] Unexpected error:', error);
         res.status(500).json({ 
             error: 'Failed to fetch agent statuses',
             details: error.message 
