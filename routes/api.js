@@ -2478,7 +2478,17 @@ router.post('/agents-status-batch', async (req, res) => {
                 error: intermediaError.message
             });
         }
-        
+            const agents = statuses.map(status => ({
+                email: status.email,
+                name: status.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                phoneStatus: status.status,
+                onCall: status.status === 'busy',
+                extension: 'N/A',
+                last_activity: status.last_activity
+                }));
+    
+    res.json({ agents }); // Return in expected format
+
     } catch (error) {
         console.error('[API] Error in agents-status-batch:', error.message);
         res.status(500).json({ 
