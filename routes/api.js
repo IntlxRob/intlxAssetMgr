@@ -2260,69 +2260,296 @@ router.get('/ops-calendar/upcoming', async (req, res) => {
 // ============================================
 
 // ============================================
-// INTERMEDIA AGENT STATUS ENDPOINTS
+// INTERMEDIA AGENT STATUS ENDPOINTS - REAL DATA
 // ============================================
 
 /**
- * Batch endpoint to get agent statuses
- * POST /api/agents-status-batch
- * This endpoint is called by the frontend to get phone/presence status for multiple agents
+ * Get list of Intermedia users to map emails to user IDs
  */
-router.post('/agents-status-batch', async (req, res) => {
+async function getIntermediaUsers() {
     try {
-        // Log the incoming request body to debug
-        console.log('[API] agents-status-batch request body:', JSON.stringify(req.body));
+        const token = await getIntermediaToken();
         
-        // Handle multiple possible request formats
-        let emails = [];
+        if (token === 'mock_token') {
+            console.log('[Intermedia] Using mock token, returning empty user list');
+            return [];
+        }
         
-        if (req.body.agentEmails && Array.isArray(req.body.agentEmails)) {
-            // Expected format: { agentEmails: [...] }
-            emails = req.body.agentEmails;
-        } else if (req.body.emails && Array.isArray(req.body.emails)) {
-            // Alternative format: { emails: [...] }
-            emails = req.body.emails;
-        } else if (req.body.agents && Array.isArray(req.body.agents)) {
-            // Another format: { agents: [...] }
-            // Extract emails from agent objects if needed
-            emails = req.body.agents.map(agent => 
-                typeof agent === 'string' ? agent : agent.email
-            ).filter(Boolean);
-        } else if (Array.isArray(req.body)) {
-            // Direct array format: [...]
-            emails = req.body;
-        } else {
-            console.log('[API] Invalid request format. Expected agentEmails array.');
-            console.log('[API] Received:', req.body);
-            return res.status(400).json({ 
-                error: 'Invalid request format',
-                message: 'Expected agentEmails array in request body',
-                received: typeof req.body
+        console.log('[Intermedia] Fetching user list from Intermedia API');
+        
+        const response = await fetch('https://api.intermedia.net/voice/v2/users', {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            console.error(`[Intermedia] Failed to get users: ${response.status}`);
+            const errorText = await response.text();
+            console.error('[Intermedia] Error response:', errorText);
+            return [];
+        }
+        
+        const data = await response.json();
+        console.log(`[Intermedia] Retrieved ${data.users?.length || 0} users from Intermedia`);
+        return data.users || [];
+        
+    } catch (error) {
+        console.error('[Intermedia] Error fetching users:', error);
+        return [];
+    }
+}
+
+/**
+ * Get agent presence/status from Intermedia
+ */
+async function getIntermediaAgentPresence(userId) {
+    try {
+        const token = await getIntermediaToken();
+        
+        if (token === 'mock_token') {
+            // Return mock data for testing
+            return {
+                userId: userId,
+                status: 'available',
+                presence: 'online',
+                phoneStatus: 'idle',
+                lastActivity: new Date().toISOString()
+            };
+        }
+        
+        // Try multiple Intermedia endpoints to get presence data
+        // Note: Exact endpoint may vary based on Intermedia's API version
+        
+        // Option 1: Voice/presence endpoint
+        try {
+            const presenceResponse = await fetch(`https://api.intermedia.net/voice/v2/users/${userId}/presence`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (presenceResponse.ok) {
+                const presenceData = await presenceResponse.json();
+                console.log(`[Intermedia] Got presence for user ${userId}:`, presenceData);
+                return {
+                    userId: userId,
+                    status: presenceData.status || 'unknown',
+                    presence: presenceData.presence || 'offline',
+                    phoneStatus: presenceData.phoneStatus || 'unknown',
+                    lastActivity: presenceData.lastActivity || null
+                };
+            }
+        } catch (err) {
+            console.log(`[Intermedia] Presence endpoint failed for ${userId}:`, err.message);
+        }
+        
+        // Option 2: Try messaging/presence endpoint
+        try {
+            const messagingResponse = await fetch(`https://api.intermedia.net/messaging/v1/users/${userId}/status`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (messagingResponse.ok) {
+                const messagingData = await messagingResponse.json();
+                console.log(`[Intermedia] Got messaging status for user ${userId}:`, messagingData);
+                return {
+                    userId: userId,
+                    status: messagingData.availability || 'unknown',
+                    presence: messagingData.online ? 'online' : 'offline',
+                    phoneStatus: messagingData.phoneStatus || 'unknown',
+                    lastActivity: messagingData.lastSeen || null
+                };
+            }
+        } catch (err) {
+            console.log(`[Intermedia] Messaging endpoint failed for ${userId}:`, err.message);
+        }
+        
+        // Option 3: Try users endpoint with presence expansion
+        try {
+            const userResponse = await fetch(`https://api.intermedia.net/voice/v2/users/${userId}?expand=presence`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (userResponse.ok) {
+                const userData = await userResponse.json();
+                console.log(`[Intermedia] Got user with presence for ${userId}:`, userData);
+                return {
+                    userId: userId,
+                    status: userData.presence?.status || 'unknown',
+                    presence: userData.presence?.online ? 'online' : 'offline',
+                    phoneStatus: userData.presence?.phoneStatus || 'unknown',
+                    lastActivity: userData.presence?.lastActivity || null
+                };
+            }
+        } catch (err) {
+            console.log(`[Intermedia] User expand endpoint failed for ${userId}:`, err.message);
+        }
+        
+        // If all endpoints fail, return unknown status
+        console.log(`[Intermedia] Could not get presence for user ${userId}`);
+        return {
+            userId: userId,
+            status: 'unknown',
+            presence: 'offline',
+            phoneStatus: 'unknown',
+            lastActivity: null
+        };
+        
+    } catch (error) {
+        console.error(`[Intermedia] Error getting presence for user ${userId}:`, error);
+        return {
+            userId: userId,
+            status: 'error',
+            presence: 'offline',
+            phoneStatus: 'error',
+            lastActivity: null
+        };
+    }
+}
+
+/**
+ * Email to Intermedia user mapping cache
+ */
+let emailToUserIdCache = new Map();
+let cacheLastUpdated = 0;
+const CACHE_TTL = 3600000; // 1 hour
+
+/**
+ * Map email addresses to Intermedia user IDs
+ */
+async function mapEmailsToUserIds(emails) {
+    try {
+        // Check if cache needs refresh
+        if (Date.now() - cacheLastUpdated > CACHE_TTL) {
+            console.log('[Intermedia] Refreshing email to user ID cache');
+            emailToUserIdCache.clear();
+            
+            const users = await getIntermediaUsers();
+            
+            // Build cache from user list
+            users.forEach(user => {
+                if (user.email) {
+                    emailToUserIdCache.set(user.email.toLowerCase(), user.id || user.userId);
+                }
+            });
+            
+            cacheLastUpdated = Date.now();
+            console.log(`[Intermedia] Cached ${emailToUserIdCache.size} email to user ID mappings`);
+        }
+        
+        // Map the provided emails
+        const mappings = [];
+        for (const email of emails) {
+            const userId = emailToUserIdCache.get(email.toLowerCase());
+            mappings.push({
+                email: email,
+                userId: userId || null
             });
         }
         
-        // If still no emails, return error
-        if (!emails || emails.length === 0) {
-            console.log('[API] No agent emails provided');
+        return mappings;
+        
+    } catch (error) {
+        console.error('[Intermedia] Error mapping emails to user IDs:', error);
+        // Return null mappings on error
+        return emails.map(email => ({ email, userId: null }));
+    }
+}
+
+/**
+ * Batch endpoint to get agent statuses - REAL INTERMEDIA DATA
+ * POST /api/agents-status-batch
+ */
+router.post('/agents-status-batch', async (req, res) => {
+    try {
+        console.log('[API] agents-status-batch request body:', JSON.stringify(req.body));
+        
+        // Extract emails from request
+        let emails = [];
+        
+        if (req.body.emails && Array.isArray(req.body.emails)) {
+            emails = req.body.emails;
+        } else if (req.body.agentEmails && Array.isArray(req.body.agentEmails)) {
+            emails = req.body.agentEmails;
+        } else {
+            console.log('[API] Invalid request format');
             return res.status(400).json({ 
-                error: 'No agent emails provided',
-                message: 'Request must include at least one agent email'
+                error: 'Invalid request format',
+                message: 'Expected emails array in request body'
             });
         }
         
         console.log(`[API] Fetching status for ${emails.length} agents`);
         
-        // For now, return mock data for all agents
-        // Replace this with actual Intermedia API calls when ready
-        const statuses = emails.map(email => ({
-            email: email,
-            status: Math.random() > 0.7 ? 'available' : Math.random() > 0.5 ? 'busy' : 'away',
-            presence: Math.random() > 0.3 ? 'online' : 'offline',
-            inCall: Math.random() > 0.8,
-            lastActivity: new Date(Date.now() - Math.random() * 3600000).toISOString()
-        }));
+        // Get Intermedia token first to check if we can use real data
+        const token = await getIntermediaToken();
+        const useRealData = token && token !== 'mock_token';
         
-        res.json({ statuses });
+        if (useRealData) {
+            console.log('[API] Using REAL Intermedia data');
+            
+            // Map emails to Intermedia user IDs
+            const mappings = await mapEmailsToUserIds(emails);
+            
+            // Fetch presence for each mapped user
+            const statuses = await Promise.all(
+                mappings.map(async (mapping) => {
+                    if (mapping.userId) {
+                        const presence = await getIntermediaAgentPresence(mapping.userId);
+                        return {
+                            email: mapping.email,
+                            userId: mapping.userId,
+                            status: presence.status,
+                            presence: presence.presence,
+                            phoneStatus: presence.phoneStatus,
+                            inCall: presence.phoneStatus === 'busy' || presence.phoneStatus === 'in-call',
+                            lastActivity: presence.lastActivity
+                        };
+                    } else {
+                        // No mapping found - return unknown status
+                        return {
+                            email: mapping.email,
+                            userId: null,
+                            status: 'unknown',
+                            presence: 'unknown',
+                            phoneStatus: 'unknown',
+                            inCall: false,
+                            lastActivity: null
+                        };
+                    }
+                })
+            );
+            
+            res.json({ statuses });
+            
+        } else {
+            console.log('[API] Using MOCK data (Intermedia not configured or token failed)');
+            
+            // Return mock data
+            const statuses = emails.map(email => ({
+                email: email,
+                status: Math.random() > 0.7 ? 'available' : Math.random() > 0.5 ? 'busy' : 'away',
+                presence: Math.random() > 0.3 ? 'online' : 'offline',
+                phoneStatus: Math.random() > 0.8 ? 'in-call' : 'idle',
+                inCall: Math.random() > 0.8,
+                lastActivity: new Date(Date.now() - Math.random() * 3600000).toISOString()
+            }));
+            
+            res.json({ statuses });
+        }
         
     } catch (error) {
         console.error('[API] Error in agents-status-batch:', error);
@@ -2334,84 +2561,48 @@ router.post('/agents-status-batch', async (req, res) => {
 });
 
 /**
- * Get agent status from Intermedia for a single user
+ * Test endpoint to check Intermedia connection
+ * GET /api/test-intermedia
  */
-async function getIntermediaAgentStatus(userId) {
+router.get('/test-intermedia', async (req, res) => {
     try {
+        console.log('[API] Testing Intermedia connection');
+        
+        // Get token
         const token = await getIntermediaToken();
         
         if (token === 'mock_token') {
-            // Return mock data for testing
-            return {
-                userId: userId,
-                status: 'available',
-                presence: 'online',
-                lastActivity: new Date().toISOString()
-            };
+            return res.json({
+                success: false,
+                message: 'Intermedia not configured - using mock data',
+                tokenStatus: 'mock'
+            });
         }
         
-        const response = await fetch(`https://api.intermedia.net/voice/v2/users/${userId}/presence`, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            }
+        // Try to fetch users
+        const users = await getIntermediaUsers();
+        
+        // Try to get presence for first user (if any)
+        let samplePresence = null;
+        if (users.length > 0) {
+            samplePresence = await getIntermediaAgentPresence(users[0].id || users[0].userId);
+        }
+        
+        res.json({
+            success: true,
+            message: 'Intermedia connection successful',
+            tokenStatus: 'active',
+            userCount: users.length,
+            sampleUser: users[0] || null,
+            samplePresence: samplePresence
         });
         
-        if (!response.ok) {
-            console.log(`[Intermedia] Failed to get status for user ${userId}: ${response.status}`);
-            return {
-                userId: userId,
-                status: 'unknown',
-                presence: 'offline'
-            };
-        }
-        
-        const data = await response.json();
-        return {
-            userId: userId,
-            status: data.status || 'unknown',
-            presence: data.presence || 'offline',
-            lastActivity: data.lastActivity || null
-        };
-        
     } catch (error) {
-        console.error(`[Intermedia] Error getting status for user ${userId}:`, error);
-        return {
-            userId: userId,
-            status: 'error',
-            presence: 'offline'
-        };
-    }
-}
-
-/**
- * Get all agents with their current status
- * GET /api/agents-with-status
- */
-router.get('/agents-with-status', async (req, res) => {
-    try {
-        // Get all Zendesk agents first
-        const agents = await zendeskService.getAgents();
-        
-        // Get status for each agent
-        const agentsWithStatus = await Promise.all(
-            agents.map(async (agent) => {
-                const status = await getIntermediaAgentStatus(agent.email);
-                return {
-                    ...agent,
-                    intermediaStatus: status
-                };
-            })
-        );
-        
-        res.json({ agents: agentsWithStatus });
-        
-    } catch (error) {
-        console.error('[API] Error fetching agents with status:', error);
-        res.status(500).json({ 
-            error: 'Failed to fetch agents with status',
-            details: error.message 
+        console.error('[API] Intermedia test failed:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Intermedia test failed',
+            error: error.message
         });
     }
 });
