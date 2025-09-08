@@ -389,30 +389,30 @@ function levenshteinDistance(str1, str2) {
 }
 
 /**
- * Get Intermedia access token using the correct endpoint
+ * Get Intermedia access token using the correct endpoint and account
  */
 async function getIntermediaToken() {
     try {
-        // Check cache first
+        // Check cache
         if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
             console.log('[Intermedia] Using cached token');
             return agentStatusCache.accessToken;
         }
         
-        console.log('[Intermedia] Requesting new user token');
+        console.log('[Intermedia] Requesting new access token from end-user account');
         
-        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+        const tokenEndpoint = 'https://login.serverdata.net/user/connect/token';
+        
+        const response = await fetch(tokenEndpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
             body: new URLSearchParams({
-                grant_type: 'password',  // User credentials flow
-                username: process.env.INTERMEDIA_API_USER,
-                password: process.env.INTERMEDIA_API_PASSWORD,
+                grant_type: 'client_credentials',
                 client_id: process.env.INTERMEDIA_CLIENT_ID,
                 client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'openid profile email api.messaging'
+                scope: 'api.service.messaging'
             })
         });
         
@@ -421,13 +421,14 @@ async function getIntermediaToken() {
         if (!response.ok) {
             const errorText = await response.text();
             console.error('[Intermedia] Token error:', errorText);
+            console.log('[Intermedia] Falling back to mock data');
             return 'mock_token';
         }
         
         const tokenData = await response.json();
-        console.log('[Intermedia] User token obtained successfully!');
+        console.log('[Intermedia] Token obtained successfully from end-user account!');
         
-        // Cache token
+        // Cache token (expires in 1 hour, refresh 5 minutes early)
         agentStatusCache.accessToken = tokenData.access_token;
         agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
         
@@ -435,21 +436,10 @@ async function getIntermediaToken() {
         
     } catch (error) {
         console.error('[Intermedia] Token acquisition failed:', error);
+        console.log('[Intermedia] Using mock data as fallback');
         return 'mock_token';
     }
 }
-
-/**
- * Endpoint to manually refresh companies cache
- */
-router.get('/refresh-companies-cache', async (req, res) => {
-    await refreshCompaniesCache();
-    res.json({
-        success: true,
-        companies_count: companiesCache.companies.length,
-        last_updated: companiesCache.lastUpdated
-    });
-});
 
 /**
  * Endpoint to test the direct connection to the Zendesk API.
