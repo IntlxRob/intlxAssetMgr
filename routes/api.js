@@ -2260,8 +2260,129 @@ router.get('/ops-calendar/upcoming', async (req, res) => {
 // ============================================
 
 // ============================================
-// INTERMEDIA ELEVATE AGENT STATUS ENDPOINTS  
+// INTERMEDIA AGENT STATUS ENDPOINTS
 // ============================================
+
+/**
+ * Batch endpoint to get agent statuses
+ * POST /api/agents-status-batch
+ * This endpoint is called by the frontend to get phone/presence status for multiple agents
+ */
+router.post('/agents-status-batch', async (req, res) => {
+    try {
+        const { agentEmails } = req.body;
+        
+        if (!agentEmails || !Array.isArray(agentEmails)) {
+            return res.status(400).json({ 
+                error: 'agentEmails array is required' 
+            });
+        }
+        
+        console.log(`[API] Fetching status for ${agentEmails.length} agents`);
+        
+        // For now, return mock data for all agents
+        // Replace this with actual Intermedia API calls when ready
+        const statuses = agentEmails.map(email => ({
+            email: email,
+            status: Math.random() > 0.7 ? 'available' : Math.random() > 0.5 ? 'busy' : 'away',
+            presence: Math.random() > 0.3 ? 'online' : 'offline',
+            inCall: Math.random() > 0.8,
+            lastActivity: new Date(Date.now() - Math.random() * 3600000).toISOString()
+        }));
+        
+        res.json({ statuses });
+        
+    } catch (error) {
+        console.error('[API] Error in agents-status-batch:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch agent statuses',
+            details: error.message 
+        });
+    }
+});
+
+/**
+ * Get agent status from Intermedia for a single user
+ */
+async function getIntermediaAgentStatus(userId) {
+    try {
+        const token = await getIntermediaToken();
+        
+        if (token === 'mock_token') {
+            // Return mock data for testing
+            return {
+                userId: userId,
+                status: 'available',
+                presence: 'online',
+                lastActivity: new Date().toISOString()
+            };
+        }
+        
+        const response = await fetch(`https://api.intermedia.net/voice/v2/users/${userId}/presence`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            console.log(`[Intermedia] Failed to get status for user ${userId}: ${response.status}`);
+            return {
+                userId: userId,
+                status: 'unknown',
+                presence: 'offline'
+            };
+        }
+        
+        const data = await response.json();
+        return {
+            userId: userId,
+            status: data.status || 'unknown',
+            presence: data.presence || 'offline',
+            lastActivity: data.lastActivity || null
+        };
+        
+    } catch (error) {
+        console.error(`[Intermedia] Error getting status for user ${userId}:`, error);
+        return {
+            userId: userId,
+            status: 'error',
+            presence: 'offline'
+        };
+    }
+}
+
+/**
+ * Get all agents with their current status
+ * GET /api/agents-with-status
+ */
+router.get('/agents-with-status', async (req, res) => {
+    try {
+        // Get all Zendesk agents first
+        const agents = await zendeskService.getAgents();
+        
+        // Get status for each agent
+        const agentsWithStatus = await Promise.all(
+            agents.map(async (agent) => {
+                const status = await getIntermediaAgentStatus(agent.email);
+                return {
+                    ...agent,
+                    intermediaStatus: status
+                };
+            })
+        );
+        
+        res.json({ agents: agentsWithStatus });
+        
+    } catch (error) {
+        console.error('[API] Error fetching agents with status:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch agents with status',
+            details: error.message 
+        });
+    }
+});
 
 /**
  * Get agent phone status from Intermedia Elevate
