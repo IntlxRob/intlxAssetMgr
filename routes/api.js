@@ -2270,19 +2270,51 @@ router.get('/ops-calendar/upcoming', async (req, res) => {
  */
 router.post('/agents-status-batch', async (req, res) => {
     try {
-        const { agentEmails } = req.body;
+        // Log the incoming request body to debug
+        console.log('[API] agents-status-batch request body:', JSON.stringify(req.body));
         
-        if (!agentEmails || !Array.isArray(agentEmails)) {
+        // Handle multiple possible request formats
+        let emails = [];
+        
+        if (req.body.agentEmails && Array.isArray(req.body.agentEmails)) {
+            // Expected format: { agentEmails: [...] }
+            emails = req.body.agentEmails;
+        } else if (req.body.emails && Array.isArray(req.body.emails)) {
+            // Alternative format: { emails: [...] }
+            emails = req.body.emails;
+        } else if (req.body.agents && Array.isArray(req.body.agents)) {
+            // Another format: { agents: [...] }
+            // Extract emails from agent objects if needed
+            emails = req.body.agents.map(agent => 
+                typeof agent === 'string' ? agent : agent.email
+            ).filter(Boolean);
+        } else if (Array.isArray(req.body)) {
+            // Direct array format: [...]
+            emails = req.body;
+        } else {
+            console.log('[API] Invalid request format. Expected agentEmails array.');
+            console.log('[API] Received:', req.body);
             return res.status(400).json({ 
-                error: 'agentEmails array is required' 
+                error: 'Invalid request format',
+                message: 'Expected agentEmails array in request body',
+                received: typeof req.body
             });
         }
         
-        console.log(`[API] Fetching status for ${agentEmails.length} agents`);
+        // If still no emails, return error
+        if (!emails || emails.length === 0) {
+            console.log('[API] No agent emails provided');
+            return res.status(400).json({ 
+                error: 'No agent emails provided',
+                message: 'Request must include at least one agent email'
+            });
+        }
+        
+        console.log(`[API] Fetching status for ${emails.length} agents`);
         
         // For now, return mock data for all agents
         // Replace this with actual Intermedia API calls when ready
-        const statuses = agentEmails.map(email => ({
+        const statuses = emails.map(email => ({
             email: email,
             status: Math.random() > 0.7 ? 'available' : Math.random() > 0.5 ? 'busy' : 'away',
             presence: Math.random() > 0.3 ? 'online' : 'offline',
@@ -2383,16 +2415,5 @@ router.get('/agents-with-status', async (req, res) => {
         });
     }
 });
-
-/**
- * Get agent phone status from Intermedia Elevate
- */
-router.get('/agent-status/:agentId?', async (req, res) => {
-    // ... your existing code stays exactly as is ...
-});
-
-// ============================================
-// END OF INTERMEDIA ELEVATE AGENT STATUS ENDPOINTS
-// ============================================
 
 module.exports = router;
