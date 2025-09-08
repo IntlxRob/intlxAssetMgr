@@ -393,26 +393,26 @@ function levenshteinDistance(str1, str2) {
  */
 async function getIntermediaToken() {
     try {
-        // Check cache
+        // Check cache first
         if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
             console.log('[Intermedia] Using cached token');
             return agentStatusCache.accessToken;
         }
         
-        console.log('[Intermedia] Requesting new access token');
+        console.log('[Intermedia] Requesting new user token');
         
-        const tokenEndpoint = 'https://login.serverdata.net/user/connect/token';
-        
-        const response = await fetch(tokenEndpoint, {
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
             body: new URLSearchParams({
-                grant_type: 'client_credentials',
+                grant_type: 'password',  // User credentials flow
+                username: process.env.INTERMEDIA_API_USER,
+                password: process.env.INTERMEDIA_API_PASSWORD,
                 client_id: process.env.INTERMEDIA_CLIENT_ID,
                 client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.service.messaging'  // Correct scope
+                scope: 'openid profile email api.messaging'
             })
         });
         
@@ -425,9 +425,9 @@ async function getIntermediaToken() {
         }
         
         const tokenData = await response.json();
-        console.log('[Intermedia] Token obtained successfully!');
+        console.log('[Intermedia] User token obtained successfully!');
         
-        // Cache token (expires in 1 hour, refresh 5 minutes early)
+        // Cache token
         agentStatusCache.accessToken = tokenData.access_token;
         agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
         
@@ -438,45 +438,6 @@ async function getIntermediaToken() {
         return 'mock_token';
     }
 }
-
-router.post('/agents-status-batch', async (req, res) => {
-    try {
-        const { emails } = req.body;
-        
-        console.log(`[Agent Status] Fetching status for ${emails.length} agents`);
-        
-        // Get token
-        const token = await getIntermediaToken();
-        console.log('[Agent Status] Got token successfully');
-        
-        // Try to get users - ADD DETAILED LOGGING
-        const response = await fetch('https://api.elevate.services/v1/users', {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/json'
-            }
-        });
-        
-        console.log('[Agent Status] Users API response status:', response.status);
-        
-        if (response.ok) {
-            const userData = await response.json();
-            console.log('[Agent Status] FULL USER DATA:', JSON.stringify(userData, null, 2));
-            
-            // Log what fields each user has
-            if (userData && userData.length > 0) {
-                console.log('[Agent Status] Available fields for first user:', Object.keys(userData[0]));
-            }
-        }
-        
-    } catch (error) {
-        console.error('[Agent Status] Error:', error);
-        res.status(500).json({ 
-            error: 'Failed to fetch agent statuses',
-            details: error.message 
-        });
-    }
-});
 
 /**
  * Endpoint to manually refresh companies cache
