@@ -2276,166 +2276,42 @@ router.post('/agents-status-batch', async (req, res) => {
     
     console.log(`[API] Fetching status for ${emails.length} agents`);
     
-    // Get statuses from Intermedia or mock
-    let statuses = [];
-    
     try {
       // Try to get real statuses from Intermedia
-      // ... your Intermedia integration code ...
+      const intermediaService = require('../services/intermedia');
+      const statuses = await intermediaService.getAgentStatuses(emails);
+      
+      // Transform to the format the frontend expects
+      const agents = statuses.map(status => ({
+        email: status.email,
+        name: status.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        phoneStatus: status.status,
+        onCall: status.status === 'busy',
+        extension: status.extension || 'N/A'
+      }));
+      
+      return res.json({ 
+        success: true,
+        agents: agents
+      });
       
     } catch (intermediaError) {
-      console.log('[API] Intermedia integration error, falling back to mock:', intermediaError.message);
+      console.log('[API] Intermedia integration error:', intermediaError.message);
       
-      // Create mock statuses for testing
-      statuses = emails.map(email => ({
-        email: email,
-        status: ['available', 'busy', 'away', 'offline'][Math.floor(Math.random() * 4)],
-        status_message: '',
-        last_activity: new Date().toISOString(),
-        source: 'mock'
-      }));
+      // Return empty array if real data isn't available
+      return res.json({ 
+        success: false,
+        agents: [],
+        error: 'Phone system integration unavailable'
+      });
     }
     
-    // Transform statuses to the format the frontend expects
-    const agents = statuses.map(status => ({
-      email: status.email,
-      name: status.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-      phoneStatus: status.status,
-      onCall: status.status === 'busy',
-      extension: 'N/A',
-      last_activity: status.last_activity
-    }));
-    
-    // Send response ONLY ONCE
-    return res.json({ 
-      success: true,
-      agents: agents 
-    });
-    
   } catch (error) {
-    console.error('[API] Error in agents-status-batch:', error);
-    // Make sure we haven't already sent a response
+    console.error('[API] Error in agents-status-batch:', error.message);
     if (!res.headersSent) {
       return res.status(500).json({ error: error.message });
     }
   }
-});
-
-/**
- * Test endpoint for Intermedia integration
- * GET /api/test-intermedia
- */
-router.get('/test-intermedia', async (req, res) => {
-    try {
-        console.log('[Test] Testing Intermedia integration...');
-        
-        if (!process.env.INTERMEDIA_CLIENT_ID || !process.env.INTERMEDIA_CLIENT_SECRET) {
-            return res.json({
-                success: false,
-                message: 'Intermedia credentials not configured',
-                configured: false
-            });
-        }
-
-        // Get token
-        const tokenResponse = await fetch('https://api.intermedia.net/auth/v1/oauth2/token', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({
-                grant_type: 'client_credentials',
-                client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'user:read presence:read'
-            })
-        });
-
-        const tokenActive = tokenResponse.ok;
-        let token = null;
-        
-        if (tokenActive) {
-            const tokenData = await tokenResponse.json();
-            token = tokenData.access_token;
-        }
-
-        // Try to fetch users
-        let userCount = 0;
-        let sampleUser = null;
-        let samplePresence = null;
-
-        if (token) {
-            const userEndpoints = [
-                'https://api.intermedia.net/user/v1/users',
-                'https://api.intermedia.net/directory/v1/users',
-                'https://api.intermedia.net/users/v1/list'
-            ];
-
-            for (const endpoint of userEndpoints) {
-                try {
-                    const response = await fetch(endpoint, {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                        }
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        const users = data.users || data.items || data.data || data || [];
-                        if (Array.isArray(users)) {
-                            userCount = users.length;
-                            sampleUser = users[0] || null;
-                            
-                            // Try to get presence for sample user
-                            if (sampleUser) {
-                                const userId = sampleUser.id || sampleUser.userId || sampleUser.uid;
-                                if (userId) {
-                                    try {
-                                        const presResp = await fetch(`https://api.intermedia.net/presence/v1/users/${userId}/presence`, {
-                                            headers: {
-                                                'Authorization': `Bearer ${token}`,
-                                                'Content-Type': 'application/json'
-                                            }
-                                        });
-                                        if (presResp.ok) {
-                                            samplePresence = await presResp.json();
-                                        }
-                                    } catch (e) {
-                                        // Ignore presence errors in test
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                    }
-                } catch (err) {
-                    console.log(`[Test] Error with endpoint ${endpoint}: ${err.message}`);
-                }
-            }
-        }
-
-        res.json({
-            success: true,
-            message: 'Intermedia connection successful',
-            tokenStatus: tokenActive ? 'active' : 'failed',
-            userCount,
-            sampleUser: sampleUser ? {
-                email: sampleUser.email || sampleUser.emailAddress || sampleUser.mail,
-                id: sampleUser.id || sampleUser.userId || sampleUser.uid
-            } : null,
-            samplePresence
-        });
-        
-    } catch (error) {
-        console.error('[Test] Intermedia test failed:', error.message);
-        res.json({
-            success: false,
-            message: 'Intermedia integration test failed',
-            error: error.message
-        });
-    }
 });
 
 module.exports = router;
