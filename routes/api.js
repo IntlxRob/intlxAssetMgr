@@ -443,36 +443,31 @@ router.post('/agents-status-batch', async (req, res) => {
     try {
         const { emails } = req.body;
         
-        if (!emails || !Array.isArray(emails)) {
-            return res.status(400).json({ error: 'Emails array is required' });
-        }
-        
         console.log(`[Agent Status] Fetching status for ${emails.length} agents`);
-        console.log('[Agent Status] Note: Using mock data - Intermedia API integration pending');
         
-        // Generate mock statuses that look realistic
-        const statuses = ['available', 'busy', 'away', 'offline'];
+        // Get token
+        const token = await getIntermediaToken();
+        console.log('[Agent Status] Got token successfully');
         
-        const agentStatuses = emails.map((email, index) => {
-            // Create consistent but varied statuses
-            const statusIndex = index % statuses.length;
-            const status = statuses[statusIndex];
-            
-            return {
-                agentId: email,
-                name: email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-                email: email,
-                phoneStatus: status,
-                availability: status === 'available' ? 'Ready' : 
-                             status === 'busy' ? 'On Call' : 
-                             status === 'away' ? 'Break' : 'Offline',
-                onCall: status === 'busy',
-                extension: (1000 + index).toString()
-            };
+        // Try to get users - ADD DETAILED LOGGING
+        const response = await fetch('https://api.elevate.services/v1/users', {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+            }
         });
         
-        console.log(`[Agent Status] Returning mock status for ${agentStatuses.length} agents`);
-        res.json({ agents: agentStatuses });
+        console.log('[Agent Status] Users API response status:', response.status);
+        
+        if (response.ok) {
+            const userData = await response.json();
+            console.log('[Agent Status] FULL USER DATA:', JSON.stringify(userData, null, 2));
+            
+            // Log what fields each user has
+            if (userData && userData.length > 0) {
+                console.log('[Agent Status] Available fields for first user:', Object.keys(userData[0]));
+            }
+        }
         
     } catch (error) {
         console.error('[Agent Status] Error:', error);
