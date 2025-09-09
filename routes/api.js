@@ -504,18 +504,19 @@ async function getIntermediaToken() {
  * Initiate ServerData OAuth flow
  */
 router.get('/auth/serverdata/login', (req, res) => {
-    const crypto = require('crypto');
-    const deviceId = crypto.randomUUID();
+    const state = req.query.state || generateState();
+    const deviceId = req.query.deviceId || generateDeviceId();
     
     const authUrl = new URL('https://login.serverdata.net/user/connect/authorize');
-    authUrl.searchParams.append('client_id', process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ');
-    authUrl.searchParams.append('redirect_uri', 'https://intlxassetmgr-proxy.onrender.com/api/auth/callback');  // FIXED
+    authUrl.searchParams.append('client_id', clientId);
+    authUrl.searchParams.append('redirect_uri', redirectUri);
     authUrl.searchParams.append('response_type', 'code');
-    authUrl.searchParams.append('scope', 'api.user.address-book');
-    authUrl.searchParams.append('state', deviceId);
+    authUrl.searchParams.append('scope', 'api.user.address-book offline_access');  
+    authUrl.searchParams.append('state', state);
     authUrl.searchParams.append('acr_values', `deviceId:${deviceId}`);
-
-    // Add logging to debug
+    authUrl.searchParams.append('access_type', 'offline');
+    authUrl.searchParams.append('prompt', 'consent');
+    
     console.log('[OAuth] Redirecting to:', authUrl.toString());
     console.log('[OAuth] Device ID:', deviceId);
     
