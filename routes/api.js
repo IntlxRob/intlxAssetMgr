@@ -470,7 +470,7 @@ router.get('/auth/serverdata/login', (req, res) => {
 /**
  * OAuth callback for ServerData
  */
-router.get('/auth/callback', async (req, res) => {  // FIXED route path
+router.get('/auth/callback', async (req, res) => {
     try {
         const { code, state: deviceId, error } = req.query;
         
@@ -497,7 +497,7 @@ router.get('/auth/callback', async (req, res) => {  // FIXED route path
             body: new URLSearchParams({
                 grant_type: 'authorization_code',
                 code: code,
-                redirect_uri: 'https://intlxassetmgr-proxy.onrender.com/api/auth/callback',  // FIXED
+                redirect_uri: 'https://intlxassetmgr-proxy.onrender.com/api/auth/callback',
                 acr_values: `deviceId:${deviceId}`
             })
         });
@@ -505,9 +505,12 @@ router.get('/auth/callback', async (req, res) => {  // FIXED route path
         const tokenData = await tokenResponse.json();
         
         if (tokenData.access_token) {
-            // Store token in memory (temporary solution)
+            // Store BOTH access token and refresh token
             global.addressBookToken = tokenData.access_token;
-            global.addressBookTokenExpiry = Date.now() + (tokenData.expires_in * 1000);
+            global.addressBookRefreshToken = tokenData.refresh_token;  // ADDED
+            global.addressBookTokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000); // Refresh 5 min early
+            
+            console.log('[OAuth] Token stored successfully, expires in', tokenData.expires_in, 'seconds');
             
             res.send(`
                 <html>
@@ -532,6 +535,62 @@ router.get('/auth/callback', async (req, res) => {  // FIXED route path
     }
 });
 
+/**
+ * Refresh the ServerData/Elevate access token
+ */
+async function refreshAddressBookToken() {
+    try {
+        if (!global.addressBookRefreshToken) {
+            console.log('[OAuth] No refresh token available');
+            return false;
+        }
+        
+        console.log('[OAuth] Refreshing address book token...');
+        
+        const clientId = process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ';
+        const clientSecret = process.env.SERVERDATA_CLIENT_SECRET || 'F862FCvwDX8J5JZtV3IQbHKqrWVafD1THU716LCfQuY';
+        const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+        
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${basicAuth}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: global.addressBookRefreshToken
+            })
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('[OAuth] Token refresh failed:', errorText);
+            return false;
+        }
+        
+        const tokenData = await response.json();
+        
+        if (tokenData.access_token) {
+            // Update tokens
+            global.addressBookToken = tokenData.access_token;
+            if (tokenData.refresh_token) {
+                global.addressBookRefreshToken = tokenData.refresh_token;
+            }
+            global.addressBookTokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+            
+            console.log('[OAuth] Token refreshed successfully, expires in', tokenData.expires_in, 'seconds');
+            return true;
+        }
+        
+        return false;
+        
+    } catch (error) {
+        console.error('[OAuth] Error refreshing token:', error);
+        return false;
+    }
+}
+
 // ============================================
 // ADDRESS BOOK API ENDPOINTS
 // ============================================
@@ -552,20 +611,52 @@ router.get('/address-book/status', (req, res) => {
  */
 router.get('/address-book/contacts', async (req, res) => {
     try {
-        const token = global.addressBookToken;
-        
-        if (!token || global.addressBookTokenExpiry < Date.now()) {
-            return res.status(401).json({ 
-                error: 'No valid Address Book token',
-                authUrl: '/api/auth/serverdata/login'
-            });
+        // Check if token needs refresh
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            console.log('[OAuth] Token expired or missing, attempting refresh...');
+            
+            const refreshed = await refreshAddressBookToken();
+            
+            if (!refreshed) {
+                return res.status(401).json({ 
+                    error: 'Authentication required',
+                    authUrl: '/api/auth/serverdata/login',
+                    message: 'Please re-authenticate with the Address Book'
+                });
+            }
         }
         
         const response = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
             headers: {
-                'Authorization': `Bearer ${token}`
+                'Authorization': `Bearer ${global.addressBookToken}`
             }
         });
+        
+        if (response.status === 401) {
+            // Token might have just expired, try one refresh
+            console.log('[OAuth] Got 401, attempting token refresh...');
+            const refreshed = await refreshAddressBookToken();
+            
+            if (refreshed) {
+                // Retry the request with new token
+                const retryResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+                    headers: {
+                        'Authorization': `Bearer ${global.addressBookToken}`
+                    }
+                });
+                
+                if (retryResponse.ok) {
+                    const data = await retryResponse.json();
+                    return res.json(data);
+                }
+            }
+            
+            return res.status(401).json({ 
+                error: 'Authentication expired',
+                authUrl: '/api/auth/serverdata/login',
+                message: 'Please re-authenticate with the Address Book'
+            });
+        }
         
         if (!response.ok) {
             throw new Error(`Address Book API error: ${response.status}`);
@@ -585,20 +676,52 @@ router.get('/address-book/contacts', async (req, res) => {
  */
 router.get('/address-book/users', async (req, res) => {
     try {
-        const token = global.addressBookToken;
-        
-        if (!token || global.addressBookTokenExpiry < Date.now()) {
-            return res.status(401).json({ 
-                error: 'No valid Address Book token',
-                authUrl: '/api/auth/serverdata/login'
-            });
+        // Check if token needs refresh
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            console.log('[OAuth] Token expired or missing, attempting refresh...');
+            
+            const refreshed = await refreshAddressBookToken();
+            
+            if (!refreshed) {
+                return res.status(401).json({ 
+                    error: 'Authentication required',
+                    authUrl: '/api/auth/serverdata/login',
+                    message: 'Please re-authenticate with the Address Book'
+                });
+            }
         }
         
         const response = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users', {
             headers: {
-                'Authorization': `Bearer ${token}`
+                'Authorization': `Bearer ${global.addressBookToken}`
             }
         });
+        
+        if (response.status === 401) {
+            // Token might have just expired, try one refresh
+            console.log('[OAuth] Got 401, attempting token refresh...');
+            const refreshed = await refreshAddressBookToken();
+            
+            if (refreshed) {
+                // Retry the request with new token
+                const retryResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users', {
+                    headers: {
+                        'Authorization': `Bearer ${global.addressBookToken}`
+                    }
+                });
+                
+                if (retryResponse.ok) {
+                    const data = await retryResponse.json();
+                    return res.json(data);
+                }
+            }
+            
+            return res.status(401).json({ 
+                error: 'Authentication expired',
+                authUrl: '/api/auth/serverdata/login',
+                message: 'Please re-authenticate with the Address Book'
+            });
+        }
         
         if (!response.ok) {
             throw new Error(`Address Book API error: ${response.status}`);
