@@ -441,6 +441,174 @@ async function getIntermediaToken() {
     }
 }
 
+// ============================================
+// SERVERDATA/ELEVATE OAUTH ENDPOINTS
+// ============================================
+
+/**
+ * Initiate ServerData OAuth flow
+ */
+router.get('/auth/serverdata/login', (req, res) => {
+    const crypto = require('crypto');
+    const deviceId = crypto.randomUUID();
+    
+    const authUrl = new URL('https://login.serverdata.net/user/connect/authorize');
+    authUrl.searchParams.append('client_id', process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ');
+    authUrl.searchParams.append('redirect_uri', 'https://intlxassetmgr-proxy.onrender.com/api/auth/serverdata/callback');
+    authUrl.searchParams.append('response_type', 'code');
+    authUrl.searchParams.append('scope', 'api.user.address-book');
+    authUrl.searchParams.append('state', deviceId);
+    authUrl.searchParams.append('acr_values', `deviceId:${deviceId}`);
+    
+    res.redirect(authUrl.toString());
+});
+
+/**
+ * OAuth callback for ServerData
+ */
+router.get('/auth/serverdata/callback', async (req, res) => {
+    try {
+        const { code, state: deviceId, error } = req.query;
+        
+        if (error) {
+            return res.status(400).json({ error });
+        }
+        
+        if (!code) {
+            return res.status(400).json({ error: 'No authorization code received' });
+        }
+        
+        // Create Basic auth header
+        const clientId = process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ';
+        const clientSecret = process.env.SERVERDATA_CLIENT_SECRET || 'F862FCvwDX8J5JZtV3IQbHKqrWVafD1THU716LCfQuY';
+        const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+        
+        // Exchange code for token
+        const tokenResponse = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${basicAuth}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'authorization_code',
+                code: code,
+                redirect_uri: 'https://intlxassetmgr-proxy.onrender.com/api/auth/serverdata/callback',
+                acr_values: `deviceId:${deviceId}`
+            })
+        });
+        
+        const tokenData = await tokenResponse.json();
+        
+        if (tokenData.access_token) {
+            // Store token in memory (temporary solution)
+            global.addressBookToken = tokenData.access_token;
+            global.addressBookTokenExpiry = Date.now() + (tokenData.expires_in * 1000);
+            
+            res.send(`
+                <html>
+                <head><title>Authentication Successful</title></head>
+                <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+                    <h2 style="color: #2E7D0F;">✓ Authentication Successful!</h2>
+                    <p>The Address Book integration is now active.</p>
+                    <p style="color: #68737D;">You can close this window and return to Zendesk.</p>
+                    <script>
+                        setTimeout(() => window.close(), 3000);
+                    </script>
+                </body>
+                </html>
+            `);
+        } else {
+            res.status(400).json({ error: 'Failed to get token', details: tokenData });
+        }
+        
+    } catch (error) {
+        console.error('OAuth callback error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// ADDRESS BOOK API ENDPOINTS
+// ============================================
+
+/**
+ * Check if we have a valid token
+ */
+router.get('/address-book/status', (req, res) => {
+    const hasToken = global.addressBookToken && global.addressBookTokenExpiry > Date.now();
+    res.json({ 
+        authenticated: hasToken,
+        expiresAt: global.addressBookTokenExpiry || null
+    });
+});
+
+/**
+ * Get user's contacts from Address Book
+ */
+router.get('/address-book/contacts', async (req, res) => {
+    try {
+        const token = global.addressBookToken;
+        
+        if (!token || global.addressBookTokenExpiry < Date.now()) {
+            return res.status(401).json({ 
+                error: 'No valid Address Book token',
+                authUrl: '/api/auth/serverdata/login'
+            });
+        }
+        
+        const response = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Address Book API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        res.json(data);
+        
+    } catch (error) {
+        console.error('Error fetching contacts:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Get all users in the account
+ */
+router.get('/address-book/users', async (req, res) => {
+    try {
+        const token = global.addressBookToken;
+        
+        if (!token || global.addressBookTokenExpiry < Date.now()) {
+            return res.status(401).json({ 
+                error: 'No valid Address Book token',
+                authUrl: '/api/auth/serverdata/login'
+            });
+        }
+        
+        const response = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users', {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Address Book API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        res.json(data);
+        
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 /**
  * Endpoint to test the direct connection to the Zendesk API.
  */
