@@ -48,7 +48,7 @@ if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     google.options({ auth: oauth2Client });
 }
 
-// ADD STEP 2 HERE - Auto-refresh on startup using saved refresh token
+// Auto-refresh ServerData token on startup using saved refresh token
 (async function initializeFromSavedToken() {
     if (process.env.SERVERDATA_REFRESH_TOKEN && !global.addressBookToken) {
         console.log('[OAuth] Found saved refresh token, attempting to get new access token...');
@@ -79,17 +79,12 @@ if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
                 if (tokenData.refresh_token) {
                     global.addressBookRefreshToken = tokenData.refresh_token;
                     
-                    // Log new refresh token if different
-                    if (tokenData.refresh_token && tokenData.refresh_token !== global.addressBookRefreshToken) {
-                    console.log('========================================');
-                    console.log('REFRESH TOKEN UPDATED - Update SERVERDATA_REFRESH_TOKEN in Render:');
-                    console.log(tokenData.refresh_token);
-                    console.log('========================================');
-                }
-                
-                if (tokenData.refresh_token) {
-                    global.addressBookRefreshToken = tokenData.refresh_token;
-                }
+                    if (tokenData.refresh_token !== process.env.SERVERDATA_REFRESH_TOKEN) {
+                        console.log('========================================');
+                        console.log('NEW REFRESH TOKEN - Update SERVERDATA_REFRESH_TOKEN in Render:');
+                        console.log(tokenData.refresh_token);
+                        console.log('========================================');
+                    }
                 }
                 global.addressBookTokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
                 
@@ -503,6 +498,21 @@ async function getIntermediaToken() {
 /**
  * Initiate ServerData OAuth flow
  */
+
+// Helper functions for OAuth
+function generateState() {
+    return require('crypto').randomBytes(16).toString('hex');
+}
+
+function generateDeviceId() {
+    return require('crypto').randomUUID();
+}
+
+// OAuth Configuration for ServerData
+const clientId = process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ';
+const clientSecret = process.env.SERVERDATA_CLIENT_SECRET || 'F862FCvwDX8J5JZtV3IQbHKqrWVafD1THU716LCfQuY';
+const redirectUri = 'https://intlxassetmgr-proxy.onrender.com/api/auth/callback';
+
 router.get('/auth/serverdata/login', (req, res) => {
     const state = req.query.state || generateState();
     const deviceId = req.query.deviceId || generateDeviceId();
