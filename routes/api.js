@@ -521,11 +521,9 @@ router.get('/auth/serverdata/login', (req, res) => {
     authUrl.searchParams.append('client_id', clientId);
     authUrl.searchParams.append('redirect_uri', redirectUri);
     authUrl.searchParams.append('response_type', 'code');
-    authUrl.searchParams.append('scope', 'api.user.address-book offline_access');  
+    authUrl.searchParams.append('scope', 'api.user.address-book');  
     authUrl.searchParams.append('state', state);
     authUrl.searchParams.append('acr_values', `deviceId:${deviceId}`);
-    authUrl.searchParams.append('access_type', 'offline');
-    authUrl.searchParams.append('prompt', 'consent');
     
     console.log('[OAuth] Redirecting to:', authUrl.toString());
     console.log('[OAuth] Device ID:', deviceId);
