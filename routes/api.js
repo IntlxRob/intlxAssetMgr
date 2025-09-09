@@ -454,7 +454,7 @@ router.get('/auth/serverdata/login', (req, res) => {
     
     const authUrl = new URL('https://login.serverdata.net/user/connect/authorize');
     authUrl.searchParams.append('client_id', process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ');
-    authUrl.searchParams.append('redirect_uri', 'https://intlxassetmgr-proxy.onrender.com/api/auth/serverdata/callback');
+    authUrl.searchParams.append('redirect_uri', 'https://intlxassetmgr-proxy.onrender.com/api/auth/callback');  // FIXED
     authUrl.searchParams.append('response_type', 'code');
     authUrl.searchParams.append('scope', 'api.user.address-book');
     authUrl.searchParams.append('state', deviceId);
@@ -466,7 +466,7 @@ router.get('/auth/serverdata/login', (req, res) => {
 /**
  * OAuth callback for ServerData
  */
-router.get('/auth/serverdata/callback', async (req, res) => {
+router.get('/auth/callback', async (req, res) => {  // FIXED route path
     try {
         const { code, state: deviceId, error } = req.query;
         
@@ -493,7 +493,7 @@ router.get('/auth/serverdata/callback', async (req, res) => {
             body: new URLSearchParams({
                 grant_type: 'authorization_code',
                 code: code,
-                redirect_uri: 'https://intlxassetmgr-proxy.onrender.com/api/auth/serverdata/callback',
+                redirect_uri: 'https://intlxassetmgr-proxy.onrender.com/api/auth/callback',  // FIXED
                 acr_values: `deviceId:${deviceId}`
             })
         });
