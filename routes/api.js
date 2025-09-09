@@ -541,11 +541,12 @@ router.get('/auth/callback', async (req, res) => {
 async function refreshAddressBookToken() {
     try {
         if (!global.addressBookRefreshToken) {
-            console.log('[OAuth] No refresh token available');
+            console.log('[OAuth] No refresh token available at', new Date().toISOString());
             return false;
         }
         
-        console.log('[OAuth] Refreshing address book token...');
+        console.log('[OAuth] Starting token refresh at', new Date().toISOString());
+        console.log('[OAuth] Old token expiry was:', new Date(global.addressBookTokenExpiry).toISOString());
         
         const clientId = process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ';
         const clientSecret = process.env.SERVERDATA_CLIENT_SECRET || 'F862FCvwDX8J5JZtV3IQbHKqrWVafD1THU716LCfQuY';
@@ -579,7 +580,16 @@ async function refreshAddressBookToken() {
             }
             global.addressBookTokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
             
-            console.log('[OAuth] Token refreshed successfully, expires in', tokenData.expires_in, 'seconds');
+            console.log('[OAuth] Token refreshed successfully at', new Date().toISOString());
+            console.log('[OAuth] New token expires at:', new Date(global.addressBookTokenExpiry).toISOString());
+            
+            // Track refresh history
+            if (!global.refreshHistory) global.refreshHistory = [];
+            global.refreshHistory.push({
+                refreshedAt: new Date().toISOString(),
+                expiresAt: new Date(global.addressBookTokenExpiry).toISOString()
+            });
+            
             return true;
         }
         
@@ -734,6 +744,42 @@ router.get('/address-book/users', async (req, res) => {
         console.error('Error fetching users:', error);
         res.status(500).json({ error: error.message });
     }
+});
+
+/**
+ * Test endpoint to simulate token expiry
+ */
+router.get('/address-book/test-expire', (req, res) => {
+    // Store original expiry for restoration
+    const originalExpiry = global.addressBookTokenExpiry;
+    
+    // Set token to expire in 5 seconds
+    global.addressBookTokenExpiry = Date.now() + 5000;
+    
+    res.json({
+        message: 'Token will expire in 5 seconds',
+        expiresAt: new Date(global.addressBookTokenExpiry).toISOString(),
+        originalExpiry: originalExpiry ? new Date(originalExpiry).toISOString() : null,
+        instructions: 'Wait 5 seconds, then try fetching contacts. If auto-refresh works, it should succeed.'
+    });
+});
+
+/**
+ * Check token refresh history
+ */
+router.get('/address-book/refresh-history', (req, res) => {
+    res.json({
+        currentStatus: {
+            hasToken: !!global.addressBookToken,
+            hasRefreshToken: !!global.addressBookRefreshToken,
+            expiresAt: global.addressBookTokenExpiry ? new Date(global.addressBookTokenExpiry).toISOString() : null,
+            expiresInSeconds: global.addressBookTokenExpiry ? Math.floor((global.addressBookTokenExpiry - Date.now()) / 1000) : null
+        },
+        refreshHistory: global.refreshHistory || [],
+        message: global.refreshHistory?.length > 0 ? 
+            `Token has been auto-refreshed ${global.refreshHistory.length} time(s)` : 
+            'No auto-refresh has occurred yet'
+    });
 });
 
 /**
