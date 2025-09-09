@@ -459,6 +459,10 @@ router.get('/auth/serverdata/login', (req, res) => {
     authUrl.searchParams.append('scope', 'api.user.address-book');
     authUrl.searchParams.append('state', deviceId);
     authUrl.searchParams.append('acr_values', `deviceId:${deviceId}`);
+
+    // Add logging to debug
+    console.log('[OAuth] Redirecting to:', authUrl.toString());
+    console.log('[OAuth] Device ID:', deviceId);
     
     res.redirect(authUrl.toString());
 });
