@@ -617,6 +617,27 @@ router.get('/address-book/status', (req, res) => {
 });
 
 /**
+ * Debug endpoint to check token details
+ */
+router.get('/address-book/debug', (req, res) => {
+    const now = Date.now();
+    const hasToken = !!global.addressBookToken;
+    const hasRefreshToken = !!global.addressBookRefreshToken;
+    const isExpired = global.addressBookTokenExpiry ? global.addressBookTokenExpiry < now : true;
+    const timeUntilExpiry = global.addressBookTokenExpiry ? Math.floor((global.addressBookTokenExpiry - now) / 1000) : null;
+    
+    res.json({
+        hasToken,
+        hasRefreshToken,
+        isExpired,
+        timeUntilExpiry,
+        expiryTime: global.addressBookTokenExpiry ? new Date(global.addressBookTokenExpiry).toISOString() : null,
+        currentTime: new Date(now).toISOString(),
+        tokenPreview: hasToken ? `${global.addressBookToken.substring(0, 10)}...` : null
+    });
+});
+
+/**
  * Get user's contacts from Address Book
  */
 router.get('/address-book/contacts', async (req, res) => {
