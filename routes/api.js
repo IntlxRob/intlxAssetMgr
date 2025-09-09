@@ -48,6 +48,61 @@ if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     google.options({ auth: oauth2Client });
 }
 
+// ADD STEP 2 HERE - Auto-refresh on startup using saved refresh token
+(async function initializeFromSavedToken() {
+    if (process.env.SERVERDATA_REFRESH_TOKEN && !global.addressBookToken) {
+        console.log('[OAuth] Found saved refresh token, attempting to get new access token...');
+        
+        global.addressBookRefreshToken = process.env.SERVERDATA_REFRESH_TOKEN;
+        
+        try {
+            const clientId = process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ';
+            const clientSecret = process.env.SERVERDATA_CLIENT_SECRET || 'F862FCvwDX8J5JZtV3IQbHKqrWVafD1THU716LCfQuY';
+            const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+            
+            const response = await fetch('https://login.serverdata.net/user/connect/token', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Basic ${basicAuth}`,
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: new URLSearchParams({
+                    grant_type: 'refresh_token',
+                    refresh_token: process.env.SERVERDATA_REFRESH_TOKEN
+                })
+            });
+            
+            if (response.ok) {
+                const tokenData = await response.json();
+                
+                global.addressBookToken = tokenData.access_token;
+                if (tokenData.refresh_token) {
+                    global.addressBookRefreshToken = tokenData.refresh_token;
+                    
+                    // Log new refresh token if different
+                    if (tokenData.refresh_token && tokenData.refresh_token !== global.addressBookRefreshToken) {
+                    console.log('========================================');
+                    console.log('REFRESH TOKEN UPDATED - Update SERVERDATA_REFRESH_TOKEN in Render:');
+                    console.log(tokenData.refresh_token);
+                    console.log('========================================');
+                }
+                
+                if (tokenData.refresh_token) {
+                    global.addressBookRefreshToken = tokenData.refresh_token;
+                }
+                }
+                global.addressBookTokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+                
+                console.log('[OAuth] Successfully initialized with saved refresh token');
+            } else {
+                console.error('[OAuth] Failed to refresh with saved token:', response.status);
+            }
+        } catch (error) {
+            console.error('[OAuth] Error using saved refresh token:', error);
+        }
+    }
+})();
+
 /**
  * Debug endpoint to search for companies containing specific text
  */
@@ -509,6 +564,16 @@ router.get('/auth/callback', async (req, res) => {
             global.addressBookToken = tokenData.access_token;
             global.addressBookRefreshToken = tokenData.refresh_token;  // ADDED
             global.addressBookTokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000); // Refresh 5 min early
+            
+            // Log refresh token for manual saving
+            if (tokenData.refresh_token) {
+                console.log('========================================');
+                console.log('IMPORTANT: Save this refresh token as SERVERDATA_REFRESH_TOKEN in Render:');
+                console.log(tokenData.refresh_token);
+                console.log('========================================');
+            } else {
+                console.log('[OAuth] WARNING: No refresh token received from server');
+            }
             
             console.log('[OAuth] Token stored successfully, expires in', tokenData.expires_in, 'seconds');
             
