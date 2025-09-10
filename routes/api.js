@@ -628,7 +628,583 @@ async function getIntermediaToken() {
     }
 }
 
-// ADD THIS NEW FUNCTION HERE:
+// ============================================
+// UPDATED PRESENCE INTEGRATION - FOLLOWING OFFICIAL API SPEC
+// ============================================
+
+/**
+ * Enhanced presence fetching following official Elevate Services API spec
+ * Based on: https://developer.elevate.services/api/spec/messaging/index.html#dev-guide-presences-guide
+ */
+
+/**
+ * Get messaging token with presence-specific scope
+ */
+async function getMessagingTokenForPresence() {
+    try {
+        console.log('[Presence] Requesting messaging token with presence scope...');
+        
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.service.messaging api.service.messaging.presences' // Enhanced scope for presence
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Presence token request failed: ${response.status}`);
+        }
+
+        const tokenData = await response.json();
+        console.log('[Presence] Got messaging token with presence scope successfully');
+        
+        return tokenData.access_token;
+        
+    } catch (error) {
+        console.error('[Presence] Error getting messaging token:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Fetch presence data using official API endpoints
+ */
+async function fetchPresenceData() {
+    try {
+        const token = await getMessagingTokenForPresence();
+        console.log('[Presence] Fetching presence data using official API spec...');
+
+        // Method 1: Try to get all presences at once (most efficient)
+        const bulkPresenceEndpoints = [
+            'https://api.elevate.services/messaging/v1/presences',
+            'https://api.elevate.services/messaging/v1/accounts/_me/presences',
+            'https://api.elevate.services/messaging/v1/presences/users'
+        ];
+
+        for (const endpoint of bulkPresenceEndpoints) {
+            try {
+                console.log(`[Presence] Trying bulk presence endpoint: ${endpoint}`);
+                
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                console.log(`[Presence] ${endpoint} returned: ${response.status}`);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(`[Presence] Bulk presence data from ${endpoint}:`, JSON.stringify(data, null, 2));
+                    
+                    const presences = extractPresenceArray(data);
+                    if (presences.length > 0) {
+                        console.log(`[Presence] Successfully got ${presences.length} presences from bulk endpoint`);
+                        return presences;
+                    }
+                } else {
+                    const errorText = await response.text();
+                    console.log(`[Presence] ${endpoint} error: ${errorText}`);
+                }
+            } catch (endpointError) {
+                console.log(`[Presence] ${endpoint} failed:`, endpointError.message);
+            }
+        }
+
+        // Method 2: Get users first, then individual presences
+        console.log('[Presence] Bulk endpoints failed, trying user-based approach...');
+        
+        const users = await fetchUsersForPresence(token);
+        if (users.length === 0) {
+            console.log('[Presence] No users found for presence lookup');
+            return [];
+        }
+
+        console.log(`[Presence] Found ${users.length} users, fetching individual presences...`);
+        
+        const presences = [];
+        const BATCH_SIZE = 5; // Process in small batches to avoid rate limits
+        
+        for (let i = 0; i < users.length; i += BATCH_SIZE) {
+            const batch = users.slice(i, i + BATCH_SIZE);
+            
+            const batchPromises = batch.map(async (user) => {
+                return await fetchUserPresence(token, user);
+            });
+            
+            const batchResults = await Promise.all(batchPromises);
+            presences.push(...batchResults.filter(p => p !== null));
+            
+            // Small delay between batches
+            if (i + BATCH_SIZE < users.length) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+        }
+        
+        console.log(`[Presence] Collected ${presences.length} presence records`);
+        return presences;
+
+    } catch (error) {
+        console.error('[Presence] Error fetching presence data:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Extract presence array from various response formats
+ */
+function extractPresenceArray(data) {
+    if (Array.isArray(data)) {
+        return data;
+    }
+    
+    // Try common response wrapper patterns
+    if (data.presences && Array.isArray(data.presences)) {
+        return data.presences;
+    }
+    
+    if (data.data && Array.isArray(data.data)) {
+        return data.data;
+    }
+    
+    if (data.results && Array.isArray(data.results)) {
+        return data.results;
+    }
+    
+    if (data.items && Array.isArray(data.items)) {
+        return data.items;
+    }
+    
+    // If it's a single presence object, wrap it in an array
+    if (data.userId || data.unifiedUserId || data.presence) {
+        return [data];
+    }
+    
+    return [];
+}
+
+/**
+ * Fetch users for presence lookup
+ */
+async function fetchUsersForPresence(token) {
+    const userEndpoints = [
+        'https://api.elevate.services/messaging/v1/accounts/_me/users',
+        'https://api.elevate.services/messaging/v1/users',
+        'https://api.elevate.services/address-book/v3/accounts/_me/users'
+    ];
+
+    for (const endpoint of userEndpoints) {
+        try {
+            console.log(`[Presence] Fetching users from: ${endpoint}`);
+            
+            const response = await fetch(endpoint, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                const users = extractPresenceArray(data);
+                
+                if (users.length > 0) {
+                    console.log(`[Presence] Found ${users.length} users from ${endpoint}`);
+                    return users;
+                }
+            }
+        } catch (error) {
+            console.log(`[Presence] Failed to fetch users from ${endpoint}:`, error.message);
+        }
+    }
+    
+    return [];
+}
+
+/**
+ * Fetch presence for individual user
+ */
+async function fetchUserPresence(token, user) {
+    try {
+        const userId = user.id || user.unifiedUserId || user.userId;
+        if (!userId) {
+            return null;
+        }
+
+        // Try multiple presence endpoint patterns from the official spec
+        const presenceEndpoints = [
+            `https://api.elevate.services/messaging/v1/presences/${userId}`,
+            `https://api.elevate.services/messaging/v1/accounts/_me/users/${userId}/presence`,
+            `https://api.elevate.services/messaging/v1/users/${userId}/presence`,
+            `https://api.elevate.services/messaging/v1/presence/users/${userId}`
+        ];
+
+        for (const endpoint of presenceEndpoints) {
+            try {
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (response.ok) {
+                    const presenceData = await response.json();
+                    console.log(`[Presence] Got presence for user ${userId} from ${endpoint}`);
+                    
+                    return {
+                        userId: userId,
+                        user: user,
+                        presence: presenceData,
+                        source: endpoint
+                    };
+                }
+            } catch (error) {
+                // Continue to next endpoint
+            }
+        }
+        
+        console.log(`[Presence] No presence data found for user ${userId}`);
+        return null;
+        
+    } catch (error) {
+        console.error(`[Presence] Error fetching presence for user:`, error.message);
+        return null;
+    }
+}
+
+/**
+ * Enhanced function to get address book contacts with proper presence data
+ */
+async function getContactsWithEnhancedPresence() {
+    try {
+        // Check if token needs refresh
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            console.log('[Presence] Address book token expired, attempting refresh...');
+            const refreshed = await refreshAddressBookToken();
+            if (!refreshed) {
+                throw new Error('Address book authentication required');
+            }
+        }
+
+        // Step 1: Get address book contacts
+        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        if (!contactsResponse.ok) {
+            throw new Error(`Address Book API error: ${contactsResponse.status}`);
+        }
+        
+        const contactsData = await contactsResponse.json();
+        const contacts = contactsData.results || [];
+        
+        console.log(`[Presence] Found ${contacts.length} address book contacts`);
+
+        // Step 2: Get presence data using proper API
+        const presenceData = await fetchPresenceData();
+        console.log(`[Presence] Found ${presenceData.length} presence records`);
+
+        // Step 3: Merge contacts with presence data
+        const contactsWithPresence = contacts.map(contact => {
+            // Find matching presence data by user ID or email
+            const matchingPresence = presenceData.find(p => {
+                const presenceUserId = p.userId || p.user?.id || p.user?.unifiedUserId;
+                const presenceEmail = p.user?.email || p.presence?.email;
+                
+                return presenceUserId === contact.id || 
+                       presenceEmail === contact.email ||
+                       (p.presence?.userId && p.presence.userId === contact.id);
+            });
+
+            let presenceInfo = {
+                status: 'unknown',
+                message: '',
+                lastUpdated: new Date().toISOString(),
+                source: 'none'
+            };
+
+            if (matchingPresence) {
+                const presence = matchingPresence.presence || {};
+                presenceInfo = {
+                    status: normalizePresenceStatus(presence.presence || presence.status),
+                    message: presence.message || presence.statusMessage || '',
+                    activity: presence.activity || '',
+                    lastUpdated: presence.lastUpdated || presence.lastSeen || new Date().toISOString(),
+                    source: 'messaging_api',
+                    rawData: presence // For debugging
+                };
+            }
+
+            return {
+                ...contact,
+                presence: presenceInfo
+            };
+        });
+
+        // Generate statistics
+        const presenceStats = contactsWithPresence.reduce((stats, contact) => {
+            const status = contact.presence?.status || 'unknown';
+            stats[status] = (stats[status] || 0) + 1;
+            return stats;
+        }, {});
+
+        console.log(`[Presence] Enhanced ${contactsWithPresence.length} contacts with presence data`);
+        console.log(`[Presence] Presence distribution:`, presenceStats);
+
+        return {
+            results: contactsWithPresence,
+            total: contactsWithPresence.length,
+            presenceStats,
+            lastUpdated: new Date().toISOString(),
+            apiEndpointsUsed: {
+                addressBook: 'https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts',
+                presence: 'Multiple messaging API endpoints (see logs)'
+            }
+        };
+        
+    } catch (error) {
+        console.error('[Presence] Error getting contacts with enhanced presence:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Normalize presence status to standard values
+ */
+function normalizePresenceStatus(status) {
+    if (!status) return 'unknown';
+    
+    const normalized = status.toLowerCase().trim();
+    
+    // Map API values to standard statuses
+    switch (normalized) {
+        case 'available':
+        case 'online':
+        case 'active':
+        case 'ready':
+            return 'available';
+            
+        case 'busy':
+        case 'dnd':
+        case 'do not disturb':
+        case 'occupied':
+        case 'in_meeting':
+        case 'meeting':
+            return 'busy';
+            
+        case 'away':
+        case 'idle':
+        case 'absent':
+        case 'temporarily_away':
+            return 'away';
+            
+        case 'offline':
+        case 'invisible':
+        case 'disconnected':
+            return 'offline';
+            
+        default:
+            return 'unknown';
+    }
+}
+
+/**
+ * Updated API endpoint with enhanced presence integration
+ */
+router.get('/address-book/contacts-with-presence', async (req, res) => {
+    try {
+        console.log('[API] Enhanced presence request received');
+        
+        // Check if token needs refresh
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            console.log('[Presence] Address book token expired, attempting refresh...');
+            const refreshed = await refreshAddressBookToken();
+            if (!refreshed) {
+                return res.status(401).json({ 
+                    error: 'Authentication required',
+                    authUrl: '/api/auth/serverdata/login',
+                    message: 'Please re-authenticate with the Address Book'
+                });
+            }
+        }
+
+        // Step 1: Get address book contacts
+        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        if (!contactsResponse.ok) {
+            throw new Error(`Address Book API error: ${contactsResponse.status}`);
+        }
+        
+        const contactsData = await contactsResponse.json();
+        const contacts = contactsData.results || [];
+        
+        console.log(`[Presence] Found ${contacts.length} address book contacts`);
+
+        // Step 2: Get presence data using proper API
+        const presenceData = await fetchPresenceData();
+        console.log(`[Presence] Found ${presenceData.length} presence records`);
+
+        // Step 3: Merge contacts with presence data
+        const contactsWithPresence = contacts.map(contact => {
+            // Find matching presence data by user ID or email
+            const matchingPresence = presenceData.find(p => {
+                const presenceUserId = p.userId || p.user?.id || p.user?.unifiedUserId;
+                const presenceEmail = p.user?.email || p.presence?.email;
+                
+                return presenceUserId === contact.id || 
+                       presenceEmail === contact.email ||
+                       (p.presence?.userId && p.presence.userId === contact.id);
+            });
+
+            let presenceInfo = {
+                status: 'unknown',
+                message: '',
+                lastUpdated: new Date().toISOString(),
+                source: 'none'
+            };
+
+            if (matchingPresence) {
+                const presence = matchingPresence.presence || {};
+                presenceInfo = {
+                    status: normalizePresenceStatus(presence.presence || presence.status),
+                    message: presence.message || presence.statusMessage || '',
+                    activity: presence.activity || '',
+                    lastUpdated: presence.lastUpdated || presence.lastSeen || new Date().toISOString(),
+                    source: 'messaging_api',
+                    rawData: presence // For debugging
+                };
+            }
+
+            return {
+                ...contact,
+                presence: presenceInfo
+            };
+        });
+
+        // Generate statistics
+        const presenceStats = contactsWithPresence.reduce((stats, contact) => {
+            const status = contact.presence?.status || 'unknown';
+            stats[status] = (stats[status] || 0) + 1;
+            return stats;
+        }, {});
+
+        console.log(`[Presence] Enhanced ${contactsWithPresence.length} contacts with presence data`);
+        console.log(`[Presence] Presence distribution:`, presenceStats);
+
+        res.json({
+            results: contactsWithPresence,
+            total: contactsWithPresence.length,
+            presenceStats,
+            lastUpdated: new Date().toISOString(),
+            apiEndpointsUsed: {
+                addressBook: 'https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts',
+                presence: 'Multiple messaging API endpoints (see logs)'
+            }
+        });
+        
+    } catch (error) {
+        console.error('[API] Error in enhanced presence endpoint:', error.message);
+        
+        if (error.message.includes('authentication required')) {
+            res.status(401).json({ 
+                error: 'Authentication required',
+                authUrl: '/api/auth/serverdata/login',
+                message: 'Please re-authenticate with the Address Book'
+            });
+        } else {
+            res.status(500).json({ 
+                error: error.message,
+                fallback: 'Trying basic contacts without presence...'
+            });
+        }
+    }
+});
+
+/**
+ * Debug endpoint to test presence API endpoints
+ */
+router.get('/debug-presence-endpoints', async (req, res) => {
+    try {
+        const token = await getMessagingTokenForPresence();
+        
+        const testEndpoints = [
+            'https://api.elevate.services/messaging/v1/presences',
+            'https://api.elevate.services/messaging/v1/accounts/_me/presences',
+            'https://api.elevate.services/messaging/v1/users',
+            'https://api.elevate.services/messaging/v1/accounts/_me/users'
+        ];
+        
+        const results = [];
+        
+        for (const endpoint of testEndpoints) {
+            try {
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                const result = {
+                    endpoint,
+                    status: response.status,
+                    statusText: response.statusText
+                };
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    result.dataType = Array.isArray(data) ? 'array' : 'object';
+                    result.dataLength = Array.isArray(data) ? data.length : Object.keys(data).length;
+                    result.sampleData = Array.isArray(data) ? data[0] : data;
+                } else {
+                    result.error = await response.text();
+                }
+                
+                results.push(result);
+                
+            } catch (error) {
+                results.push({
+                    endpoint,
+                    error: error.message,
+                    failed: true
+                });
+            }
+        }
+        
+        res.json({
+            success: true,
+            tokenObtained: true,
+            endpointTests: results,
+            recommendation: 'Use the endpoint that returns status 200 with data for your presence integration'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            recommendation: 'Check your INTERMEDIA_CLIENT_ID and INTERMEDIA_CLIENT_SECRET environment variables'
+        });
+    }
+});
+
+//
 /**
  * Get Intermedia calling token for phone status
  */
