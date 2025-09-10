@@ -1010,6 +1010,161 @@ router.get('/debug-intermedia-token', async (req, res) => {
     }
 });
 
+/**
+ * Debug endpoint to find working user listing endpoints
+ */
+router.get('/debug-intermedia-users', async (req, res) => {
+    try {
+        const token = await getIntermediaToken();
+        
+        // Focus on finding user listing endpoints first
+        const userListEndpoints = [
+            // Messaging API variations
+            'https://api.elevate.services/messaging/v1/accounts/_me/users',
+            'https://api.elevate.services/messaging/v1/users',
+            'https://api.elevate.services/messaging/v1/accounts/_me',
+            'https://api.elevate.services/messaging/v1/account/users',
+            
+            // Address book (your working scope)
+            'https://api.elevate.services/address-book/v3/accounts/_me/users',
+            'https://api.elevate.services/address-book/v3/accounts/_me',
+            'https://api.elevate.services/address-book/v3/users',
+            
+            // Messaging service variations
+            'https://api.elevate.services/service/messaging/v1/accounts/_me/users',
+            'https://api.elevate.services/api/messaging/v1/accounts/_me/users',
+        ];
+        
+        const results = [];
+        let workingUserEndpoint = null;
+        let users = [];
+        
+        for (const endpoint of userListEndpoints) {
+            try {
+                console.log(`[Discovery] Testing: ${endpoint}`);
+                
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = {
+                    endpoint,
+                    status: response.status,
+                    statusText: response.statusText
+                };
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    result.data = data;
+                    result.hasData = true;
+                    
+                    // Try to extract users from response
+                    let foundUsers = [];
+                    if (Array.isArray(data)) {
+                        foundUsers = data;
+                    } else if (data.users && Array.isArray(data.users)) {
+                        foundUsers = data.users;
+                    } else if (data.data && Array.isArray(data.data)) {
+                        foundUsers = data.data;
+                    } else if (data.results && Array.isArray(data.results)) {
+                        foundUsers = data.results;
+                    }
+                    
+                    if (foundUsers.length > 0) {
+                        workingUserEndpoint = endpoint;
+                        users = foundUsers;
+                        result.userCount = foundUsers.length;
+                        result.sampleUser = foundUsers[0];
+                        console.log(`[Discovery] Found ${foundUsers.length} users at ${endpoint}`);
+                        break; // Found working endpoint, stop searching
+                    }
+                } else {
+                    result.error = await response.text();
+                }
+                
+                results.push(result);
+                
+            } catch (error) {
+                results.push({
+                    endpoint,
+                    error: error.message,
+                    failed: true
+                });
+            }
+        }
+        
+        // If we found users, test presence endpoints with actual user IDs
+        let presenceResults = [];
+        if (workingUserEndpoint && users.length > 0) {
+            const firstUser = users[0];
+            const userId = firstUser.id || firstUser.unifiedUserId || firstUser.userId;
+            
+            if (userId) {
+                const presenceEndpoints = [
+                    `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${userId}`,
+                    `https://api.elevate.services/messaging/v1/users/${userId}/presence`,
+                    `https://api.elevate.services/address-book/v3/accounts/_me/users/${userId}/presence`,
+                ];
+                
+                for (const presenceEndpoint of presenceEndpoints) {
+                    try {
+                        console.log(`[Discovery] Testing presence: ${presenceEndpoint}`);
+                        
+                        const response = await fetch(presenceEndpoint, {
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                        
+                        const presenceResult = {
+                            endpoint: presenceEndpoint,
+                            status: response.status,
+                            userId: userId
+                        };
+                        
+                        if (response.ok) {
+                            presenceResult.data = await response.json();
+                            presenceResult.hasData = true;
+                        } else {
+                            presenceResult.error = await response.text();
+                        }
+                        
+                        presenceResults.push(presenceResult);
+                        
+                    } catch (error) {
+                        presenceResults.push({
+                            endpoint: presenceEndpoint,
+                            error: error.message,
+                            failed: true
+                        });
+                    }
+                }
+            }
+        }
+        
+        res.json({
+            success: true,
+            workingUserEndpoint,
+            userCount: users.length,
+            sampleUsers: users.slice(0, 3),
+            userListResults: results,
+            presenceTestResults: presenceResults,
+            conclusion: workingUserEndpoint ? 
+                `Found users at ${workingUserEndpoint}. Test presence endpoints above.` :
+                'No working user listing endpoint found. Check scope permissions.'
+        });
+        
+    } catch (error) {
+        res.json({
+            error: error.message
+        });
+    }
+});
+
 // ============================================
 // SERVERDATA/ELEVATE OAUTH ENDPOINTS
 // ============================================
