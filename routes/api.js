@@ -494,24 +494,24 @@ async function getIntermediaToken() {
 }
 
 /**
- * Fetch agent statuses from Intermedia Voice API
+ * Fetch agent statuses from Intermedia Messaging API
  */
 async function fetchAgentStatuses() {
     try {
         const token = await getIntermediaToken();
-        console.log('[Agent Status] Fetching agent statuses from Intermedia');
+        console.log('[Agent Status] Fetching agent statuses from Intermedia Messaging API');
 
-        // Try multiple endpoints to get agent/device status
-        const endpoints = [
-            'https://api.elevate.services/voice/v2/devices',
-            'https://api.elevate.services/voice/v2/users',
-            'https://api.elevate.services/voice/v2/presence',
-            'https://api.elevate.services/voice/v2/users/_me'
+        // Step 1: Try to get list of users in the account
+        const userEndpoints = [
+            'https://api.elevate.services/messaging/v1/accounts/_me/users',
+            'https://api.elevate.services/messaging/v1/users',
+            'https://api.elevate.services/messaging/v1/accounts/_me'
         ];
 
-        for (const endpoint of endpoints) {
+        let users = [];
+        for (const endpoint of userEndpoints) {
             try {
-                console.log(`[Agent Status] Trying endpoint: ${endpoint}`);
+                console.log(`[Agent Status] Trying users endpoint: ${endpoint}`);
                 
                 const response = await fetch(endpoint, {
                     headers: {
@@ -524,10 +524,23 @@ async function fetchAgentStatuses() {
 
                 if (response.ok) {
                     const data = await response.json();
-                    console.log(`[Agent Status] Success! Data from ${endpoint}:`, JSON.stringify(data, null, 2));
+                    console.log(`[Agent Status] Users data from ${endpoint}:`, JSON.stringify(data, null, 2));
                     
-                    // Process the successful response
-                    return processAgentStatusData(data, endpoint);
+                    // Extract users from different possible response formats
+                    if (Array.isArray(data)) {
+                        users = data;
+                    } else if (data.users && Array.isArray(data.users)) {
+                        users = data.users;
+                    } else if (data.data && Array.isArray(data.data)) {
+                        users = data.data;
+                    } else if (data.results && Array.isArray(data.results)) {
+                        users = data.results;
+                    }
+                    
+                    if (users.length > 0) {
+                        console.log(`[Agent Status] Found ${users.length} users, breaking loop`);
+                        break;
+                    }
                 } else {
                     const errorText = await response.text();
                     console.log(`[Agent Status] ${endpoint} error: ${errorText}`);
@@ -537,83 +550,178 @@ async function fetchAgentStatuses() {
             }
         }
 
-        // If all endpoints fail, return mock data
-        console.log('[Agent Status] All endpoints failed, returning mock data');
+        if (users.length === 0) {
+            console.log('[Agent Status] No users found, trying direct presence endpoints');
+            
+            // Step 2: Try direct presence endpoints if no users found
+            const presenceEndpoints = [
+                'https://api.elevate.services/messaging/v1/presence/accounts/_me',
+                'https://api.elevate.services/messaging/v1/presence',
+                'https://api.elevate.services/messaging/v1/users/_me/presence'
+            ];
+
+            for (const endpoint of presenceEndpoints) {
+                try {
+                    console.log(`[Agent Status] Trying presence endpoint: ${endpoint}`);
+                    
+                    const response = await fetch(endpoint, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    console.log(`[Agent Status] ${endpoint} returned: ${response.status}`);
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        console.log(`[Agent Status] Presence data from ${endpoint}:`, JSON.stringify(data, null, 2));
+                        
+                        // Process presence data directly
+                        return processMessagingPresenceData(data, endpoint);
+                    } else {
+                        const errorText = await response.text();
+                        console.log(`[Agent Status] ${endpoint} error: ${errorText}`);
+                    }
+                } catch (endpointError) {
+                    console.log(`[Agent Status] ${endpoint} failed:`, endpointError.message);
+                }
+            }
+        } else {
+            // Step 3: Get presence for each user
+            console.log(`[Agent Status] Fetching presence for ${users.length} users`);
+            const agents = [];
+
+            for (const user of users.slice(0, 10)) { // Limit to first 10 users to avoid rate limits
+                try {
+                    const userId = user.id || user.unifiedUserId || user.userId;
+                    if (!userId) {
+                        console.log('[Agent Status] Skipping user with no ID:', user);
+                        continue;
+                    }
+
+                    console.log(`[Agent Status] Getting presence for user ${userId}`);
+                    
+                    const presenceUrl = `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${userId}`;
+                    const presenceResponse = await fetch(presenceUrl, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    if (presenceResponse.ok) {
+                        const presenceData = await presenceResponse.json();
+                        console.log(`[Agent Status] Presence for user ${userId}:`, presenceData);
+                        
+                        agents.push({
+                            id: userId,
+                            name: user.displayName || user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim() || `User ${userId}`,
+                            email: user.email || `user${userId}@company.com`,
+                            extension: user.extension || presenceData.extension || 'N/A',
+                            status: mapMessagingStatus(presenceData.status || presenceData.presence),
+                            onCall: presenceData.onCall || presenceData.inCall || false,
+                            lastActivity: presenceData.lastActivity || presenceData.lastSeen || new Date().toISOString(),
+                            rawPresence: presenceData
+                        });
+                    } else {
+                        console.log(`[Agent Status] Failed to get presence for user ${userId}: ${presenceResponse.status}`);
+                        
+                        // Add user without presence info
+                        agents.push({
+                            id: userId,
+                            name: user.displayName || user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim() || `User ${userId}`,
+                            email: user.email || `user${userId}@company.com`,
+                            extension: user.extension || 'N/A',
+                            status: 'unknown',
+                            onCall: false,
+                            lastActivity: new Date().toISOString()
+                        });
+                    }
+                } catch (userError) {
+                    console.log(`[Agent Status] Error processing user:`, userError.message);
+                }
+            }
+
+            if (agents.length > 0) {
+                console.log(`[Agent Status] Successfully processed ${agents.length} agents with messaging API`);
+                return agents;
+            }
+        }
+
+        // If all messaging endpoints fail, return mock data
+        console.log('[Agent Status] All messaging endpoints failed, returning mock data');
         return getMockAgentStatuses();
 
     } catch (error) {
-        console.error('[Agent Status] Error fetching from Intermedia:', error.message);
+        console.error('[Agent Status] Error fetching from Intermedia Messaging API:', error.message);
         return getMockAgentStatuses();
     }
 }
 
 /**
- * Process agent status data based on which endpoint succeeded
+ * Process presence data from messaging API
  */
-function processAgentStatusData(data, endpoint) {
+function processMessagingPresenceData(data, endpoint) {
+    console.log('[Agent Status] Processing messaging presence data');
     const agents = [];
 
-    if (endpoint.includes('/devices')) {
-        // Process device data for phone status
-        if (Array.isArray(data)) {
-            data.forEach(device => {
-                agents.push({
-                    id: device.id || device.extension,
-                    name: device.displayName || device.name || `Extension ${device.extension}`,
-                    email: device.email || `${device.extension}@company.com`,
-                    extension: device.extension || 'N/A',
-                    status: device.status === 'online' ? 'available' : device.status || 'offline',
-                    onCall: device.inCall || device.busy || false,
-                    lastActivity: device.lastActivity || new Date().toISOString(),
-                    deviceType: device.type || 'phone'
-                });
-            });
-        }
-    } else if (endpoint.includes('/users')) {
-        // Process user data
-        if (Array.isArray(data)) {
-            data.forEach(user => {
-                agents.push({
-                    id: user.id,
-                    name: user.displayName || user.firstName + ' ' + user.lastName,
-                    email: user.email,
-                    extension: user.extension || 'N/A',
-                    status: user.presenceStatus || 'available',
-                    onCall: user.onCall || false,
-                    lastActivity: user.lastActivity || new Date().toISOString()
-                });
-            });
-        } else if (data.id) {
-            // Single user response
-            agents.push({
-                id: data.id,
-                name: data.displayName || data.firstName + ' ' + data.lastName,
-                email: data.email,
-                extension: data.extension || 'N/A',
-                status: data.presenceStatus || 'available',
-                onCall: data.onCall || false,
-                lastActivity: data.lastActivity || new Date().toISOString()
-            });
-        }
-    } else if (endpoint.includes('/presence')) {
-        // Process presence data
-        if (Array.isArray(data)) {
-            data.forEach(presence => {
-                agents.push({
-                    id: presence.userId,
-                    name: presence.displayName || 'Unknown User',
-                    email: presence.email || 'unknown@company.com',
-                    extension: presence.extension || 'N/A',
-                    status: presence.status || 'available',
-                    onCall: presence.onCall || false,
-                    lastActivity: presence.lastUpdated || new Date().toISOString()
-                });
-            });
-        }
+    // Handle different response formats
+    let presenceList = [];
+    if (Array.isArray(data)) {
+        presenceList = data;
+    } else if (data.users && Array.isArray(data.users)) {
+        presenceList = data.users;
+    } else if (data.presence && Array.isArray(data.presence)) {
+        presenceList = data.presence;
+    } else if (data.data && Array.isArray(data.data)) {
+        presenceList = data.data;
     }
 
-    console.log(`[Agent Status] Processed ${agents.length} agents from ${endpoint}`);
-    return agents;
+    presenceList.forEach(item => {
+        agents.push({
+            id: item.id || item.userId || item.unifiedUserId,
+            name: item.displayName || item.name || `User ${item.id}`,
+            email: item.email || `user${item.id}@company.com`,
+            extension: item.extension || 'N/A',
+            status: mapMessagingStatus(item.status || item.presence),
+            onCall: item.onCall || item.inCall || false,
+            lastActivity: item.lastActivity || item.lastSeen || new Date().toISOString()
+        });
+    });
+
+    console.log(`[Agent Status] Processed ${agents.length} agents from messaging presence data`);
+    return agents.length > 0 ? agents : getMockAgentStatuses();
+}
+
+/**
+ * Map messaging API status to our standard statuses
+ */
+function mapMessagingStatus(status) {
+    if (!status) return 'unknown';
+    
+    const lowerStatus = status.toLowerCase();
+    
+    switch (lowerStatus) {
+        case 'available':
+        case 'online':
+        case 'active':
+            return 'available';
+        case 'busy':
+        case 'occupied':
+        case 'dnd':
+        case 'do not disturb':
+            return 'busy';
+        case 'away':
+        case 'idle':
+        case 'absent':
+            return 'away';
+        case 'offline':
+        case 'invisible':
+            return 'offline';
+        default:
+            return 'unknown';
+    }
 }
 
 /**
