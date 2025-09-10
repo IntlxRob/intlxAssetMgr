@@ -1650,6 +1650,172 @@ router.get('/address-book/users', async (req, res) => {
     }
 });
 
+// Add this new function to your api.js file, after the existing address book functions
+
+/**
+ * Get enhanced address book contacts with presence data
+ */
+router.get('/address-book/contacts-with-presence', async (req, res) => {
+    try {
+        // Check if token needs refresh
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            console.log('[OAuth] Token expired or missing, attempting refresh...');
+            const refreshed = await refreshAddressBookToken();
+            if (!refreshed) {
+                return res.status(401).json({ 
+                    error: 'Authentication required',
+                    authUrl: '/api/auth/serverdata/login',
+                    message: 'Please re-authenticate with the Address Book'
+                });
+            }
+        }
+
+        // Step 1: Get address book contacts
+        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`
+            }
+        });
+        
+        if (!contactsResponse.ok) {
+            throw new Error(`Address Book API error: ${contactsResponse.status}`);
+        }
+        
+        const contactsData = await contactsResponse.json();
+        const contacts = contactsData.results || [];
+        
+        console.log(`[Presence] Found ${contacts.length} contacts, fetching presence data...`);
+
+        // Step 2: Get messaging token with correct scope
+        const messagingToken = await getMessagingToken();
+        
+        // Step 3: Fetch presence for each contact (in parallel, but limited)
+        const contactsWithPresence = [];
+        const BATCH_SIZE = 5; // Process 5 at a time to avoid rate limits
+        
+        for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
+            const batch = contacts.slice(i, i + BATCH_SIZE);
+            
+            const presencePromises = batch.map(async (contact) => {
+                try {
+                    if (!contact.id) {
+                        return { ...contact, presence: { status: 'unknown', error: 'No ID' } };
+                    }
+
+                    console.log(`[Presence] Fetching presence for user ${contact.id} (${contact.displayName})`);
+                    
+                    const presenceResponse = await fetch(
+                        `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${contact.id}`,
+                        {
+                            headers: {
+                                'Authorization': `Bearer ${messagingToken}`,
+                                'Accept': 'application/json'
+                            }
+                        }
+                    );
+
+                    if (presenceResponse.ok) {
+                        const presenceData = await presenceResponse.json();
+                        console.log(`[Presence] User ${contact.id}: ${presenceData.presence}`);
+                        
+                        return {
+                            ...contact,
+                            presence: {
+                                status: presenceData.presence || 'unknown',
+                                lastUpdated: new Date().toISOString(),
+                                source: 'messaging_api'
+                            }
+                        };
+                    } else {
+                        console.log(`[Presence] Failed to get presence for user ${contact.id}: ${presenceResponse.status}`);
+                        return {
+                            ...contact,
+                            presence: {
+                                status: 'unknown',
+                                error: `HTTP ${presenceResponse.status}`,
+                                source: 'messaging_api'
+                            }
+                        };
+                    }
+                } catch (error) {
+                    console.error(`[Presence] Error getting presence for ${contact.id}:`, error.message);
+                    return {
+                        ...contact,
+                        presence: {
+                            status: 'unknown',
+                            error: error.message,
+                            source: 'messaging_api'
+                        }
+                    };
+                }
+            });
+
+            const batchResults = await Promise.all(presencePromises);
+            contactsWithPresence.push(...batchResults);
+            
+            // Small delay between batches to be nice to the API
+            if (i + BATCH_SIZE < contacts.length) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+        }
+
+        console.log(`[Presence] Enhanced ${contactsWithPresence.length} contacts with presence data`);
+        
+        // Add summary statistics
+        const presenceStats = contactsWithPresence.reduce((stats, contact) => {
+            const status = contact.presence?.status || 'unknown';
+            stats[status] = (stats[status] || 0) + 1;
+            return stats;
+        }, {});
+
+        res.json({
+            results: contactsWithPresence,
+            total: contactsWithPresence.length,
+            presenceStats,
+            lastUpdated: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('Error fetching contacts with presence:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Get messaging token with correct scope
+ */
+async function getMessagingToken() {
+    try {
+        console.log('[Messaging] Requesting messaging token...');
+        
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.service.messaging' // Correct scope for presence data
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Messaging token request failed: ${response.status}`);
+        }
+
+        const tokenData = await response.json();
+        console.log('[Messaging] Got messaging token successfully');
+        
+        return tokenData.access_token;
+        
+    } catch (error) {
+        console.error('[Messaging] Error getting messaging token:', error.message);
+        throw error;
+    }
+}
+
 /**
  * Test endpoint to simulate token expiry
  */
