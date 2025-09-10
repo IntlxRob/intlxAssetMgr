@@ -119,6 +119,141 @@ router.get('/debug-search-companies/:searchText', async (req, res) => {
 });
 
 /**
+ * Debug endpoint to test the correct Intermedia workflow:
+ * 1. Get contacts to find user IDs
+ * 2. Use those IDs for presence info
+ */
+router.get('/debug-intermedia-contacts', async (req, res) => {
+    try {
+        const token = await getIntermediaToken();
+        const results = {
+            success: true,
+            contactsEndpoint: null,
+            contacts: [],
+            presenceResults: [],
+            workflow: "contacts -> presence"
+        };
+        
+        // Step 1: Test contacts endpoints to get user IDs
+        const contactsEndpoints = [
+            'https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts',
+            'https://api.elevate.services/address-book/v3/accounts/_me/contacts', 
+            'https://api.elevate.services/address-book/v3/contacts',
+            'https://api.elevate.services/address-book/v3/users/_me/contacts',
+            // Try different API versions too
+            'https://api.elevate.services/address-book/v2/accounts/_me/users/_me/contacts',
+            'https://api.elevate.services/address-book/v1/accounts/_me/users/_me/contacts'
+        ];
+        
+        console.log('[Intermedia] Testing contacts endpoints...');
+        
+        for (const endpoint of contactsEndpoints) {
+            try {
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                console.log(`[Intermedia] ${endpoint} -> ${response.status}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(`[Intermedia] SUCCESS! Contacts data:`, JSON.stringify(data, null, 2));
+                    
+                    results.contactsEndpoint = endpoint;
+                    results.contacts = data;
+                    break; // Found working endpoint!
+                } else {
+                    const errorText = await response.text();
+                    console.log(`[Intermedia] ${endpoint} error: ${errorText}`);
+                }
+            } catch (err) {
+                console.log(`[Intermedia] ${endpoint} failed: ${err.message}`);
+            }
+        }
+        
+        // Step 2: If we got contacts, try to get presence for those users
+        if (results.contacts && results.contacts.length > 0) {
+            console.log('[Intermedia] Found contacts, testing presence endpoints...');
+            
+            // Extract user IDs from contacts (format may vary)
+            const userIds = [];
+            results.contacts.forEach(contact => {
+                // Try different possible ID fields
+                if (contact.id) userIds.push(contact.id);
+                if (contact.userId) userIds.push(contact.userId);
+                if (contact.user_id) userIds.push(contact.user_id);
+                if (contact.contactId) userIds.push(contact.contactId);
+            });
+            
+            console.log(`[Intermedia] Extracted user IDs:`, userIds);
+            
+            // Test presence endpoints with actual user IDs
+            const presenceEndpoints = [
+                'https://api.elevate.services/messaging/v1/presence',
+                'https://api.elevate.services/messaging/v1/accounts/_me/presence',
+                'https://api.elevate.services/messaging/v1/users/presence'
+            ];
+            
+            for (const presenceEndpoint of presenceEndpoints) {
+                try {
+                    // Test with first user ID
+                    const testUserId = userIds[0];
+                    const testUrl = `${presenceEndpoint}?userId=${testUserId}`;
+                    
+                    const response = await fetch(testUrl, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Accept': 'application/json'
+                        }
+                    });
+                    
+                    console.log(`[Intermedia] ${testUrl} -> ${response.status}`);
+                    
+                    if (response.ok) {
+                        const presenceData = await response.json();
+                        console.log(`[Intermedia] Presence SUCCESS:`, JSON.stringify(presenceData, null, 2));
+                        
+                        results.presenceResults.push({
+                            endpoint: testUrl,
+                            status: response.status,
+                            data: presenceData
+                        });
+                    } else {
+                        const errorText = await response.text();
+                        results.presenceResults.push({
+                            endpoint: testUrl,
+                            status: response.status,
+                            error: errorText
+                        });
+                    }
+                } catch (err) {
+                    results.presenceResults.push({
+                        endpoint: presenceEndpoint,
+                        status: 'error',
+                        error: err.message
+                    });
+                }
+            }
+        } else {
+            results.presenceResults = ['No contacts found - cannot test presence'];
+        }
+        
+        res.json(results);
+        
+    } catch (error) {
+        console.error('[Intermedia] Debug contacts error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            message: 'Failed to test contacts workflow'
+        });
+    }
+});
+
+/**
  * Debug endpoint to test BILH company discovery
  * GET /api/debug-bilh-companies
  */
