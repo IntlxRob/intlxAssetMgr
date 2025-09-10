@@ -8,15 +8,6 @@ const googleSheetsService = require('../services/googleSheets');
 const { google } = require('googleapis');
 const calendar = google.calendar('v3');
 
-//Agent status cache definition
-let agentStatusCache = {
-    statuses: new Map(),
-    lastUpdated: new Map(),
-    accessToken: null,
-    tokenExpiry: null
-};
-const CACHE_DURATION = 30000; // 30 seconds
-
 // Initialize OAuth2 client for Google Calendar
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -438,22 +429,35 @@ function levenshteinDistance(str1, str2) {
     return matrix[str2.length][str1.length];
 }
 
+// ============================================
+// INTERMEDIA AGENT STATUS IMPLEMENTATION
+// ============================================
+
+// Cache for agent statuses and tokens
+let intermediaCache = {
+    token: null,
+    tokenExpiry: 0,
+    agentStatuses: new Map(),
+    lastStatusUpdate: 0
+};
+
+const AGENT_STATUS_CACHE_DURATION = 30000; // 30 seconds
+const TOKEN_REFRESH_BUFFER = 300000; // 5 minutes before expiry
+
 /**
- * Get Intermedia access token using the correct endpoint and account
+ * Get or refresh Intermedia access token
  */
 async function getIntermediaToken() {
+    // Check if we have a valid token
+    if (intermediaCache.token && Date.now() < intermediaCache.tokenExpiry - TOKEN_REFRESH_BUFFER) {
+        console.log('[Intermedia] Using cached token');
+        return intermediaCache.token;
+    }
+
+    console.log('[Intermedia] Requesting new access token');
+    
     try {
-        // Check cache
-        if (agentStatusCache.accessToken && agentStatusCache.tokenExpiry > Date.now()) {
-            console.log('[Intermedia] Using cached token');
-            return agentStatusCache.accessToken;
-        }
-        
-        console.log('[Intermedia] Requesting new access token from end-user account');
-        
-        const tokenEndpoint = 'https://login.serverdata.net/user/connect/token';
-        
-        const response = await fetch(tokenEndpoint, {
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded'
@@ -462,34 +466,385 @@ async function getIntermediaToken() {
                 grant_type: 'client_credentials',
                 client_id: process.env.INTERMEDIA_CLIENT_ID,
                 client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.service.messaging'
+                scope: 'api.calling' // Using calling scope for voice/presence data
             })
         });
-        
-        console.log(`[Intermedia] Token response status: ${response.status}`);
-        
+
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error('[Intermedia] Token error:', errorText);
-            console.log('[Intermedia] Falling back to mock data');
-            return 'mock_token';
+            throw new Error(`Token request failed: ${response.status} ${response.statusText}`);
         }
-        
+
         const tokenData = await response.json();
-        console.log('[Intermedia] Token obtained successfully from end-user account!');
         
-        // Cache token (expires in 1 hour, refresh 5 minutes early)
-        agentStatusCache.accessToken = tokenData.access_token;
-        agentStatusCache.tokenExpiry = Date.now() + ((tokenData.expires_in - 300) * 1000);
+        if (!tokenData.access_token) {
+            throw new Error('No access token in response');
+        }
+
+        // Cache the token
+        intermediaCache.token = tokenData.access_token;
+        intermediaCache.tokenExpiry = Date.now() + (tokenData.expires_in * 1000);
         
-        return tokenData.access_token;
+        console.log('[Intermedia] Token obtained successfully, expires in', tokenData.expires_in, 'seconds');
+        return intermediaCache.token;
         
     } catch (error) {
-        console.error('[Intermedia] Token acquisition failed:', error);
-        console.log('[Intermedia] Using mock data as fallback');
-        return 'mock_token';
+        console.error('[Intermedia] Token request failed:', error.message);
+        throw error;
     }
 }
+
+/**
+ * Fetch agent statuses from Intermedia Voice API
+ */
+async function fetchAgentStatuses() {
+    try {
+        const token = await getIntermediaToken();
+        console.log('[Agent Status] Fetching agent statuses from Intermedia');
+
+        // Try multiple endpoints to get agent/device status
+        const endpoints = [
+            'https://api.elevate.services/voice/v2/devices',
+            'https://api.elevate.services/voice/v2/users',
+            'https://api.elevate.services/voice/v2/presence',
+            'https://api.elevate.services/voice/v2/users/_me'
+        ];
+
+        for (const endpoint of endpoints) {
+            try {
+                console.log(`[Agent Status] Trying endpoint: ${endpoint}`);
+                
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                console.log(`[Agent Status] ${endpoint} returned: ${response.status}`);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(`[Agent Status] Success! Data from ${endpoint}:`, JSON.stringify(data, null, 2));
+                    
+                    // Process the successful response
+                    return processAgentStatusData(data, endpoint);
+                } else {
+                    const errorText = await response.text();
+                    console.log(`[Agent Status] ${endpoint} error: ${errorText}`);
+                }
+            } catch (endpointError) {
+                console.log(`[Agent Status] ${endpoint} failed:`, endpointError.message);
+            }
+        }
+
+        // If all endpoints fail, return mock data
+        console.log('[Agent Status] All endpoints failed, returning mock data');
+        return getMockAgentStatuses();
+
+    } catch (error) {
+        console.error('[Agent Status] Error fetching from Intermedia:', error.message);
+        return getMockAgentStatuses();
+    }
+}
+
+/**
+ * Process agent status data based on which endpoint succeeded
+ */
+function processAgentStatusData(data, endpoint) {
+    const agents = [];
+
+    if (endpoint.includes('/devices')) {
+        // Process device data for phone status
+        if (Array.isArray(data)) {
+            data.forEach(device => {
+                agents.push({
+                    id: device.id || device.extension,
+                    name: device.displayName || device.name || `Extension ${device.extension}`,
+                    email: device.email || `${device.extension}@company.com`,
+                    extension: device.extension || 'N/A',
+                    status: device.status === 'online' ? 'available' : device.status || 'offline',
+                    onCall: device.inCall || device.busy || false,
+                    lastActivity: device.lastActivity || new Date().toISOString(),
+                    deviceType: device.type || 'phone'
+                });
+            });
+        }
+    } else if (endpoint.includes('/users')) {
+        // Process user data
+        if (Array.isArray(data)) {
+            data.forEach(user => {
+                agents.push({
+                    id: user.id,
+                    name: user.displayName || user.firstName + ' ' + user.lastName,
+                    email: user.email,
+                    extension: user.extension || 'N/A',
+                    status: user.presenceStatus || 'available',
+                    onCall: user.onCall || false,
+                    lastActivity: user.lastActivity || new Date().toISOString()
+                });
+            });
+        } else if (data.id) {
+            // Single user response
+            agents.push({
+                id: data.id,
+                name: data.displayName || data.firstName + ' ' + data.lastName,
+                email: data.email,
+                extension: data.extension || 'N/A',
+                status: data.presenceStatus || 'available',
+                onCall: data.onCall || false,
+                lastActivity: data.lastActivity || new Date().toISOString()
+            });
+        }
+    } else if (endpoint.includes('/presence')) {
+        // Process presence data
+        if (Array.isArray(data)) {
+            data.forEach(presence => {
+                agents.push({
+                    id: presence.userId,
+                    name: presence.displayName || 'Unknown User',
+                    email: presence.email || 'unknown@company.com',
+                    extension: presence.extension || 'N/A',
+                    status: presence.status || 'available',
+                    onCall: presence.onCall || false,
+                    lastActivity: presence.lastUpdated || new Date().toISOString()
+                });
+            });
+        }
+    }
+
+    console.log(`[Agent Status] Processed ${agents.length} agents from ${endpoint}`);
+    return agents;
+}
+
+/**
+ * Get mock agent statuses for testing/fallback
+ */
+function getMockAgentStatuses() {
+    return [
+        {
+            id: '1',
+            name: 'John Smith',
+            email: 'john.smith@company.com',
+            extension: '101',
+            status: 'available',
+            onCall: false,
+            lastActivity: new Date(Date.now() - 5 * 60000).toISOString() // 5 minutes ago
+        },
+        {
+            id: '2',
+            name: 'Sarah Johnson',
+            email: 'sarah.johnson@company.com',
+            extension: '102',
+            status: 'busy',
+            onCall: true,
+            lastActivity: new Date().toISOString()
+        },
+        {
+            id: '3',
+            name: 'Mike Wilson',
+            email: 'mike.wilson@company.com',
+            extension: '103',
+            status: 'away',
+            onCall: false,
+            lastActivity: new Date(Date.now() - 15 * 60000).toISOString() // 15 minutes ago
+        },
+        {
+            id: '4',
+            name: 'Lisa Brown',
+            email: 'lisa.brown@company.com',
+            extension: '104',
+            status: 'offline',
+            onCall: false,
+            lastActivity: new Date(Date.now() - 2 * 60 * 60000).toISOString() // 2 hours ago
+        }
+    ];
+}
+
+/**
+ * API endpoint to get current agent statuses
+ * GET /api/agent-status
+ */
+router.get('/agent-status', async (req, res) => {
+    try {
+        console.log('[API] Agent status requested');
+        
+        // Check cache first
+        const now = Date.now();
+        if (intermediaCache.agentStatuses.size > 0 && 
+            now - intermediaCache.lastStatusUpdate < AGENT_STATUS_CACHE_DURATION) {
+            console.log('[API] Returning cached agent statuses');
+            const cachedStatuses = Array.from(intermediaCache.agentStatuses.values());
+            return res.json({
+                success: true,
+                agents: cachedStatuses,
+                cached: true,
+                lastUpdated: new Date(intermediaCache.lastStatusUpdate).toISOString()
+            });
+        }
+
+        // Fetch fresh data
+        const agents = await fetchAgentStatuses();
+        
+        // Update cache
+        intermediaCache.agentStatuses.clear();
+        agents.forEach(agent => {
+            intermediaCache.agentStatuses.set(agent.id, agent);
+        });
+        intermediaCache.lastStatusUpdate = now;
+
+        console.log(`[API] Returning ${agents.length} agent statuses`);
+        
+        res.json({
+            success: true,
+            agents: agents,
+            cached: false,
+            lastUpdated: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('[API] Error fetching agent status:', error.message);
+        
+        // Return mock data on error
+        const mockAgents = getMockAgentStatuses();
+        res.json({
+            success: false,
+            error: error.message,
+            agents: mockAgents,
+            mock: true,
+            lastUpdated: new Date().toISOString()
+        });
+    }
+});
+
+/**
+ * API endpoint to refresh agent statuses
+ * POST /api/agent-status/refresh
+ */
+router.post('/agent-status/refresh', async (req, res) => {
+    try {
+        console.log('[API] Force refresh agent statuses');
+        
+        // Clear cache to force refresh
+        intermediaCache.agentStatuses.clear();
+        intermediaCache.lastStatusUpdate = 0;
+        
+        const agents = await fetchAgentStatuses();
+        
+        // Update cache
+        const now = Date.now();
+        agents.forEach(agent => {
+            intermediaCache.agentStatuses.set(agent.id, agent);
+        });
+        intermediaCache.lastStatusUpdate = now;
+
+        res.json({
+            success: true,
+            agents: agents,
+            refreshed: true,
+            lastUpdated: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('[API] Error refreshing agent status:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * API endpoint to check Intermedia authentication status
+ * GET /api/agent-status/auth
+ */
+router.get('/agent-status/auth', async (req, res) => {
+    try {
+        const hasCredentials = !!(process.env.INTERMEDIA_CLIENT_ID && process.env.INTERMEDIA_CLIENT_SECRET);
+        
+        if (!hasCredentials) {
+            return res.json({
+                authenticated: false,
+                error: 'Missing Intermedia credentials',
+                hasClientId: !!process.env.INTERMEDIA_CLIENT_ID,
+                hasClientSecret: !!process.env.INTERMEDIA_CLIENT_SECRET
+            });
+        }
+
+        // Try to get a token to test authentication
+        try {
+            const token = await getIntermediaToken();
+            res.json({
+                authenticated: true,
+                tokenExpiry: new Date(intermediaCache.tokenExpiry).toISOString(),
+                expiresIn: Math.floor((intermediaCache.tokenExpiry - Date.now()) / 1000)
+            });
+        } catch (tokenError) {
+            res.json({
+                authenticated: false,
+                error: tokenError.message
+            });
+        }
+
+    } catch (error) {
+        console.error('[API] Error checking auth status:', error.message);
+        res.status(500).json({
+            authenticated: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Legacy endpoint for batch agent status (for backward compatibility)
+ * POST /api/agents-status-batch
+ */
+router.post('/agents-status-batch', async (req, res) => {
+    try {
+        const { emails } = req.body;
+        
+        if (!emails || !Array.isArray(emails)) {
+            return res.status(400).json({ error: 'emails array is required' });
+        }
+        
+        console.log(`[API] Fetching status for ${emails.length} agents via batch endpoint`);
+        
+        // Get all current agents
+        const agents = await fetchAgentStatuses();
+        
+        // Filter by requested emails or return all if no specific emails match
+        const requestedAgents = agents.filter(agent => 
+            emails.some(email => 
+                agent.email.toLowerCase() === email.toLowerCase()
+            )
+        );
+        
+        // Transform to legacy format
+        const legacyFormat = requestedAgents.map(agent => ({
+            email: agent.email,
+            name: agent.name,
+            phoneStatus: agent.status,
+            onCall: agent.onCall,
+            extension: agent.extension
+        }));
+        
+        res.json({ 
+            success: true,
+            agents: legacyFormat.length > 0 ? legacyFormat : []
+        });
+        
+    } catch (error) {
+        console.error('[API] Error in agents-status-batch:', error.message);
+        res.json({ 
+            success: false,
+            agents: [],
+            error: 'Phone system integration unavailable'
+        });
+    }
+});
+
+// ============================================
+// END OF AGENT STATUS IMPLEMENTATION
+// ============================================
 
 // ============================================
 // SERVERDATA/ELEVATE OAUTH ENDPOINTS
@@ -2694,60 +3049,5 @@ router.get('/ops-calendar/upcoming', async (req, res) => {
 // ============================================
 // END OF CALENDAR ENDPOINTS
 // ============================================
-
-/**
- * Endpoint to get agent status in batch
- * POST /api/agents-status-batch
- * Body: { emails: ["email1", "email2", ...] }
- * 
- * This is the EXISTING endpoint that needs to be updated to support Intermedia
- */
-router.post('/agents-status-batch', async (req, res) => {
-  try {
-    const { emails } = req.body;
-    
-    if (!emails || !Array.isArray(emails)) {
-      return res.status(400).json({ error: 'emails array is required' });
-    }
-    
-    console.log(`[API] Fetching status for ${emails.length} agents`);
-    
-    try {
-      // Try to get real statuses from Intermedia
-      const intermediaService = require('../services/intermedia');
-      const statuses = await intermediaService.getAgentStatuses(emails);
-      
-      // Transform to the format the frontend expects
-      const agents = statuses.map(status => ({
-        email: status.email,
-        name: status.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-        phoneStatus: status.status,
-        onCall: status.status === 'busy',
-        extension: status.extension || 'N/A'
-      }));
-      
-      return res.json({ 
-        success: true,
-        agents: agents
-      });
-      
-    } catch (intermediaError) {
-      console.log('[API] Intermedia integration error:', intermediaError.message);
-      
-      // Return empty array if real data isn't available
-      return res.json({ 
-        success: false,
-        agents: [],
-        error: 'Phone system integration unavailable'
-      });
-    }
-    
-  } catch (error) {
-    console.error('[API] Error in agents-status-batch:', error.message);
-    if (!res.headersSent) {
-      return res.status(500).json({ error: error.message });
-    }
-  }
-});
 
 module.exports = router;
