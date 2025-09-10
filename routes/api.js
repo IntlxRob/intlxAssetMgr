@@ -466,7 +466,7 @@ async function getIntermediaToken() {
                 grant_type: 'client_credentials',
                 client_id: process.env.INTERMEDIA_CLIENT_ID,
                 client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.calling' // Using calling scope for voice/presence data
+                scope: 'api.service.messaging' // Using calling scope for voice/presence data
             })
         });
 
