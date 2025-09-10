@@ -1854,6 +1854,60 @@ router.get('/debug-intermedia-users', async (req, res) => {
     }
 });
 
+/**
+ * Debug calling API authentication
+ */
+router.get('/debug-calling-api', async (req, res) => {
+    try {
+        console.log('[Debug] Testing calling API authentication...');
+        
+        const clientId = process.env.INTERMEDIA_CLIENT_ID;
+        const clientSecret = process.env.INTERMEDIA_CLIENT_SECRET;
+        
+        if (!clientId || !clientSecret) {
+            return res.json({
+                error: 'Missing credentials',
+                hasClientId: !!clientId,
+                hasClientSecret: !!clientSecret
+            });
+        }
+        
+        // Test the calling API token request
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: clientId,
+                client_secret: clientSecret,
+                scope: 'api.calling' // This might be the issue
+            })
+        });
+        
+        const responseText = await response.text();
+        
+        res.json({
+            success: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+            responseBody: responseText,
+            credentials: {
+                hasClientId: !!clientId,
+                hasClientSecret: !!clientSecret,
+                clientIdLength: clientId ? clientId.length : 0
+            }
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
 // ============================================
 // SERVERDATA/ELEVATE OAUTH ENDPOINTS
 // ============================================
