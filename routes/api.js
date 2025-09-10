@@ -709,8 +709,8 @@ async function fetchAgentStatuses() {
         }
 
         if (users.length === 0) {
-            console.log('[Agent Status] No users found, returning mock data');
-            return getMockAgentStatuses();
+            console.log('[Agent Status] All messaging endpoints failed, returning empty array');
+            return [];
         }
 
         console.log(`[Agent Status] Found ${users.length} users, fetching presence data`);
@@ -786,7 +786,7 @@ async function fetchAgentStatuses() {
 
     } catch (error) {
         console.error('[Agent Status] Error fetching combined status:', error.message);
-        return getMockAgentStatuses();
+        return [];
     }
 }
 
@@ -822,7 +822,7 @@ function processMessagingPresenceData(data, endpoint) {
     });
 
     console.log(`[Agent Status] Processed ${agents.length} agents from messaging presence data`);
-    return agents.length > 0 ? agents : getMockAgentStatuses();
+    return agents;
 }
 
 /**
@@ -883,50 +883,6 @@ function mapPhoneStatus(status) {
 }
 
 /**
- * Get mock agent statuses for testing/fallback
- */
-function getMockAgentStatuses() {
-    return [
-        {
-            id: '1',
-            name: 'John Smith',
-            email: 'john.smith@company.com',
-            extension: '101',
-            status: 'available',
-            onCall: false,
-            lastActivity: new Date(Date.now() - 5 * 60000).toISOString() // 5 minutes ago
-        },
-        {
-            id: '2',
-            name: 'Sarah Johnson',
-            email: 'sarah.johnson@company.com',
-            extension: '102',
-            status: 'busy',
-            onCall: true,
-            lastActivity: new Date().toISOString()
-        },
-        {
-            id: '3',
-            name: 'Mike Wilson',
-            email: 'mike.wilson@company.com',
-            extension: '103',
-            status: 'away',
-            onCall: false,
-            lastActivity: new Date(Date.now() - 15 * 60000).toISOString() // 15 minutes ago
-        },
-        {
-            id: '4',
-            name: 'Lisa Brown',
-            email: 'lisa.brown@company.com',
-            extension: '104',
-            status: 'offline',
-            onCall: false,
-            lastActivity: new Date(Date.now() - 2 * 60 * 60000).toISOString() // 2 hours ago
-        }
-    ];
-}
-
-/**
  * API endpoint to get current agent statuses
  * GET /api/agent-status
  */
@@ -972,12 +928,11 @@ router.get('/agent-status', async (req, res) => {
         
         // Return mock data on error
         const mockAgents = getMockAgentStatuses();
-        res.json({
-            success: false,
-            error: error.message,
-            agents: mockAgents,
-            mock: true,
-            lastUpdated: new Date().toISOString()
+        res.status(500).json({
+        success: false,
+        error: error.message,
+        agents: [], // Empty array instead of mock data
+        lastUpdated: new Date().toISOString()
         });
     }
 });
