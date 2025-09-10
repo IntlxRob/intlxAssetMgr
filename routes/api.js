@@ -846,6 +846,62 @@ router.post('/agents-status-batch', async (req, res) => {
 // END OF AGENT STATUS IMPLEMENTATION
 // ============================================
 
+/**
+ * Debug endpoint to test Intermedia token request
+ */
+router.get('/debug-intermedia-token', async (req, res) => {
+    try {
+        const clientId = process.env.INTERMEDIA_CLIENT_ID;
+        const clientSecret = process.env.INTERMEDIA_CLIENT_SECRET;
+        
+        console.log('[Debug] Client ID exists:', !!clientId);
+        console.log('[Debug] Client Secret exists:', !!clientSecret);
+        console.log('[Debug] Client ID preview:', clientId ? clientId.substring(0, 10) + '...' : 'MISSING');
+        
+        if (!clientId || !clientSecret) {
+            return res.json({
+                error: 'Missing credentials',
+                hasClientId: !!clientId,
+                hasClientSecret: !!clientSecret
+            });
+        }
+        
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: clientId,
+                client_secret: clientSecret,
+                scope: 'api.calling'
+            })
+        });
+        
+        const responseText = await response.text();
+        
+        res.json({
+            status: response.status,
+            statusText: response.statusText,
+            headers: Object.fromEntries(response.headers.entries()),
+            body: responseText,
+            requestData: {
+                grant_type: 'client_credentials',
+                client_id: clientId,
+                scope: 'api.calling'
+                // Don't log the secret for security
+            }
+        });
+        
+    } catch (error) {
+        res.json({
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
 // ============================================
 // SERVERDATA/ELEVATE OAUTH ENDPOINTS
 // ============================================
