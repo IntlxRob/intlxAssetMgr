@@ -1221,7 +1221,7 @@ async function getCallingToken() {
                 grant_type: 'client_credentials',
                 client_id: process.env.INTERMEDIA_CLIENT_ID,
                 client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.service.voice' // Different scope for phone status
+                scope: 'api.user.voice.calls' // Different scope for phone status
             })
         });
 
@@ -1707,7 +1707,7 @@ async function getVoiceToken() {
                 grant_type: 'client_credentials',
                 client_id: process.env.INTERMEDIA_CLIENT_ID,
                 client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.service.voice' // Use the working scope from your debug test
+                scope: 'api.user.voice.calls' // Use the working scope from your debug test
             })
         });
 
@@ -1882,7 +1882,7 @@ router.get('/debug-intermedia-token', async (req, res) => {
                 grant_type: 'client_credentials',
                 client_id: clientId,
                 client_secret: clientSecret,
-                sscope: 'api.service.voice'
+                scope: 'api.user.voice.calls'
             })
         });
         
@@ -1896,7 +1896,7 @@ router.get('/debug-intermedia-token', async (req, res) => {
             requestData: {
                 grant_type: 'client_credentials',
                 client_id: clientId,
-                scope: 'api.service.voice'
+                scope: 'api.user.voice.calls'
                 // Don't log the secret for security
             }
         });
@@ -2118,6 +2118,145 @@ router.get('/debug-voice-api', async (req, res) => {
             }
         }
         
+/**
+ * Test complete voice API integration with working scope
+ */
+router.get('/test-voice-complete', async (req, res) => {
+    try {
+        console.log('[Test] Testing complete voice API integration...');
+        
+        // Step 1: Get token with working scope
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.user.voice.calls'
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Token failed: ${response.status}`);
+        }
+        
+        const tokenData = await response.json();
+        const token = tokenData.access_token;
+        console.log('[Test] Got voice token successfully');
+        
+        // Step 2: Try to get account info
+        const accountEndpoints = [
+            'https://api.elevate.services/voice/v1/accounts/_me',
+            'https://api.elevate.services/voice/v1/accounts'
+        ];
+        
+        let accountId = null;
+        let accountData = null;
+        
+        for (const endpoint of accountEndpoints) {
+            try {
+                const accountResponse = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (accountResponse.ok) {
+                    accountData = await accountResponse.json();
+                    console.log(`[Test] Account data from ${endpoint}:`, accountData);
+                    
+                    // Try to extract account ID
+                    if (accountData.id) accountId = accountData.id;
+                    else if (accountData.accountId) accountId = accountData.accountId;
+                    else if (Array.isArray(accountData) && accountData[0]?.id) accountId = accountData[0].id;
+                    
+                    if (accountId) break;
+                }
+            } catch (e) {
+                console.log(`[Test] Failed ${endpoint}: ${e.message}`);
+            }
+        }
+        
+        if (!accountId) {
+            return res.json({
+                step: 'account_discovery_failed',
+                tokenReceived: true,
+                accountEndpointsTested: accountEndpoints,
+                accountData: accountData,
+                suggestion: 'Check if account ID is in a different field'
+            });
+        }
+        
+        console.log(`[Test] Using account ID: ${accountId}`);
+        
+        // Step 3: Get extensions
+        const extensionsResponse = await fetch(`https://api.elevate.services/voice/v1/accounts/${accountId}/extensions`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        if (!extensionsResponse.ok) {
+            return res.json({
+                step: 'extensions_failed',
+                accountId: accountId,
+                extensionsStatus: extensionsResponse.status,
+                extensionsError: await extensionsResponse.text()
+            });
+        }
+        
+        const extensionsData = await extensionsResponse.json();
+        const extensions = Array.isArray(extensionsData) ? extensionsData : (extensionsData.extensions || []);
+        console.log(`[Test] Found ${extensions.length} extensions`);
+        
+        // Step 4: Test presence for first extension
+        if (extensions.length === 0) {
+            return res.json({
+                step: 'no_extensions',
+                accountId: accountId,
+                extensionsData: extensionsData
+            });
+        }
+        
+        const firstExtension = extensions[0];
+        const extensionId = firstExtension.id || firstExtension.extensionId || firstExtension.number;
+        
+        const presenceResponse = await fetch(`https://api.elevate.services/voice/v1/accounts/${accountId}/extensions/${extensionId}/presence`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        const presenceResult = {
+            extensionId: extensionId,
+            presenceStatus: presenceResponse.status,
+            presenceData: presenceResponse.ok ? await presenceResponse.json() : await presenceResponse.text()
+        };
+        
+        res.json({
+            success: true,
+            step: 'complete',
+            tokenReceived: true,
+            accountId: accountId,
+            extensionsFound: extensions.length,
+            sampleExtension: firstExtension,
+            presenceTest: presenceResult,
+            nextStep: presenceResponse.ok ? 'Ready to implement full presence fetching' : 'Check presence endpoint format'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            step: 'error'
+        });
+    }
+});
+
         // If we got a working token, test account discovery
         const workingScope = results.find(r => r.success);
         let accountInfo = null;
