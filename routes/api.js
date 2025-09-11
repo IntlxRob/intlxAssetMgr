@@ -2117,7 +2117,66 @@ router.get('/debug-voice-api', async (req, res) => {
                 });
             }
         }
+
+        // If we got a working token, test account discovery
+        const workingScope = results.find(r => r.success);
+        let accountInfo = null;
         
+        if (workingScope) {
+            try {
+                const tokenData = JSON.parse(workingScope.response);
+                const token = tokenData.access_token;
+                
+                // Try to get account information
+                const accountEndpoints = [
+                    'https://api.elevate.services/voice/v1/accounts',
+                    'https://api.elevate.services/voice/v1/accounts/_me',
+                    'https://api.elevate.services/voice/v1/account'
+                ];
+                
+                for (const endpoint of accountEndpoints) {
+                    try {
+                        const accountResponse = await fetch(endpoint, {
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'Accept': 'application/json'
+                            }
+                        });
+                        
+                        if (accountResponse.ok) {
+                            const accountData = await accountResponse.json();
+                            accountInfo = {
+                                endpoint: endpoint,
+                                data: accountData
+                            };
+                            break;
+                        }
+                    } catch (e) {
+                        // Continue to next endpoint
+                    }
+                }
+            } catch (e) {
+                // Token parsing failed
+            }
+        }
+        
+        res.json({
+            message: 'Tested voice API scopes and account discovery',
+            scopeResults: results,
+            workingScopes: results.filter(r => r.success).map(r => r.scope),
+            accountInfo: accountInfo,
+            nextSteps: accountInfo ? 
+                'Found account info! Now we can get extensions and presence data.' :
+                'Need to find correct account endpoint first.'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            error: error.message
+        });
+    }
+});
+
 /**
  * Test complete voice API integration with working scope
  */
@@ -2253,65 +2312,6 @@ router.get('/test-voice-complete', async (req, res) => {
             success: false,
             error: error.message,
             step: 'error'
-        });
-    }
-});
-
-        // If we got a working token, test account discovery
-        const workingScope = results.find(r => r.success);
-        let accountInfo = null;
-        
-        if (workingScope) {
-            try {
-                const tokenData = JSON.parse(workingScope.response);
-                const token = tokenData.access_token;
-                
-                // Try to get account information
-                const accountEndpoints = [
-                    'https://api.elevate.services/voice/v1/accounts',
-                    'https://api.elevate.services/voice/v1/accounts/_me',
-                    'https://api.elevate.services/voice/v1/account'
-                ];
-                
-                for (const endpoint of accountEndpoints) {
-                    try {
-                        const accountResponse = await fetch(endpoint, {
-                            headers: {
-                                'Authorization': `Bearer ${token}`,
-                                'Accept': 'application/json'
-                            }
-                        });
-                        
-                        if (accountResponse.ok) {
-                            const accountData = await accountResponse.json();
-                            accountInfo = {
-                                endpoint: endpoint,
-                                data: accountData
-                            };
-                            break;
-                        }
-                    } catch (e) {
-                        // Continue to next endpoint
-                    }
-                }
-            } catch (e) {
-                // Token parsing failed
-            }
-        }
-        
-        res.json({
-            message: 'Tested voice API scopes and account discovery',
-            scopeResults: results,
-            workingScopes: results.filter(r => r.success).map(r => r.scope),
-            accountInfo: accountInfo,
-            nextSteps: accountInfo ? 
-                'Found account info! Now we can get extensions and presence data.' :
-                'Need to find correct account endpoint first.'
-        });
-        
-    } catch (error) {
-        res.status(500).json({
-            error: error.message
         });
     }
 });
