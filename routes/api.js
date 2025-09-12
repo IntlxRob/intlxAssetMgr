@@ -2062,6 +2062,64 @@ router.get('/debug-intermedia-users', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+/**
+ * Test messaging token request specifically
+ */
+router.get('/debug-messaging-token', async (req, res) => {
+    try {
+        console.log('[Debug] Testing messaging token...');
+        console.log('[Debug] Client ID exists:', !!process.env.INTERMEDIA_CLIENT_ID);
+        console.log('[Debug] Client Secret exists:', !!process.env.INTERMEDIA_CLIENT_SECRET);
+        
+        if (!process.env.INTERMEDIA_CLIENT_ID || !process.env.INTERMEDIA_CLIENT_SECRET) {
+            return res.json({
+                success: false,
+                error: 'Missing environment variables',
+                hasClientId: !!process.env.INTERMEDIA_CLIENT_ID,
+                hasClientSecret: !!process.env.INTERMEDIA_CLIENT_SECRET
+            });
+        }
+        
+        const requestBody = new URLSearchParams({
+            grant_type: 'client_credentials',
+            client_id: process.env.INTERMEDIA_CLIENT_ID,
+            client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+            scope: 'api.service.messaging'
+        });
+        
+        console.log('[Debug] Making token request...');
+        
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: requestBody
+        });
+        
+        const responseText = await response.text();
+        console.log('[Debug] Token response:', response.status, responseText);
+        
+        res.json({
+            success: response.ok,
+            status: response.status,
+            response: responseText,
+            credentials: {
+                hasClientId: !!process.env.INTERMEDIA_CLIENT_ID,
+                hasClientSecret: !!process.env.INTERMEDIA_CLIENT_SECRET,
+                clientIdLength: process.env.INTERMEDIA_CLIENT_ID ? process.env.INTERMEDIA_CLIENT_ID.length : 0
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Debug] Token test error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
         
         // If we found users, test presence endpoints with actual user IDs
         let presenceResults = [];
