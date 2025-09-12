@@ -1397,66 +1397,192 @@ function mapMessagingStatus(status) {
 }
 
 /**
- * FIXED: Agent status endpoint - no mock data, empty arrays only
+ * COMPLETE: Fetch agent statuses for @intlxsolutions.com users only
  */
-router.get('/agent-status', async (req, res) => {
+async function fetchAgentStatuses() {
     try {
-        console.log('[API] Agent status requested');
-        
-        // Check cache first
-        const now = Date.now();
-        const CACHE_DURATION = 30000; // 30 seconds
-        
-        if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0 && 
-            intermediaCache.lastStatusUpdate && 
-            now - intermediaCache.lastStatusUpdate < CACHE_DURATION) {
-            console.log('[API] Returning cached agent statuses');
-            const cachedStatuses = Array.from(intermediaCache.agentStatuses.values());
-            return res.json({
-                success: true,
-                agents: cachedStatuses,
-                cached: true,
-                lastUpdated: new Date(intermediaCache.lastStatusUpdate).toISOString()
-            });
-        }
+        console.log('[Agent Status] Fetching @intlxsolutions.com users only');
 
-        // Fetch fresh data
-        const agents = await fetchAgentStatuses();
-        
-        // Update cache only if we have data
-        if (agents.length > 0) {
-            if (!intermediaCache.agentStatuses) {
-                intermediaCache.agentStatuses = new Map();
+        // Step 1: Check Address Book authentication
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            console.log('[Agent Status] Address Book token expired, attempting refresh...');
+            const refreshed = await refreshAddressBookToken();
+            if (!refreshed) {
+                console.log('[Agent Status] ⚠️ Address Book authentication required');
+                return [];
             }
-            intermediaCache.agentStatuses.clear();
-            agents.forEach(agent => {
-                intermediaCache.agentStatuses.set(agent.id, agent);
-            });
-            intermediaCache.lastStatusUpdate = now;
         }
 
-        console.log(`[API] Returning ${agents.length} agent statuses`);
+        // Step 2: Get users from Address Book API
+        console.log('[Agent Status] Getting contacts from Address Book...');
         
-        res.json({
-            success: agents.length > 0,
-            agents: agents, // Empty array if no data
-            cached: false,
-            lastUpdated: new Date().toISOString(),
-            message: agents.length === 0 ? 'No agent data available - check authentication' : undefined
+        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`,
+                'Accept': 'application/json'
+            }
         });
+        
+        if (!contactsResponse.ok) {
+            console.log(`[Agent Status] ❌ Address Book failed: ${contactsResponse.status}`);
+            return [];
+        }
+        
+        const contactsData = await contactsResponse.json();
+        const allContacts = contactsData.results || [];
+        
+        console.log(`[Agent Status] Found ${allContacts.length} total contacts from Address Book`);
+
+        // Step 3: Filter to only @intlxsolutions.com users (exclude system accounts)
+        const intlxContacts = allContacts.filter(contact => {
+            const email = (contact.email || '').toLowerCase();
+            const name = (contact.displayName || contact.name || '').toLowerCase();
+            
+            // Only include @intlxsolutions.com email domain
+            const hasIntlxDomain = email.endsWith('@intlxsolutions.com');
+            
+            // Exclude system accounts
+            const isSystemAccount = name.includes('supportmenu') ||
+                                   name.includes('mainmenu') ||
+                                   name.includes('helpdesk') ||
+                                   name.includes('support group') ||
+                                   name.includes('answering service') ||
+                                   name.includes('emergency line') ||
+                                   name.includes('ethics line') ||
+                                   name.includes('outage') ||
+                                   name.includes('ldapqueries') ||
+                                   name.includes('conference') ||
+                                   name.includes('conf rm') ||
+                                   name.includes('lobby') ||
+                                   name.includes('reception');
+            
+            // Include only @intlxsolutions.com users that aren't system accounts
+            const shouldInclude = hasIntlxDomain && !isSystemAccount;
+            
+            if (shouldInclude) {
+                console.log(`[Agent Status] ✅ Including: ${contact.displayName || contact.name} (${contact.email})`);
+            }
+            
+            return shouldInclude;
+        });
+
+        console.log(`[Agent Status] Filtered to ${intlxContacts.length} @intlxsolutions.com users`);
+
+        if (intlxContacts.length === 0) {
+            console.log('[Agent Status] ⚠️ No @intlxsolutions.com users found after filtering');
+            return [];
+        }
+
+        // Step 4: Get messaging token for presence data
+        console.log('[Agent Status] Getting messaging token for presence...');
+        const messagingToken = await getIntermediaToken();
+        console.log('[Agent Status] ✅ Got messaging token');
+
+        // Step 5: Get presence for each contact (reduced batch size for rate limiting)
+        const agents = [];
+        const BATCH_SIZE = 3; // Smaller batches to avoid rate limiting
+        
+        for (let i = 0; i < intlxContacts.length; i += BATCH_SIZE) {
+            const batch = intlxContacts.slice(i, i + BATCH_SIZE);
+            
+            console.log(`[Agent Status] Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(intlxContacts.length/BATCH_SIZE)}`);
+            
+            const presencePromises = batch.map(async (contact) => {
+                try {
+                    if (!contact.id) {
+                        console.log('[Agent Status] ⚠️ Skipping contact - no ID');
+                        return null;
+                    }
+
+                    console.log(`[Agent Status] Getting presence for ${contact.displayName || contact.id}`);
+
+                    // Get presence from messaging API
+                    const presenceResponse = await fetch(
+                        `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${contact.id}`,
+                        {
+                            headers: {
+                                'Authorization': `Bearer ${messagingToken}`,
+                                'Accept': 'application/json'
+                            }
+                        }
+                    );
+
+                    let presenceData = null;
+                    if (presenceResponse.ok) {
+                        presenceData = await presenceResponse.json();
+                        console.log(`[Agent Status] ✅ ${contact.displayName}: ${presenceData?.presence || 'unknown'}`);
+                    } else if (presenceResponse.status === 429) {
+                        console.log(`[Agent Status] ⚠️ Rate limited for ${contact.displayName}, will retry`);
+                        // For rate limiting, still create the agent but mark as unknown
+                        presenceData = { presence: 'unknown', rateLimited: true };
+                    } else {
+                        console.log(`[Agent Status] ❌ Presence failed for ${contact.displayName}: ${presenceResponse.status}`);
+                    }
+
+                    // Create agent object with frontend-compatible fields
+                    const mappedStatus = presenceData ? 
+                        mapMessagingStatus(presenceData.presence || presenceData.status) : 
+                        'offline';
+
+                    return {
+                        id: contact.id,
+                        name: contact.displayName || contact.name || contact.firstName + ' ' + contact.lastName || `User ${contact.id}`,
+                        email: contact.email || contact.primaryEmail || `${contact.id}@intlx.com`,
+                        extension: contact.pbx?.extension || contact.phoneNumber || 'N/A',
+                        phone: contact.phoneNumbers?.[0]?.number || 'Unknown',
+                        // Status fields (frontend expects both)
+                        status: mappedStatus,
+                        phoneStatus: mappedStatus, // Frontend expects this field
+                        presenceStatus: mappedStatus, // Frontend expects this field
+                        onCall: false, // Messaging API doesn't provide call status
+                        lastActivity: presenceData?.lastActivity || presenceData?.lastSeen || new Date().toISOString(),
+                        // Source info for frontend
+                        source: 'address_book', // Frontend expects this value
+                        company: 'Intlx Solutions',
+                        // Frontend compatibility flags
+                        hasPhoneData: !!presenceData,
+                        hasPresenceData: !!presenceData,
+                        presenceMessage: presenceData?.message || '',
+                        // Raw data for debugging
+                        rawContactData: contact,
+                        rawPresenceData: presenceData,
+                        rateLimited: presenceData?.rateLimited || false
+                    };
+
+                } catch (error) {
+                    console.log(`[Agent Status] ❌ Error processing contact ${contact.displayName}:`, error.message);
+                    return null;
+                }
+            });
+
+            const batchResults = await Promise.all(presencePromises);
+            const validAgents = batchResults.filter(agent => agent !== null);
+            agents.push(...validAgents);
+
+            // Longer delay between batches to avoid rate limiting
+            if (i + BATCH_SIZE < intlxContacts.length) {
+                console.log('[Agent Status] Waiting 1 second before next batch...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+
+        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} @intlxsolutions.com agents`);
+        
+        // Log summary
+        const statusCounts = agents.reduce((counts, agent) => {
+            counts[agent.status] = (counts[agent.status] || 0) + 1;
+            return counts;
+        }, {});
+        
+        console.log(`[Agent Status] Status summary:`, statusCounts);
+        
+        return agents;
 
     } catch (error) {
-        console.error('[API] Error fetching agent status:', error.message);
-        
-        // Return empty array instead of crashing
-        res.json({
-            success: false,
-            error: error.message,
-            agents: [], // Always empty array, never mock data
-            lastUpdated: new Date().toISOString()
-        });
+        console.error('[Agent Status] ❌ Critical error:', error.message);
+        return [];
     }
-});
+}
 
 /**
  * Remove any existing calls to getMockAgentStatuses()
