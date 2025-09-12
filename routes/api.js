@@ -664,6 +664,7 @@ async function getMessagingTokenForPresence() {
  */
 async function getUserPresence(unifiedUserId) {
     try {
+        console.log(`[Debug] Getting presence for user ID: ${unifiedUserId}`);
         const token = await getMessagingTokenForPresence();
         
         const response = await fetch(
@@ -676,16 +677,20 @@ async function getUserPresence(unifiedUserId) {
             }
         );
         
+        console.log(`[Debug] Presence response for ${unifiedUserId}: ${response.status}`);
+        
         if (response.ok) {
             const data = await response.json();
+            console.log(`[Debug] Presence data for ${unifiedUserId}:`, data);
             return data.presence || 'unknown';
         } else {
-            console.log(`No presence data for user ${unifiedUserId}: ${response.status}`);
+            const errorText = await response.text();
+            console.log(`[Debug] No presence data for user ${unifiedUserId}: ${response.status} - ${errorText}`);
             return 'unknown';
         }
         
     } catch (error) {
-        console.error(`Error getting presence for ${unifiedUserId}:`, error.message);
+        console.error(`[Debug] Error getting presence for ${unifiedUserId}:`, error.message);
         return 'unknown';
     }
 }
@@ -2011,6 +2016,36 @@ router.get('/debug-intermedia-users', async (req, res) => {
                 });
             }
         }
+
+        router.get('/debug-user-ids', async (req, res) => {
+    try {
+        // Get address book contacts
+        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        const contactsData = await contactsResponse.json();
+        const contacts = contactsData.results || [];
+        
+        // Check if your messaging user ID is in the address book
+        const yourMessagingId = '441a5edc-b075-4f6a-8027-6a339b903edb';
+        const matchingContact = contacts.find(c => c.id === yourMessagingId);
+        
+        res.json({
+            totalContacts: contacts.length,
+            yourMessagingId: yourMessagingId,
+            foundInAddressBook: !!matchingContact,
+            matchingContact: matchingContact,
+            sampleContactIds: contacts.slice(0, 5).map(c => ({ id: c.id, name: c.name }))
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
         
         // If we found users, test presence endpoints with actual user IDs
         let presenceResults = [];
