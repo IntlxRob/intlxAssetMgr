@@ -1343,94 +1343,71 @@ router.post('/debug-mirror-curl', async (req, res) => {
 // ============================================
 
 /**
- * CORRECTED: Fetch agent statuses using ONLY messaging API
+ * CORRECTED: Fetch agent statuses using Address Book + Messaging API
  */
 async function fetchAgentStatuses() {
     try {
-        console.log('[Agent Status] Fetching users and presence from messaging API only');
+        console.log('[Agent Status] Fetching users from Address Book + presence from Messaging API');
 
-        // Step 1: Get messaging token
-        const messagingToken = await getIntermediaToken();
-        console.log('[Agent Status] ✅ Got messaging token');
-
-        // Step 2: Get users from messaging API (not address book!)
-        const messagingUserEndpoints = [
-            'https://api.elevate.services/messaging/v1/accounts/_me/users',
-            'https://api.elevate.services/messaging/v1/users',
-            'https://api.elevate.services/messaging/v1/accounts/_me'
-        ];
-
-        let users = [];
-        let workingEndpoint = null;
-
-        for (const endpoint of messagingUserEndpoints) {
-            try {
-                console.log(`[Agent Status] Trying messaging users endpoint: ${endpoint}`);
-                
-                const response = await fetch(endpoint, {
-                    headers: {
-                        'Authorization': `Bearer ${messagingToken}`,
-                        'Accept': 'application/json'
-                    }
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    console.log(`[Agent Status] Response from ${endpoint}:`, JSON.stringify(data, null, 2));
-                    
-                    // Extract users from different response formats
-                    if (Array.isArray(data)) {
-                        users = data;
-                    } else if (data.users && Array.isArray(data.users)) {
-                        users = data.users;
-                    } else if (data.results && Array.isArray(data.results)) {
-                        users = data.results;
-                    } else if (data.data && Array.isArray(data.data)) {
-                        users = data.data;
-                    }
-                    
-                    if (users.length > 0) {
-                        workingEndpoint = endpoint;
-                        console.log(`[Agent Status] ✅ Found ${users.length} users from ${endpoint}`);
-                        break;
-                    }
-                } else {
-                    const errorText = await response.text();
-                    console.log(`[Agent Status] ${endpoint} failed: ${response.status} - ${errorText}`);
-                }
-            } catch (err) {
-                console.log(`[Agent Status] ${endpoint} error:`, err.message);
+        // Step 1: Check Address Book authentication
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            console.log('[Agent Status] Address Book token expired, attempting refresh...');
+            const refreshed = await refreshAddressBookToken();
+            if (!refreshed) {
+                console.log('[Agent Status] ⚠️ Address Book authentication required');
+                return [];
             }
         }
 
-        if (users.length === 0) {
-            console.log('[Agent Status] ⚠️ No users found from messaging API endpoints');
+        // Step 2: Get users from Address Book API (this works!)
+        console.log('[Agent Status] Getting users from Address Book...');
+        
+        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        if (!contactsResponse.ok) {
+            console.log(`[Agent Status] ❌ Address Book failed: ${contactsResponse.status}`);
+            return [];
+        }
+        
+        const contactsData = await contactsResponse.json();
+        const contacts = contactsData.results || [];
+        
+        console.log(`[Agent Status] ✅ Found ${contacts.length} contacts from Address Book`);
+
+        if (contacts.length === 0) {
+            console.log('[Agent Status] ⚠️ No contacts found in Address Book');
             return [];
         }
 
-        console.log(`[Agent Status] Processing ${users.length} messaging users...`);
+        // Step 3: Get messaging token for presence data
+        console.log('[Agent Status] Getting messaging token for presence...');
+        const messagingToken = await getIntermediaToken();
+        console.log('[Agent Status] ✅ Got messaging token');
 
-        // Step 3: Get presence for each user
+        // Step 4: Get presence for each contact
         const agents = [];
+        const BATCH_SIZE = 5; // Process in small batches
 
-        // Process users (limit to avoid rate limits)
-        for (const user of users.slice(0, 10)) {
-            try {
-                // Extract user ID (messaging API format)
-                const userId = user.unifiedUserId || user.id || user.userId;
-                
-                if (!userId) {
-                    console.log('[Agent Status] ⚠️ Skipping user - no ID found:', user);
-                    continue;
-                }
-
-                console.log(`[Agent Status] Getting presence for messaging user: ${user.displayName || user.name || userId}`);
-
-                // Step 4: Get presence using messaging API
-                let presenceData = null;
+        for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
+            const batch = contacts.slice(i, i + BATCH_SIZE);
+            
+            const presencePromises = batch.map(async (contact) => {
                 try {
+                    if (!contact.id) {
+                        console.log('[Agent Status] ⚠️ Skipping contact - no ID');
+                        return null;
+                    }
+
+                    console.log(`[Agent Status] Getting presence for ${contact.displayName || contact.id}`);
+
+                    // Get presence from messaging API
                     const presenceResponse = await fetch(
-                        `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${userId}`,
+                        `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${contact.id}`,
                         {
                             headers: {
                                 'Authorization': `Bearer ${messagingToken}`,
@@ -1438,52 +1415,85 @@ async function fetchAgentStatuses() {
                             }
                         }
                     );
-                    
+
+                    let presenceData = null;
                     if (presenceResponse.ok) {
                         presenceData = await presenceResponse.json();
-                        console.log(`[Agent Status] ✅ Got presence for ${user.displayName || userId}: ${presenceData?.presence || 'unknown'}`);
+                        console.log(`[Agent Status] ✅ ${contact.displayName}: ${presenceData?.presence || 'unknown'}`);
                     } else {
-                        const errorText = await presenceResponse.text();
-                        console.log(`[Agent Status] ❌ Presence failed for ${user.displayName || userId}: ${presenceResponse.status} - ${errorText}`);
+                        console.log(`[Agent Status] ❌ Presence failed for ${contact.displayName}: ${presenceResponse.status}`);
                     }
-                } catch (presenceErr) {
-                    console.log(`[Agent Status] ❌ Presence API error for ${user.displayName || userId}:`, presenceErr.message);
+
+                    // Create agent object
+                    return {
+                        id: contact.id,
+                        name: contact.displayName || contact.name || contact.firstName + ' ' + contact.lastName || `User ${contact.id}`,
+                        email: contact.email || contact.primaryEmail || `${contact.id}@company.com`,
+                        extension: contact.extension || contact.phoneNumber || 'N/A',
+                        // Status from presence data
+                        status: presenceData ? 
+                            mapMessagingStatus(presenceData.presence || presenceData.status) : 
+                            'offline',
+                        onCall: false, // Messaging API doesn't provide call status
+                        lastActivity: presenceData?.lastActivity || presenceData?.lastSeen || new Date().toISOString(),
+                        // Source info
+                        source: 'address_book + messaging',
+                        rawContactData: contact,
+                        rawPresenceData: presenceData
+                    };
+
+                } catch (error) {
+                    console.log(`[Agent Status] ❌ Error processing contact ${contact.displayName}:`, error.message);
+                    return null;
                 }
+            });
 
-                // Step 5: Create agent object with messaging data
-                const agent = {
-                    id: userId,
-                    name: user.displayName || user.name || user.firstName + ' ' + user.lastName || `User ${userId}`,
-                    email: user.email || user.primaryEmail || `${userId}@company.com`,
-                    extension: user.extension || user.phoneNumber || 'N/A',
-                    // Presence status
-                    status: presenceData ? 
-                        mapMessagingStatus(presenceData.presence || presenceData.status) : 
-                        'offline',
-                    presenceStatus: presenceData ? 
-                        mapMessagingStatus(presenceData.presence || presenceData.status) : 
-                        'offline',
-                    lastActivity: presenceData?.lastActivity || presenceData?.lastSeen || new Date().toISOString(),
-                    // Raw data for debugging
-                    rawUserData: user,
-                    rawPresenceData: presenceData,
-                    source: 'messaging_api'
-                };
+            const batchResults = await Promise.all(presencePromises);
+            const validAgents = batchResults.filter(agent => agent !== null);
+            agents.push(...validAgents);
 
-                agents.push(agent);
-                console.log(`[Agent Status] ✅ Processed agent: ${agent.name} - Status: ${agent.status}`);
-
-            } catch (userError) {
-                console.log(`[Agent Status] ❌ Error processing user:`, userError.message);
+            // Small delay between batches
+            if (i + BATCH_SIZE < contacts.length) {
+                await new Promise(resolve => setTimeout(resolve, 200));
             }
         }
 
-        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents from messaging API`);
+        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents`);
         return agents;
 
     } catch (error) {
-        console.error('[Agent Status] ❌ Critical error in fetchAgentStatuses:', error.message);
+        console.error('[Agent Status] ❌ Critical error:', error.message);
         return [];
+    }
+}
+
+/**
+ * Map messaging API status to standard statuses
+ */
+function mapMessagingStatus(status) {
+    if (!status) return 'offline';
+    
+    const lowerStatus = status.toLowerCase();
+    
+    switch (lowerStatus) {
+        case 'available':
+        case 'online':
+        case 'active':
+            return 'available';
+        case 'busy':
+        case 'occupied':
+        case 'dnd':
+        case 'do not disturb':
+            return 'busy';
+        case 'away':
+        case 'idle':
+        case 'absent':
+            return 'away';
+        case 'offline':
+        case 'invisible':
+            return 'offline';
+        default:
+            return 'unknown';
     }
 }
 
