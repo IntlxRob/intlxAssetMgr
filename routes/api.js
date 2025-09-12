@@ -629,32 +629,48 @@ async function getIntermediaToken() {
 }
 
 /**
- * Get messaging token for presence (working version)
+ * Debug version of messaging token request
  */
 async function getMessagingTokenForPresence() {
     try {
+        console.log('[Debug] Requesting messaging token...');
+        console.log('[Debug] Client ID exists:', !!process.env.INTERMEDIA_CLIENT_ID);
+        console.log('[Debug] Client Secret exists:', !!process.env.INTERMEDIA_CLIENT_SECRET);
+        console.log('[Debug] Client ID length:', process.env.INTERMEDIA_CLIENT_ID ? process.env.INTERMEDIA_CLIENT_ID.length : 0);
+        
+        const requestBody = new URLSearchParams({
+            grant_type: 'client_credentials',
+            client_id: process.env.INTERMEDIA_CLIENT_ID,
+            client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+            scope: 'api.service.messaging'
+        });
+        
+        console.log('[Debug] Request body:', requestBody.toString());
+        
         const response = await fetch('https://login.serverdata.net/user/connect/token', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
-            body: new URLSearchParams({
-                grant_type: 'client_credentials',
-                client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.service.messaging'
-            })
+            body: requestBody
         });
+        
+        console.log('[Debug] Response status:', response.status);
+        console.log('[Debug] Response headers:', Object.fromEntries(response.headers.entries()));
+        
+        const responseText = await response.text();
+        console.log('[Debug] Response body:', responseText);
 
         if (!response.ok) {
-            throw new Error(`Token request failed: ${response.status}`);
+            throw new Error(`Token request failed: ${response.status} - ${responseText}`);
         }
 
-        const tokenData = await response.json();
+        const tokenData = JSON.parse(responseText);
+        console.log('[Debug] Token received successfully');
         return tokenData.access_token;
         
     } catch (error) {
-        console.error('[Messaging] Error getting token:', error.message);
+        console.error('[Debug] Token request error:', error.message);
         throw error;
     }
 }
