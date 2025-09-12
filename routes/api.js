@@ -1242,52 +1242,15 @@ router.get('/debug-presence-endpoints', async (req, res) => {
     }
 });
 
-//
 /**
- * Get Intermedia calling token for phone status
- */
-async function getCallingToken() {
-    try {
-        console.log('[Calling API] Requesting calling access token');
-        
-        const response = await fetch('https://login.serverdata.net/user/connect/token', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({
-                grant_type: 'client_credentials',
-                client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.user.voice.calls' // Different scope for phone status
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`Calling token request failed: ${response.status}`);
-        }
-
-        const tokenData = await response.json();
-        console.log('[Calling API] Token obtained successfully');
-        
-        return tokenData.access_token;
-        
-    } catch (error) {
-        console.error('[Calling API] Token request failed:', error.message);
-        throw error;
-    }
-}
-
-/**
- * Fetch agent statuses from both Messaging and Calling APIs
+ * Fetch agent statuses from Messaging API only (no calling API)
  */
 async function fetchAgentStatuses() {
     try {
-        console.log('[Agent Status] Fetching from both messaging and calling APIs');
+        console.log('[Agent Status] Fetching from messaging API only');
 
-        // Get tokens for both APIs
+        // Get messaging token
         const messagingToken = await getIntermediaToken();
-        const callingToken = await getCallingToken();
 
         // Fetch users from address book first
         const userEndpoints = [
@@ -1336,7 +1299,7 @@ async function fetchAgentStatuses() {
                 const userId = user.id || user.unifiedUserId || user.userId;
                 if (!userId) continue;
 
-                // Get messaging presence
+                // Get messaging presence only
                 let messagingPresence = null;
                 try {
                     const msgResponse = await fetch(
@@ -1355,38 +1318,16 @@ async function fetchAgentStatuses() {
                     console.log(`[Agent Status] Messaging presence failed for user ${userId}`);
                 }
 
-                // Get calling/phone status
-                let phoneStatus = null;
-                try {
-                    const callResponse = await fetch(
-                        `https://api.elevate.services/calling/v1/accounts/_me/users/${userId}/presence`,
-                        {
-                            headers: {
-                                'Authorization': `Bearer ${callingToken}`,
-                                'Content-Type': 'application/json'
-                            }
-                        }
-                    );
-                    if (callResponse.ok) {
-                        phoneStatus = await callResponse.json();
-                    }
-                } catch (callErr) {
-                    console.log(`[Agent Status] Phone status failed for user ${userId}`);
-                }
-
-                // Combine the data
+                // Create agent with messaging data only
                 agents.push({
                     id: userId,
                     name: user.displayName || user.name || `User ${userId}`,
                     email: user.email || `user${userId}@company.com`,
-                    extension: user.extension || phoneStatus?.extension || 'N/A',
-                    // Phone status from calling API
-                    phoneStatus: mapPhoneStatus(phoneStatus?.status),
-                    onCall: phoneStatus?.onCall || phoneStatus?.inCall || false,
-                    // Messaging presence from messaging API
-                    presenceStatus: mapMessagingStatus(messagingPresence?.presence),
-                    lastActivity: phoneStatus?.lastActivity || messagingPresence?.lastActivity || new Date().toISOString(),
-                    rawPhoneData: phoneStatus,
+                    extension: user.extension || 'N/A',
+                    // Only messaging presence data
+                    status: mapMessagingStatus(messagingPresence?.presence || messagingPresence?.status),
+                    presenceStatus: mapMessagingStatus(messagingPresence?.presence || messagingPresence?.status),
+                    lastActivity: messagingPresence?.lastActivity || new Date().toISOString(),
                     rawPresenceData: messagingPresence
                 });
 
@@ -1395,11 +1336,11 @@ async function fetchAgentStatuses() {
             }
         }
 
-        console.log(`[Agent Status] Successfully processed ${agents.length} agents with combined data`);
+        console.log(`[Agent Status] Successfully processed ${agents.length} agents with messaging data only`);
         return agents.length > 0 ? agents : getMockAgentStatuses();
 
     } catch (error) {
-        console.error('[Agent Status] Error fetching combined status:', error.message);
+        console.error('[Agent Status] Error fetching messaging status:', error.message);
         return [];
     }
 }
@@ -1463,33 +1404,6 @@ function mapMessagingStatus(status) {
             return 'away';
         case 'offline':
         case 'invisible':
-            return 'offline';
-        default:
-            return 'unknown';
-    }
-}
-
-/**
- * Map calling API status to phone statuses
- */
-function mapPhoneStatus(status) {
-    if (!status) return 'unknown';
-    
-    const lowerStatus = status.toLowerCase();
-    
-    switch (lowerStatus) {
-        case 'available':
-        case 'ready':
-            return 'available';
-        case 'busy':
-        case 'on call':
-        case 'in call':
-            return 'busy';
-        case 'away':
-        case 'break':
-            return 'away';
-        case 'offline':
-        case 'unavailable':
             return 'offline';
         default:
             return 'unknown';
@@ -1724,172 +1638,6 @@ router.post('/agents-status-batch', async (req, res) => {
         });
     }
 });
-
-// ============================================
-// VOICE API PRESENCE FUNCTIONS (NEW)
-// ============================================
-
-/**
- * Get voice API token with correct scope
- */
-async function getVoiceToken() {
-    try {
-        console.log('[Voice API] Requesting voice API token...');
-        
-        const response = await fetch('https://login.serverdata.net/user/connect/token', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({
-                grant_type: 'client_credentials',
-                client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.user.voice.calls' // Use the working scope from your debug test
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`Voice token request failed: ${response.status}`);
-        }
-
-        const tokenData = await response.json();
-        console.log('[Voice API] Got voice token successfully');
-        
-        return tokenData.access_token;
-        
-    } catch (error) {
-        console.error('[Voice API] Error getting voice token:', error.message);
-        throw error;
-    }
-}
-
-/**
- * Get account ID for voice API calls
- */
-async function getAccountId(token) {
-    const accountEndpoints = [
-        'https://api.elevate.services/voice/v1/accounts/_me',
-        'https://api.elevate.services/voice/v1/accounts',
-        'https://api.elevate.services/voice/v1/account'
-    ];
-    
-    for (const endpoint of accountEndpoints) {
-        try {
-            const response = await fetch(endpoint, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Accept': 'application/json'
-                }
-            });
-            
-            if (response.ok) {
-                const data = await response.json();
-                // Extract account ID from different possible response formats
-                if (data.id) return data.id;
-                if (data.accountId) return data.accountId;
-                if (Array.isArray(data) && data[0]?.id) return data[0].id;
-                
-                console.log('[Voice API] Account data:', data);
-            }
-        } catch (error) {
-            console.log(`[Voice API] Failed to get account from ${endpoint}`);
-        }
-    }
-    
-    throw new Error('Could not determine account ID');
-}
-
-/**
- * Get extensions for the account
- */
-async function getExtensions(token, accountId) {
-    try {
-        const response = await fetch(`https://api.elevate.services/voice/v1/accounts/${accountId}/extensions`, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/json'
-            }
-        });
-        
-        if (response.ok) {
-            const data = await response.json();
-            return Array.isArray(data) ? data : (data.extensions || []);
-        }
-        
-        throw new Error(`Extensions API returned ${response.status}`);
-        
-    } catch (error) {
-        console.error('[Voice API] Error fetching extensions:', error.message);
-        return [];
-    }
-}
-
-/**
- * Fetch presence using the voice API (as per ServerData support)
- */
-async function fetchVoicePresence() {
-    try {
-        console.log('[Voice API] Starting voice presence fetch...');
-        
-        // 1. Get voice API token with correct scope
-        const token = await getVoiceToken();
-        
-        // 2. Get account ID
-        const accountId = await getAccountId(token);
-        console.log('[Voice API] Using account ID:', accountId);
-        
-        // 3. Get extensions for the account
-        const extensions = await getExtensions(token, accountId);
-        console.log('[Voice API] Found', extensions.length, 'extensions');
-        
-        // 4. Get presence for each extension
-        const presenceData = [];
-        
-        for (const extension of extensions) {
-            const extensionId = extension.id || extension.extensionId || extension.number;
-            const presenceUrl = `https://api.elevate.services/voice/v1/accounts/${accountId}/extensions/${extensionId}/presence`;
-            
-            try {
-                console.log(`[Voice API] Getting presence for extension ${extensionId}`);
-                
-                const response = await fetch(presenceUrl, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Accept': 'application/json'
-                    }
-                });
-                
-                if (response.ok) {
-                    const presenceInfo = await response.json();
-                    console.log(`[Voice API] Presence for ${extensionId}:`, presenceInfo);
-                    
-                    presenceData.push({
-                        extension: extension,
-                        presence: presenceInfo,
-                        status: presenceInfo.status || 'unknown',
-                        onCall: presenceInfo.onCall || presenceInfo.inCall || false
-                    });
-                } else {
-                    console.log(`[Voice API] Failed to get presence for extension ${extensionId}: ${response.status}`);
-                }
-            } catch (e) {
-                console.log(`[Voice API] Error getting presence for extension ${extensionId}:`, e.message);
-            }
-        }
-        
-        console.log(`[Voice API] Retrieved presence for ${presenceData.length} extensions`);
-        return presenceData;
-        
-    } catch (error) {
-        console.error('[Voice API] Error fetching voice presence:', error.message);
-        return [];
-    }
-}
-
-// ============================================
-// END OF AGENT STATUS IMPLEMENTATION
-// ============================================
 
 /**
  * Debug endpoint to test Intermedia token request
