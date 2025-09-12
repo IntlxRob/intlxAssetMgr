@@ -580,18 +580,27 @@ const AGENT_STATUS_CACHE_DURATION = 30000; // 30 seconds
 const TOKEN_REFRESH_BUFFER = 300000; // 5 minutes before expiry
 
 /**
- * Get or refresh Intermedia access token
+ * FIXED: Get Intermedia token with correct messaging scope
  */
 async function getIntermediaToken() {
-    // Check if we have a valid token
+    // Check if we have a valid cached token
     if (intermediaCache.token && Date.now() < intermediaCache.tokenExpiry - TOKEN_REFRESH_BUFFER) {
         console.log('[Intermedia] Using cached token');
         return intermediaCache.token;
     }
 
-    console.log('[Intermedia] Requesting new access token');
+    console.log('[Intermedia] Requesting new messaging token');
     
     try {
+        const clientId = process.env.INTERMEDIA_CLIENT_ID;
+        const clientSecret = process.env.INTERMEDIA_CLIENT_SECRET;
+        
+        if (!clientId || !clientSecret) {
+            throw new Error('Missing INTERMEDIA_CLIENT_ID or INTERMEDIA_CLIENT_SECRET environment variables');
+        }
+        
+        console.log('[Intermedia] Making token request with messaging scope...');
+        
         const response = await fetch('https://login.serverdata.net/user/connect/token', {
             method: 'POST',
             headers: {
@@ -599,14 +608,16 @@ async function getIntermediaToken() {
             },
             body: new URLSearchParams({
                 grant_type: 'client_credentials',
-                client_id: process.env.INTERMEDIA_CLIENT_ID,
-                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-                scope: 'api.service.messaging' // Using calling scope for voice/presence data
+                client_id: clientId,
+                client_secret: clientSecret,
+                scope: 'api.service.messaging' // FIXED: Use the correct scope
             })
         });
 
         if (!response.ok) {
-            throw new Error(`Token request failed: ${response.status} ${response.statusText}`);
+            const errorText = await response.text();
+            console.error('[Intermedia] Token request failed:', response.status, errorText);
+            throw new Error(`Token request failed: ${response.status} - ${errorText}`);
         }
 
         const tokenData = await response.json();
@@ -619,72 +630,34 @@ async function getIntermediaToken() {
         intermediaCache.token = tokenData.access_token;
         intermediaCache.tokenExpiry = Date.now() + (tokenData.expires_in * 1000);
         
-        console.log('[Intermedia] Token obtained successfully, expires in', tokenData.expires_in, 'seconds');
+        console.log('[Intermedia] ✅ Token obtained successfully with messaging scope, expires in', tokenData.expires_in, 'seconds');
         return intermediaCache.token;
         
     } catch (error) {
-        console.error('[Intermedia] Token request failed:', error.message);
+        console.error('[Intermedia] ❌ Token request failed:', error.message);
         throw error;
     }
 }
 
 /**
- * Debug version of messaging token request
+ * Debug endpoint to test the fixed token function
  */
-async function getMessagingTokenForPresence() {
+router.get('/debug-test-fixed-messaging-token', async (req, res) => {
     try {
-        console.log('[Debug] Requesting messaging token...');
-        console.log('[Debug] Client ID exists:', !!process.env.INTERMEDIA_CLIENT_ID);
-        console.log('[Debug] Client Secret exists:', !!process.env.INTERMEDIA_CLIENT_SECRET);
-        console.log('[Debug] Client ID length:', process.env.INTERMEDIA_CLIENT_ID ? process.env.INTERMEDIA_CLIENT_ID.length : 0);
+        console.log('[Debug] Testing fixed messaging token function...');
         
-        const requestBody = new URLSearchParams({
-            grant_type: 'client_credentials',
-            client_id: process.env.INTERMEDIA_CLIENT_ID,
-            client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
-            scope: 'api.service.messaging'
-        });
+        // Clear any cached token to force a fresh request
+        intermediaCache.token = null;
+        intermediaCache.tokenExpiry = 0;
         
-        console.log('[Debug] Request body:', requestBody.toString());
+        // Try to get a fresh token
+        const token = await getIntermediaToken();
         
-        const response = await fetch('https://login.serverdata.net/user/connect/token', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: requestBody
-        });
+        // Test the token with a presence API call
+        const testUserId = '7391a3e6-4aac-4961-874e-9d681f91d83b'; // From your logs
         
-        console.log('[Debug] Response status:', response.status);
-        console.log('[Debug] Response headers:', Object.fromEntries(response.headers.entries()));
-        
-        const responseText = await response.text();
-        console.log('[Debug] Response body:', responseText);
-
-        if (!response.ok) {
-            throw new Error(`Token request failed: ${response.status} - ${responseText}`);
-        }
-
-        const tokenData = JSON.parse(responseText);
-        console.log('[Debug] Token received successfully');
-        return tokenData.access_token;
-        
-    } catch (error) {
-        console.error('[Debug] Token request error:', error.message);
-        throw error;
-    }
-}
-
-/**
- * Get presence for specific user (working version)
- */
-async function getUserPresence(unifiedUserId) {
-    try {
-        console.log(`[Debug] Getting presence for user ID: ${unifiedUserId}`);
-        const token = await getMessagingTokenForPresence();
-        
-        const response = await fetch(
-            `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${unifiedUserId}`,
+        const presenceResponse = await fetch(
+            `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${testUserId}`,
             {
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -693,23 +666,33 @@ async function getUserPresence(unifiedUserId) {
             }
         );
         
-        console.log(`[Debug] Presence response for ${unifiedUserId}: ${response.status}`);
-        
-        if (response.ok) {
-            const data = await response.json();
-            console.log(`[Debug] Presence data for ${unifiedUserId}:`, data);
-            return data.presence || 'unknown';
-        } else {
-            const errorText = await response.text();
-            console.log(`[Debug] No presence data for user ${unifiedUserId}: ${response.status} - ${errorText}`);
-            return 'unknown';
-        }
+        const presenceData = presenceResponse.ok ? 
+            await presenceResponse.json() : 
+            await presenceResponse.text();
+            
+        res.json({
+            success: presenceResponse.ok,
+            tokenObtained: !!token,
+            tokenPreview: token ? token.substring(0, 20) + '...' : null,
+            presenceTest: {
+                status: presenceResponse.status,
+                ok: presenceResponse.ok,
+                data: presenceData
+            },
+            message: presenceResponse.ok ? 
+                'Messaging token is working for presence API!' : 
+                'Messaging token obtained but presence API still failing',
+            scope: 'api.service.messaging'
+        });
         
     } catch (error) {
-        console.error(`[Debug] Error getting presence for ${unifiedUserId}:`, error.message);
-        return 'unknown';
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            message: 'Fixed messaging token function is still failing'
+        });
     }
-}
+});
 
 // ============================================
 // UPDATED PRESENCE INTEGRATION - FOLLOWING OFFICIAL API SPEC
@@ -1238,6 +1221,146 @@ router.get('/debug-presence-endpoints', async (req, res) => {
             success: false,
             error: error.message,
             recommendation: 'Check your INTERMEDIA_CLIENT_ID and INTERMEDIA_CLIENT_SECRET environment variables'
+        });
+    }
+});
+
+/**
+ * Debug endpoint to check environment variables and compare with curl
+ */
+router.get('/debug-env-vs-curl', async (req, res) => {
+    try {
+        console.log('[Debug] Checking environment variables vs curl setup...');
+        
+        const clientId = process.env.INTERMEDIA_CLIENT_ID;
+        const clientSecret = process.env.INTERMEDIA_CLIENT_SECRET;
+        
+        // Check if credentials exist
+        const credsCheck = {
+            hasClientId: !!clientId,
+            hasClientSecret: !!clientSecret,
+            clientIdLength: clientId ? clientId.length : 0,
+            clientIdPreview: clientId ? clientId.substring(0, 10) + '...' : 'MISSING',
+            // Don't log the secret for security
+        };
+        
+        // Test the exact same request that curl would make
+        if (clientId && clientSecret) {
+            try {
+                console.log('[Debug] Making token request with same parameters as curl...');
+                
+                // This should mirror your curl command exactly
+                const tokenResponse = await fetch('https://login.serverdata.net/user/connect/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Node.js-Server' // Different from curl
+                    },
+                    body: new URLSearchParams({
+                        grant_type: 'client_credentials',
+                        client_id: clientId,
+                        client_secret: clientSecret,
+                        scope: 'api.service.messaging'
+                    }).toString()
+                });
+                
+                const tokenResponseText = await tokenResponse.text();
+                console.log('[Debug] Token response:', tokenResponse.status, tokenResponseText);
+                
+                // Try to parse as JSON
+                let tokenData = null;
+                try {
+                    tokenData = JSON.parse(tokenResponseText);
+                } catch (parseErr) {
+                    console.log('[Debug] Response is not JSON:', parseErr.message);
+                }
+                
+                res.json({
+                    success: tokenResponse.ok,
+                    environmentCheck: credsCheck,
+                    tokenRequest: {
+                        status: tokenResponse.status,
+                        statusText: tokenResponse.statusText,
+                        responseHeaders: Object.fromEntries(tokenResponse.headers.entries()),
+                        responseBody: tokenResponseText,
+                        parsedData: tokenData
+                    },
+                    curlEquivalent: `curl -X POST "https://login.serverdata.net/user/connect/token" \\
+  -H "Content-Type: application/x-www-form-urlencoded" \\
+  -d "grant_type=client_credentials" \\
+  -d "client_id=${clientId}" \\
+  -d "client_secret=[HIDDEN]" \\
+  -d "scope=api.service.messaging"`,
+                    message: tokenResponse.ok ? 
+                        'Server environment and curl should be equivalent' : 
+                        'Server environment differs from curl - check credentials or network'
+                });
+                
+            } catch (fetchError) {
+                res.json({
+                    success: false,
+                    environmentCheck: credsCheck,
+                    fetchError: fetchError.message,
+                    message: 'Server cannot make the same request that curl can'
+                });
+            }
+        } else {
+            res.json({
+                success: false,
+                environmentCheck: credsCheck,
+                message: 'Missing environment variables on server - this is likely the issue'
+            });
+        }
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Debug endpoint to test the exact curl command in Node.js
+ */
+router.post('/debug-mirror-curl', async (req, res) => {
+    try {
+        const { clientId, clientSecret, scope } = req.body;
+        
+        if (!clientId || !clientSecret) {
+            return res.status(400).json({
+                error: 'Missing clientId or clientSecret in request body'
+            });
+        }
+        
+        console.log('[Debug] Mirroring exact curl request in Node.js...');
+        
+        // Mirror curl exactly
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+                // No custom User-Agent to match curl default
+            },
+            body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}&scope=${encodeURIComponent(scope || 'api.service.messaging')}`
+        });
+        
+        const responseText = await response.text();
+        
+        res.json({
+            success: response.ok,
+            status: response.status,
+            headers: Object.fromEntries(response.headers.entries()),
+            body: responseText,
+            message: response.ok ? 
+                'Node.js request matches curl success!' : 
+                'Node.js request differs from curl - investigate response'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });
