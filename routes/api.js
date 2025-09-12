@@ -1242,17 +1242,30 @@ router.get('/debug-presence-endpoints', async (req, res) => {
     }
 });
 
+// ============================================
+// NO MOCK DATA FIX: Return empty arrays instead of crashing
+// ============================================
+
 /**
- * Fetch agent statuses using Address Book for users + Messaging API for presence
+ * FIXED: fetchAgentStatuses function - no mock data, empty arrays only
  */
 async function fetchAgentStatuses() {
     try {
         console.log('[Agent Status] Fetching users from address book, then presence from messaging API');
 
-        // Step 1: Get users from Address Book (we know this works)
+        // Step 1: Try to get users from Address Book 
         let users = [];
+        let addressBookWorking = false;
+        
         try {
             console.log('[Agent Status] Getting users from address book...');
+            
+            // Check if we have a valid address book token
+            if (!global.addressBookToken) {
+                console.log('[Agent Status] ⚠️ No address book token found, cannot proceed');
+                return [];
+            }
+
             const addressBookResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/contacts', {
                 headers: {
                     'Authorization': `Bearer ${global.addressBookToken}`,
@@ -1263,33 +1276,44 @@ async function fetchAgentStatuses() {
             if (addressBookResponse.ok) {
                 const addressBookData = await addressBookResponse.json();
                 users = addressBookData.results || addressBookData.contacts || [];
+                addressBookWorking = true;
                 console.log(`[Agent Status] ✅ Found ${users.length} users from address book`);
             } else {
                 console.log(`[Agent Status] ❌ Address book failed: ${addressBookResponse.status}`);
+                if (addressBookResponse.status === 401) {
+                    console.log('[Agent Status] ⚠️ Address book token expired or invalid - need to re-authenticate');
+                }
                 return [];
             }
-        } catch (err) {
-            console.log(`[Agent Status] ❌ Address book error:`, err.message);
+        } catch (addressBookErr) {
+            console.log(`[Agent Status] ❌ Address book error:`, addressBookErr.message);
             return [];
         }
 
-        if (users.length === 0) {
-            console.log('[Agent Status] No users found in address book');
+        // Step 2: If no users found, return empty array
+        if (!addressBookWorking || users.length === 0) {
+            console.log('[Agent Status] ⚠️ No users found in address book');
             return [];
         }
 
-        // Step 2: Get messaging token for presence API
-        const messagingToken = await getIntermediaToken();
-        console.log('[Agent Status] ✅ Got messaging token for presence API');
+        // Step 3: Try to get messaging token for presence API
+        let messagingToken = null;
+        try {
+            messagingToken = await getIntermediaToken();
+            console.log('[Agent Status] ✅ Got messaging token for presence API');
+        } catch (tokenErr) {
+            console.log('[Agent Status] ❌ Failed to get messaging token:', tokenErr.message);
+            console.log('[Agent Status] ⚠️ Cannot get presence data without messaging token');
+            return [];
+        }
 
-        // Step 3: Get presence for each user using their unifiedUserId
+        // Step 4: Get presence for each user
         const agents = [];
-        console.log(`[Agent Status] Fetching presence for ${users.length} users...`);
+        console.log(`[Agent Status] Fetching presence for up to 5 users...`);
 
-        // Process each user (limit to avoid rate limits)
-        for (const user of users.slice(0, 10)) {
+        // Process up to 5 users to avoid rate limits and timeouts
+        for (const user of users.slice(0, 5)) {
             try {
-                // Get the unifiedUserId from the address book user
                 const unifiedUserId = user.unifiedUserId || user.id || user.userId;
                 
                 if (!unifiedUserId) {
@@ -1299,9 +1323,12 @@ async function fetchAgentStatuses() {
 
                 console.log(`[Agent Status] Getting presence for user: ${user.name || 'Unknown'} (ID: ${unifiedUserId})`);
 
-                // Step 4: Get presence using the exact format you specified
+                // Get presence with timeout
                 let messagingPresence = null;
                 try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+                    
                     const presenceResponse = await fetch(
                         `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${unifiedUserId}`,
                         {
@@ -1309,42 +1336,46 @@ async function fetchAgentStatuses() {
                             headers: {
                                 'Authorization': `Bearer ${messagingToken}`,
                                 'Accept': 'application/json'
-                            }
+                            },
+                            signal: controller.signal
                         }
                     );
+                    
+                    clearTimeout(timeoutId);
                     
                     if (presenceResponse.ok) {
                         messagingPresence = await presenceResponse.json();
                         console.log(`[Agent Status] ✅ Got presence for ${user.name}: ${messagingPresence?.presence || 'unknown'}`);
                     } else {
-                        const errorText = await presenceResponse.text();
-                        console.log(`[Agent Status] ❌ Presence failed for ${user.name} (${unifiedUserId}): ${presenceResponse.status} - ${errorText}`);
+                        console.log(`[Agent Status] ❌ Presence failed for ${user.name} (${unifiedUserId}): ${presenceResponse.status}`);
                     }
                 } catch (presenceErr) {
-                    console.log(`[Agent Status] ❌ Presence API error for ${user.name}:`, presenceErr.message);
+                    if (presenceErr.name === 'AbortError') {
+                        console.log(`[Agent Status] ⏰ Presence request timeout for ${user.name}`);
+                    } else {
+                        console.log(`[Agent Status] ❌ Presence API error for ${user.name}:`, presenceErr.message);
+                    }
                 }
 
-                // Step 5: Create agent object with combined data
-                const agent = {
-                    id: unifiedUserId,
-                    name: user.displayName || user.name || `User ${unifiedUserId}`,
-                    email: user.email || user.primaryEmail || `user${unifiedUserId}@company.com`,
-                    extension: user.extension || 'N/A',
-                    // Map presence status
-                    status: messagingPresence ? 
-                        mapMessagingStatus(messagingPresence.presence || messagingPresence.status) : 
-                        'offline',
-                    presenceStatus: messagingPresence ? 
-                        mapMessagingStatus(messagingPresence.presence || messagingPresence.status) : 
-                        'offline',
-                    lastActivity: messagingPresence?.lastActivity || messagingPresence?.lastSeen || new Date().toISOString(),
-                    // Include raw data for debugging
-                    rawAddressBookData: user,
-                    rawPresenceData: messagingPresence
-                };
+                // Only add agent if we got some presence data
+                if (messagingPresence) {
+                    const agent = {
+                        id: unifiedUserId,
+                        name: user.displayName || user.name || `User ${unifiedUserId}`,
+                        email: user.email || user.primaryEmail || `user${unifiedUserId}@company.com`,
+                        extension: user.extension || 'N/A',
+                        status: mapMessagingStatus(messagingPresence.presence || messagingPresence.status),
+                        presenceStatus: mapMessagingStatus(messagingPresence.presence || messagingPresence.status),
+                        lastActivity: messagingPresence?.lastActivity || messagingPresence?.lastSeen || new Date().toISOString(),
+                        rawAddressBookData: user,
+                        rawPresenceData: messagingPresence
+                    };
 
-                agents.push(agent);
-                console.log(`[Agent Status] ✅ Processed agent: ${agent.name} - Status: ${agent.status}`);
+                    agents.push(agent);
+                    console.log(`[Agent Status] ✅ Processed agent: ${agent.name} - Status: ${agent.status}`);
+                } else {
+                    console.log(`[Agent Status] ⚠️ Skipping ${user.name} - no presence data available`);
+                }
 
             } catch (userError) {
                 console.log(`[Agent Status] ❌ Error processing user ${user.name || 'Unknown'}:`, userError.message);
@@ -1352,15 +1383,134 @@ async function fetchAgentStatuses() {
         }
 
         console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents with presence data`);
+        return agents; // Return actual agents or empty array
 
-        // Return agents or empty array if none found  
-        return agents.length > 0 ? agents : [];
-
-        } catch (error) {
-            console.error('[Agent Status] ❌ Error in fetchAgentStatuses:', error.message);
-            return []; // Return empty array instead of mock data
-        }
+    } catch (error) {
+        console.error('[Agent Status] ❌ Critical error in fetchAgentStatuses:', error.message);
+        return []; // Return empty array instead of mock data
     }
+}
+
+/**
+ * FIXED: Agent status endpoint - no mock data, empty arrays only
+ */
+router.get('/agent-status', async (req, res) => {
+    try {
+        console.log('[API] Agent status requested');
+        
+        // Check cache first
+        const now = Date.now();
+        const CACHE_DURATION = 30000; // 30 seconds
+        
+        if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0 && 
+            intermediaCache.lastStatusUpdate && 
+            now - intermediaCache.lastStatusUpdate < CACHE_DURATION) {
+            console.log('[API] Returning cached agent statuses');
+            const cachedStatuses = Array.from(intermediaCache.agentStatuses.values());
+            return res.json({
+                success: true,
+                agents: cachedStatuses,
+                cached: true,
+                lastUpdated: new Date(intermediaCache.lastStatusUpdate).toISOString()
+            });
+        }
+
+        // Fetch fresh data
+        const agents = await fetchAgentStatuses();
+        
+        // Update cache only if we have data
+        if (agents.length > 0) {
+            if (!intermediaCache.agentStatuses) {
+                intermediaCache.agentStatuses = new Map();
+            }
+            intermediaCache.agentStatuses.clear();
+            agents.forEach(agent => {
+                intermediaCache.agentStatuses.set(agent.id, agent);
+            });
+            intermediaCache.lastStatusUpdate = now;
+        }
+
+        console.log(`[API] Returning ${agents.length} agent statuses`);
+        
+        res.json({
+            success: agents.length > 0,
+            agents: agents, // Empty array if no data
+            cached: false,
+            lastUpdated: new Date().toISOString(),
+            message: agents.length === 0 ? 'No agent data available - check authentication' : undefined
+        });
+
+    } catch (error) {
+        console.error('[API] Error fetching agent status:', error.message);
+        
+        // Return empty array instead of crashing
+        res.json({
+            success: false,
+            error: error.message,
+            agents: [], // Always empty array, never mock data
+            lastUpdated: new Date().toISOString()
+        });
+    }
+});
+
+/**
+ * Remove any existing calls to getMockAgentStatuses()
+ * SEARCH FOR AND DELETE these lines in your api.js:
+ * 
+ * - return getMockAgentStatuses();
+ * - const mockAgents = getMockAgentStatuses();
+ * - agents : getMockAgentStatuses();
+ * 
+ * Replace them all with: return [];
+ */
+
+/**
+ * Debug endpoint to check address book authentication
+ */
+router.get('/debug-address-book-auth', async (req, res) => {
+    try {
+        console.log('[Debug] Checking address book authentication...');
+        
+        const hasGlobalToken = !!global.addressBookToken;
+        
+        if (!hasGlobalToken) {
+            return res.json({
+                success: false,
+                hasToken: false,
+                message: 'No address book token found in global scope',
+                suggestion: 'Need to authenticate via /api/auth/serverdata/login'
+            });
+        }
+        
+        // Test the token
+        const response = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        const isValid = response.ok;
+        const responseText = await response.text();
+        
+        res.json({
+            success: isValid,
+            hasToken: true,
+            tokenValid: isValid,
+            responseStatus: response.status,
+            responsePreview: responseText.substring(0, 200),
+            tokenPreview: global.addressBookToken ? global.addressBookToken.substring(0, 20) + '...' : null,
+            message: isValid ? 'Address book token is valid' : 'Address book token is invalid or expired',
+            suggestion: isValid ? 'Token is working' : 'Re-authenticate via /api/auth/serverdata/login'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
 
 /**
  * Debug endpoint to test the address book + messaging presence approach
