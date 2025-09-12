@@ -1266,16 +1266,16 @@ async function fetchAgentStatuses() {
                 console.log(`[Agent Status] ✅ Found ${users.length} users from address book`);
             } else {
                 console.log(`[Agent Status] ❌ Address book failed: ${addressBookResponse.status}`);
-                return getMockAgentStatuses();
+                return [];
             }
         } catch (err) {
             console.log(`[Agent Status] ❌ Address book error:`, err.message);
-            return getMockAgentStatuses();
+            return [];
         }
 
         if (users.length === 0) {
             console.log('[Agent Status] No users found in address book');
-            return getMockAgentStatuses();
+            return [];
         }
 
         // Step 2: Get messaging token for presence API
@@ -1352,15 +1352,15 @@ async function fetchAgentStatuses() {
         }
 
         console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents with presence data`);
-        
-        // Return agents or mock data if none found
-        return agents.length > 0 ? agents : getMockAgentStatuses();
 
-    } catch (error) {
-        console.error('[Agent Status] ❌ Error in fetchAgentStatuses:', error.message);
-        return getMockAgentStatuses();
+        // Return agents or empty array if none found  
+        return agents.length > 0 ? agents : [];
+
+        } catch (error) {
+            console.error('[Agent Status] ❌ Error in fetchAgentStatuses:', error.message);
+            return []; // Return empty array instead of mock data
+        }
     }
-}
 
 /**
  * Debug endpoint to test the address book + messaging presence approach
@@ -1439,6 +1439,8 @@ router.get('/debug-presence-flow', async (req, res) => {
         });
     }
 });
+
+https://intlxassetmgr-proxy.onrender.com/api/auth/serverdata/login
 
 /**
  * Process presence data from messaging API
@@ -1550,7 +1552,7 @@ router.get('/agent-status', async (req, res) => {
         console.error('[API] Error fetching agent status:', error.message);
         
         // Return mock data on error
-        const mockAgents = getMockAgentStatuses();
+        return [];
         res.status(500).json({
         success: false,
         error: error.message,
