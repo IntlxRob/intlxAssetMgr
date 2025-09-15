@@ -2430,9 +2430,9 @@ router.post('/setup/sync-elevate-ids', async (req, res) => {
         console.log(`[Setup] Found ${intlxUsers.length} @intlxsolutions.com users in Address Book`);
         
         // Get all Zendesk users to match by email
-        const zendeskUsersResponse = await fetch('https://intlxsolutions.zendesk.com/api/v2/users.json?per_page=100', {
+        const zendeskUsersResponse = await fetch(`https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users.json?per_page=100`, {
             headers: {
-                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`
             }
         });
         
