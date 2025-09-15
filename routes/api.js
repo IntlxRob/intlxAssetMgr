@@ -2390,6 +2390,184 @@ router.get('/agent-status', async (req, res) => {
 });
 
 /**
+ * One-time setup: Sync Elevate IDs from Address Book to Zendesk user fields
+ */
+router.post('/setup/sync-elevate-ids', async (req, res) => {
+    try {
+        console.log('[Setup] Starting Elevate ID sync from Address Book to Zendesk user fields...');
+        
+        // Get all users from Address Book
+        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
+            const refreshed = await refreshAddressBookToken();
+            if (!refreshed) {
+                return res.status(401).json({ 
+                    error: 'Address Book authentication required',
+                    authUrl: '/api/auth/serverdata/login'
+                });
+            }
+        }
+        
+        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
+            headers: {
+                'Authorization': `Bearer ${global.addressBookToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        if (!contactsResponse.ok) {
+            throw new Error(`Address Book API error: ${contactsResponse.status}`);
+        }
+        
+        const contactsData = await contactsResponse.json();
+        const contacts = contactsData.results || [];
+        
+        // Filter to @intlxsolutions.com users
+        const intlxUsers = contacts.filter(contact => 
+            contact.email && 
+            contact.email.toLowerCase().includes('@intlxsolutions.com')
+        );
+        
+        console.log(`[Setup] Found ${intlxUsers.length} @intlxsolutions.com users in Address Book`);
+        
+        // Get all Zendesk users to match by email
+        const zendeskUsersResponse = await fetch('https://intlxsolutions.zendesk.com/api/v2/users.json?per_page=100', {
+            headers: {
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
+            }
+        });
+        
+        if (!zendeskUsersResponse.ok) {
+            throw new Error(`Zendesk users API error: ${zendeskUsersResponse.status}`);
+        }
+        
+        const zendeskData = await zendeskUsersResponse.json();
+        const zendeskUsers = zendeskData.users || [];
+        
+        console.log(`[Setup] Found ${zendeskUsers.length} Zendesk users`);
+        
+        // Match Address Book users to Zendesk users by email and update
+        const updateResults = [];
+        let matched = 0;
+        let updated = 0;
+        let errors = 0;
+        
+        for (const addressBookUser of intlxUsers) {
+            try {
+                // Find matching Zendesk user by email
+                const matchingZendeskUser = zendeskUsers.find(zu => 
+                    zu.email && zu.email.toLowerCase() === addressBookUser.email.toLowerCase()
+                );
+                
+                if (matchingZendeskUser) {
+                    matched++;
+                    console.log(`[Setup] Updating ${matchingZendeskUser.name} with Elevate ID: ${addressBookUser.id}`);
+                    
+                    // Update the Zendesk user with their Elevate ID
+                    const updatePayload = {
+                        user: {
+                            user_fields: {
+                                elevate_id: addressBookUser.id
+                            }
+                        }
+                    };
+                    
+                    const updateResponse = await fetch(`https://intlxsolutions.zendesk.com/api/v2/users/${matchingZendeskUser.id}.json`, {
+                        method: 'PUT',
+                        headers: {
+                            'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(updatePayload)
+                    });
+                    
+                    if (updateResponse.ok) {
+                        updated++;
+                        updateResults.push({
+                            zendesk_user_id: matchingZendeskUser.id,
+                            name: matchingZendeskUser.name,
+                            email: matchingZendeskUser.email,
+                            elevate_id: addressBookUser.id,
+                            status: 'updated'
+                        });
+                    } else {
+                        errors++;
+                        const errorText = await updateResponse.text();
+                        console.error(`[Setup] Failed to update ${matchingZendeskUser.name}: ${errorText}`);
+                    }
+                    
+                    // Small delay to avoid rate limits
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+            } catch (error) {
+                errors++;
+                console.error(`[Setup] Error processing ${addressBookUser.email}:`, error.message);
+            }
+        }
+        
+        console.log(`[Setup] Sync complete. Matched: ${matched}, Updated: ${updated}, Errors: ${errors}`);
+        
+        res.json({
+            success: updated > 0,
+            matched: matched,
+            updated: updated,
+            errors: errors,
+            results: updateResults,
+            message: `Successfully updated ${updated} Zendesk users with Elevate IDs`
+        });
+        
+    } catch (error) {
+        console.error('[Setup] Error syncing Elevate IDs:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Get all Zendesk users with Elevate IDs
+ */
+router.get('/setup/get-users-with-elevate-ids', async (req, res) => {
+    try {
+        const response = await fetch('https://intlxsolutions.zendesk.com/api/v2/users.json?per_page=100', {
+            headers: {
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Zendesk API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const allUsers = data.users || [];
+        
+        // Filter to users with Elevate IDs
+        const usersWithElevateIds = allUsers
+            .filter(user => user.user_fields?.elevate_id)
+            .map(user => ({
+                zendesk_user_id: user.id,
+                name: user.name,
+                email: user.email,
+                elevate_id: user.user_fields.elevate_id
+            }));
+        
+        res.json({
+            success: true,
+            total_users: allUsers.length,
+            users_with_elevate_ids: usersWithElevateIds.length,
+            users: usersWithElevateIds
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * CORRECTED: Handle real Intermedia presence payload structure
  */
 router.post('/notifications', (req, res) => {
