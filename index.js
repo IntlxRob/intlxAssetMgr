@@ -26,7 +26,7 @@ async function initializeServer() {
         // Give the server a moment to fully start
         setTimeout(async () => {
             try {
-                await initializePresenceSubscriptions();
+                await initializeDirectPresenceSubscriptions();
                 console.log('[Server] ✅ Presence subscriptions initialized');
             } catch (error) {
                 console.error('[Server] ❌ Failed to initialize subscriptions:', error);

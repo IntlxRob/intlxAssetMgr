@@ -1397,50 +1397,204 @@ function mapMessagingStatus(status) {
 }
 
 // ============================================
-// PRESENCE SUBSCRIPTION SYSTEM
+// CORRECTED: DIRECT PRESENCE SUBSCRIPTION (NO HUB NEEDED)
 // ============================================
 
 // Global subscription state
 let presenceSubscriptionState = {
-    hubId: null,
     subscriptionId: null,
     renewalTimer: null,
     isInitialized: false
 };
 
 /**
- * Initialize the notifications hub
+ * Create direct subscription for all users (no hub needed)
  */
-async function initializeNotificationsHub() {
+async function createDirectPresenceSubscription() {
     try {
-        console.log('[Presence] Initializing notifications hub...');
+        console.log('[Presence] Creating direct subscription for all users...');
         
         const messagingToken = await getIntermediaToken();
-        const hubResponse = await fetch('https://api.elevate.services/messaging/v1/notifications/hub', {
+        const subscriptionResponse = await fetch('https://api.elevate.services/messaging/v1/subscriptions/accounts/_me/users/_all', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${messagingToken}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                transport: 'webhooks',
-                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
+                event_types: ['presence_changed'],
+                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
+                filters: {
+                    // Only subscribe to @intlxsolutions.com users
+                    email_domains: ['intlxsolutions.com']
+                }
             })
         });
         
-        if (!hubResponse.ok) {
-            throw new Error(`Hub creation failed: ${hubResponse.status} ${await hubResponse.text()}`);
+        if (!subscriptionResponse.ok) {
+            const errorText = await subscriptionResponse.text();
+            throw new Error(`Direct subscription failed: ${subscriptionResponse.status} - ${errorText}`);
         }
         
-        const hubData = await hubResponse.json();
-        presenceSubscriptionState.hubId = hubData.hub_id;
+        const subscription = await subscriptionResponse.json();
+        presenceSubscriptionState.subscriptionId = subscription.id;
         
-        console.log(`[Presence] ✅ Notifications hub created: ${hubData.hub_id}`);
-        return hubData.hub_id;
+        console.log(`[Presence] ✅ Direct subscription created: ${subscription.id}`);
+        console.log(`[Presence] Expires at: ${subscription.expires_at}`);
+        
+        // Schedule automatic renewal
+        if (subscription.expires_at) {
+            scheduleSubscriptionRenewal(subscription.id, subscription.expires_at);
+        }
+        
+        return subscription.id;
         
     } catch (error) {
-        console.error('[Presence] ❌ Failed to initialize notifications hub:', error.message);
+        console.error('[Presence] ❌ Failed to create direct subscription:', error.message);
         throw error;
+    }
+}
+
+/**
+ * Schedule automatic subscription renewal
+ */
+function scheduleSubscriptionRenewal(subscriptionId, expiresAt) {
+    // Clear existing timer
+    if (presenceSubscriptionState.renewalTimer) {
+        clearTimeout(presenceSubscriptionState.renewalTimer);
+    }
+    
+    // Calculate renewal time (5 minutes before expiry)
+    const expiryTime = new Date(expiresAt).getTime();
+    const renewalTime = expiryTime - (5 * 60 * 1000); // 5 minutes buffer
+    const delay = renewalTime - Date.now();
+    
+    console.log(`[Presence] Scheduling renewal in ${Math.round(delay / 60000)} minutes`);
+    
+    presenceSubscriptionState.renewalTimer = setTimeout(async () => {
+        await renewSubscription(subscriptionId);
+    }, Math.max(delay, 30000)); // Minimum 30 seconds delay
+}
+
+/**
+ * Renew the presence subscription
+ */
+async function renewSubscription(subscriptionId) {
+    try {
+        console.log(`[Presence] Renewing subscription: ${subscriptionId}`);
+        
+        const messagingToken = await getIntermediaToken();
+        const renewResponse = await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${subscriptionId}/renew`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                duration: '24h' // Renew for 24 hours
+            })
+        });
+        
+        if (!renewResponse.ok) {
+            const errorText = await renewResponse.text();
+            throw new Error(`Renewal failed: ${renewResponse.status} - ${errorText}`);
+        }
+        
+        const renewedSub = await renewResponse.json();
+        console.log(`[Presence] ✅ Subscription renewed until: ${renewedSub.expires_at}`);
+        
+        // Schedule next renewal
+        scheduleSubscriptionRenewal(subscriptionId, renewedSub.expires_at);
+        
+    } catch (error) {
+        console.error('[Presence] ❌ Failed to renew subscription:', error);
+        console.log('[Presence] Attempting to recreate subscription...');
+        
+        // Fallback: recreate the subscription
+        setTimeout(() => {
+            initializeDirectPresenceSubscriptions();
+        }, 30000); // Retry in 30 seconds
+    }
+}
+
+/**
+ * Initialize the direct presence subscription system (no hub needed)
+ */
+async function initializeDirectPresenceSubscriptions() {
+    try {
+        console.log('[Presence] Initializing direct presence subscription system...');
+        
+        // Create direct subscription
+        const subscriptionId = await createDirectPresenceSubscription();
+        
+        // Get initial presence data
+        const initialAgents = await fetchAgentStatuses();
+        
+        presenceSubscriptionState.isInitialized = true;
+        console.log('[Presence] ✅ Direct presence subscription system fully initialized');
+        
+        return initialAgents;
+        
+    } catch (error) {
+        console.error('[Presence] ❌ Failed to initialize direct subscriptions:', error);
+        presenceSubscriptionState.isInitialized = false;
+        
+        // Fallback to polling if subscriptions fail
+        console.log('[Presence] Falling back to polling mode');
+        return await fetchAgentStatuses();
+    }
+}
+
+/**
+ * Update presence in cache when notification received
+ */
+function updatePresenceCache(userId, presence) {
+    if (!intermediaCache.agentStatuses) {
+        intermediaCache.agentStatuses = new Map();
+    }
+    
+    const existingAgent = intermediaCache.agentStatuses.get(userId);
+    if (existingAgent) {
+        const updatedAgent = {
+            ...existingAgent,
+            status: mapMessagingStatus(presence),
+            phoneStatus: mapMessagingStatus(presence),
+            presenceStatus: mapMessagingStatus(presence),
+            lastActivity: new Date().toISOString(),
+            rawPresenceData: { presence, updated: new Date().toISOString() }
+        };
+        
+        intermediaCache.agentStatuses.set(userId, updatedAgent);
+        intermediaCache.lastStatusUpdate = Date.now();
+        
+        console.log(`[Presence] Updated cache for ${existingAgent.name}: ${presence}`);
+    } else {
+        console.log(`[Presence] Received update for unknown user: ${userId}`);
+    }
+}
+
+/**
+ * Clean up subscriptions on shutdown
+ */
+async function cleanupPresenceSubscriptions() {
+    try {
+        if (presenceSubscriptionState.renewalTimer) {
+            clearTimeout(presenceSubscriptionState.renewalTimer);
+        }
+        
+        if (presenceSubscriptionState.subscriptionId) {
+            console.log('[Presence] Cleaning up subscription...');
+            // Could add DELETE subscription API call here if available
+        }
+        
+        presenceSubscriptionState = {
+            subscriptionId: null,
+            renewalTimer: null,
+            isInitialized: false
+        };
+        
+    } catch (error) {
+        console.error('[Presence] Error during cleanup:', error);
     }
 }
 
@@ -2110,7 +2264,7 @@ router.get('/agent-status', async (req, res) => {
         if (!presenceSubscriptionState.isInitialized) {
             console.log('[API] Initializing presence subscriptions...');
             try {
-                const agents = await initializePresenceSubscriptions();
+                const agents = await initializeDirectPresenceSubscriptions();
                 console.log(`[API] Returning ${agents.length} agent statuses (newly initialized)`);
                 
                 return res.json({
@@ -2216,14 +2370,13 @@ router.post('/notifications', (req, res) => {
 });
 
 /**
- * Debug endpoint to check subscription status
+ * Updated debug endpoint for direct subscriptions
  */
 router.get('/debug-presence-subscriptions', (req, res) => {
     try {
         res.json({
             subscriptionState: {
                 isInitialized: presenceSubscriptionState.isInitialized,
-                hubId: presenceSubscriptionState.hubId,
                 subscriptionId: presenceSubscriptionState.subscriptionId,
                 hasRenewalTimer: !!presenceSubscriptionState.renewalTimer
             },
