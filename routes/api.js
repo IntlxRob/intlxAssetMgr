@@ -2744,6 +2744,60 @@ router.post('/debug/test-field-formats', async (req, res) => {
 });
 
 /**
+ * Debug: Test updating one specific other user (not yourself)
+ */
+router.post('/debug/test-other-user-update', async (req, res) => {
+    try {
+        console.log('[Debug] Testing update of Tyler A Johnston...');
+        
+        // Try to update Tyler A Johnston specifically using same format that worked for you
+        const updatePayload = {
+            user: {
+                elevate_id: "0ba38728-623e-4d80-a463-a59e09b71719"
+            }
+        };
+        
+        console.log('[Debug] Update payload:', JSON.stringify(updatePayload));
+        console.log('[Debug] Using auth string preview:', `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN?.substring(0, 10)}...`);
+        
+        const updateResponse = await fetch(`https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/23181952438039.json`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(updatePayload)
+        });
+        
+        const responseText = await updateResponse.text();
+        console.log('[Debug] Response status:', updateResponse.status);
+        console.log('[Debug] Response text:', responseText);
+        
+        res.json({
+            success: updateResponse.ok,
+            target_user: "Tyler A Johnston (ID: 23181952438039)",
+            status: updateResponse.status,
+            status_text: updateResponse.statusText,
+            headers: Object.fromEntries(updateResponse.headers.entries()),
+            response_body: updateResponse.ok ? JSON.parse(responseText) : responseText,
+            auth_header_length: updateResponse.headers.get('authorization')?.length || 'none',
+            request_details: {
+                url: `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/23181952438039.json`,
+                payload: updatePayload
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Debug] Error in test:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
+/**
  * Updated debug endpoint for direct subscriptions
  */
 router.get('/debug-presence-subscriptions', (req, res) => {
