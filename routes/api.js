@@ -576,6 +576,131 @@ let intermediaCache = {
     lastStatusUpdate: 0
 };
 
+/**
+ * FINAL VERSION: Fetch agent statuses using Zendesk user elevate_id fields
+ * THIS IS THE ONLY fetchAgentStatuses FUNCTION - DELETE ALL OTHERS
+ */
+async function fetchAgentStatuses() {
+    try {
+        console.log('[Agent Status] Fetching agent statuses using Zendesk user Elevate IDs');
+        
+        // Step 1: Get Zendesk users with Elevate IDs
+        const zendeskUsers = await getZendeskUsersWithElevateIds();
+        if (!zendeskUsers || zendeskUsers.length === 0) {
+            console.log('[Agent Status] No users with Elevate IDs found. Run /api/setup/sync-elevate-ids first.');
+            return [];
+        }
+        
+        console.log(`[Agent Status] Found ${zendeskUsers.length} users with Elevate IDs, fetching presence data...`);
+        
+        // Step 2: Get messaging token for presence lookups
+        const messagingToken = await getIntermediaToken();
+        
+        // Step 3: Fetch presence for each user (in batches to avoid rate limits)
+        const agents = [];
+        const BATCH_SIZE = 3;
+        let batchNumber = 0;
+        
+        for (let i = 0; i < zendeskUsers.length; i += BATCH_SIZE) {
+            const batch = zendeskUsers.slice(i, i + BATCH_SIZE);
+            batchNumber++;
+            console.log(`[Agent Status] Processing batch ${batchNumber}/${Math.ceil(zendeskUsers.length/BATCH_SIZE)}`);
+            
+            const batchPromises = batch.map(async (user) => {
+                try {
+                    console.log(`[Agent Status] Getting presence for ${user.name}`);
+                    
+                    // Try the messaging presence endpoint
+                    const presenceResponse = await fetch(`https://api.elevate.services/messaging/v1/presences/${user.elevate_id}`, {
+                        headers: {
+                            'Authorization': `Bearer ${messagingToken}`,
+                            'Accept': 'application/json'
+                        }
+                    });
+                    
+                    let presenceData = null;
+                    if (presenceResponse.ok) {
+                        presenceData = await presenceResponse.json();
+                    }
+                    
+                    // Map the presence to our detailed states
+                    const mappedStatus = presenceData?.presence ? 
+                        mapMessagingStatus(presenceData.presence) : 
+                        'Offline';
+                    
+                    console.log(`[Agent Status] ✅ ${user.name}: ${presenceData?.presence || 'offline'}`);
+                    
+                    return {
+                        id: user.elevate_id,
+                        name: user.name,
+                        email: user.email,
+                        extension: 'N/A',
+                        phone: 'Unknown',
+                        status: mappedStatus,
+                        phoneStatus: mappedStatus,
+                        presenceStatus: mappedStatus,
+                        onCall: false,
+                        lastActivity: new Date().toISOString(),
+                        source: 'zendesk_elevate_id', // ← Key identifier
+                        company: 'Intlx Solutions',
+                        hasPhoneData: !!presenceData,
+                        hasPresenceData: !!presenceData,
+                        zendeskUserId: user.zendesk_user_id,
+                        rawPresenceData: presenceData || { presence: 'offline', updated: new Date().toISOString() }
+                    };
+                } catch (error) {
+                    console.log(`[Agent Status] ❌ ${user.name}: ${error.message}`);
+                    
+                    // Return offline status for failed lookups
+                    return {
+                        id: user.elevate_id,
+                        name: user.name,
+                        email: user.email,
+                        extension: 'N/A',
+                        phone: 'Unknown',
+                        status: 'Offline',
+                        phoneStatus: 'Offline',
+                        presenceStatus: 'Offline',
+                        onCall: false,
+                        lastActivity: new Date().toISOString(),
+                        source: 'zendesk_elevate_id',
+                        company: 'Intlx Solutions',
+                        hasPhoneData: false,
+                        hasPresenceData: false,
+                        zendeskUserId: user.zendesk_user_id,
+                        rawPresenceData: { presence: 'offline', updated: new Date().toISOString(), error: error.message }
+                    };
+                }
+            });
+            
+            const batchResults = await Promise.all(batchPromises);
+            agents.push(...batchResults);
+            
+            // Wait between batches to avoid rate limits
+            if (i + BATCH_SIZE < zendeskUsers.length) {
+                console.log('[Agent Status] Waiting 1 second before next batch...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+        
+        // Generate status summary with detailed states
+        const statusSummary = agents.reduce((summary, agent) => {
+            const status = agent.status || 'Unknown';
+            summary[status] = (summary[status] || 0) + 1;
+            return summary;
+        }, {});
+        
+        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents from Zendesk Elevate IDs`);
+        console.log(`[Agent Status] Status summary:`, statusSummary);
+        
+        return agents;
+        
+    } catch (error) {
+        console.error('[Agent Status] ❌ Critical error:', error.message);
+        return [];
+    }
+}
+
 const AGENT_STATUS_CACHE_DURATION = 30000; // 30 seconds
 const TOKEN_REFRESH_BUFFER = 300000; // 5 minutes before expiry
 
@@ -1285,130 +1410,6 @@ router.post('/debug-mirror-curl', async (req, res) => {
 });
 
 /**
- * UPDATED: Fetch agent statuses using Zendesk user elevate_id fields
- */
-async function fetchAgentStatuses() {
-    try {
-        console.log('[Agent Status] Fetching agent statuses using Zendesk user Elevate IDs');
-        
-        // Step 1: Get Zendesk users with Elevate IDs
-        const zendeskUsers = await getZendeskUsersWithElevateIds();
-        if (!zendeskUsers || zendeskUsers.length === 0) {
-            console.log('[Agent Status] No users with Elevate IDs found. Run /api/setup/sync-elevate-ids first.');
-            return [];
-        }
-        
-        console.log(`[Agent Status] Found ${zendeskUsers.length} users with Elevate IDs, fetching presence data...`);
-        
-        // Step 2: Get messaging token for presence lookups
-        const messagingToken = await getIntermediaToken();
-        
-        // Step 3: Fetch presence for each user (in batches to avoid rate limits)
-        const agents = [];
-        const BATCH_SIZE = 3;
-        let batchNumber = 0;
-        
-        for (let i = 0; i < zendeskUsers.length; i += BATCH_SIZE) {
-            const batch = zendeskUsers.slice(i, i + BATCH_SIZE);
-            batchNumber++;
-            console.log(`[Agent Status] Processing batch ${batchNumber}/${Math.ceil(zendeskUsers.length/BATCH_SIZE)}`);
-            
-            const batchPromises = batch.map(async (user) => {
-                try {
-                    console.log(`[Agent Status] Getting presence for ${user.name}`);
-                    
-                    // Try the messaging presence endpoint
-                    const presenceResponse = await fetch(`https://api.elevate.services/messaging/v1/presences/${user.elevate_id}`, {
-                        headers: {
-                            'Authorization': `Bearer ${messagingToken}`,
-                            'Accept': 'application/json'
-                        }
-                    });
-                    
-                    let presenceData = null;
-                    if (presenceResponse.ok) {
-                        presenceData = await presenceResponse.json();
-                    }
-                    
-                    // Map the presence to our detailed states
-                    const mappedStatus = presenceData?.presence ? 
-                        mapMessagingStatus(presenceData.presence) : 
-                        'Offline';
-                    
-                    console.log(`[Agent Status] ✅ ${user.name}: ${presenceData?.presence || 'offline'}`);
-                    
-                    return {
-                        id: user.elevate_id,
-                        name: user.name,
-                        email: user.email,
-                        extension: 'N/A', // We don't have extensions from Zendesk
-                        phone: 'Unknown',
-                        status: mappedStatus,
-                        phoneStatus: mappedStatus,
-                        presenceStatus: mappedStatus,
-                        onCall: false,
-                        lastActivity: new Date().toISOString(),
-                        source: 'zendesk_elevate_id', // Clean single source identifier
-                        company: 'Intlx Solutions',
-                        hasPhoneData: !!presenceData,
-                        hasPresenceData: !!presenceData,
-                        zendeskUserId: user.zendesk_user_id, // Keep reference to Zendesk user
-                        rawPresenceData: presenceData || { presence: 'offline', updated: new Date().toISOString() }
-                    };
-                } catch (error) {
-                    console.log(`[Agent Status] ❌ ${user.name}: ${error.message}`);
-                    
-                    // Return offline status for failed lookups
-                    return {
-                        id: user.elevate_id,
-                        name: user.name,
-                        email: user.email,
-                        extension: 'N/A',
-                        phone: 'Unknown',
-                        status: 'Offline',
-                        phoneStatus: 'Offline',
-                        presenceStatus: 'Offline',
-                        onCall: false,
-                        lastActivity: new Date().toISOString(),
-                        source: 'zendesk_elevate_id',
-                        company: 'Intlx Solutions',
-                        hasPhoneData: false,
-                        hasPresenceData: false,
-                        zendeskUserId: user.zendesk_user_id,
-                        rawPresenceData: { presence: 'offline', updated: new Date().toISOString(), error: error.message }
-                    };
-                }
-            });
-            
-            const batchResults = await Promise.all(batchPromises);
-            agents.push(...batchResults);
-            
-            // Wait between batches to avoid rate limits
-            if (i + BATCH_SIZE < zendeskUsers.length) {
-                console.log('[Agent Status] Waiting 1 second before next batch...');
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-        }
-        
-        // Generate status summary with detailed states
-        const statusSummary = agents.reduce((summary, agent) => {
-            const status = agent.status || 'Unknown';
-            summary[status] = (summary[status] || 0) + 1;
-            return summary;
-        }, {});
-        
-        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents from Zendesk Elevate IDs`);
-        console.log(`[Agent Status] Status summary:`, statusSummary);
-        
-        return agents;
-        
-    } catch (error) {
-        console.error('[Agent Status] ❌ Critical error:', error.message);
-        return [];
-    }
-}
-
-/**
  * Helper function to get Zendesk users with Elevate IDs
  */
 async function getZendeskUsersWithElevateIds() {
@@ -1910,193 +1911,6 @@ async function cleanupPresenceSubscriptions() {
     }
 }
 
-/**
- * COMPLETE: Fetch agent statuses for @intlxsolutions.com users only
- */
-async function fetchAgentStatuses() {
-    try {
-        console.log('[Agent Status] Fetching agent statuses using stored Zendesk Elevate IDs');
-        // Step 1: Check Address Book authentication
-        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
-            console.log('[Agent Status] Address Book token expired, attempting refresh...');
-            const refreshed = await refreshAddressBookToken();
-            if (!refreshed) {
-                console.log('[Agent Status] ⚠️ Address Book authentication required');
-                return [];
-            }
-        }
-
-        // Step 2: Get users from Address Book API
-        console.log('[Agent Status] Getting contacts from Address Book...');
-        
-        const contactsResponse = await fetch('https://api.elevate.services/address-book/v3/accounts/_me/users/_me/contacts', {
-            headers: {
-                'Authorization': `Bearer ${global.addressBookToken}`,
-                'Accept': 'application/json'
-            }
-        });
-        
-        if (!contactsResponse.ok) {
-            console.log(`[Agent Status] ❌ Address Book failed: ${contactsResponse.status}`);
-            return [];
-        }
-        
-        const contactsData = await contactsResponse.json();
-        const allContacts = contactsData.results || [];
-        
-        console.log(`[Agent Status] Found ${allContacts.length} total contacts from Address Book`);
-
-        // Step 3: Filter to only @intlxsolutions.com users (exclude system accounts)
-        const intlxContacts = allContacts.filter(contact => {
-            const email = (contact.email || '').toLowerCase();
-            const name = (contact.displayName || contact.name || '').toLowerCase();
-            
-            // Only include @intlxsolutions.com email domain
-            const hasIntlxDomain = email.endsWith('@intlxsolutions.com');
-            
-            // Exclude system accounts
-            const isSystemAccount = name.includes('supportmenu') ||
-                                   name.includes('mainmenu') ||
-                                   name.includes('helpdesk') ||
-                                   name.includes('support group') ||
-                                   name.includes('answering service') ||
-                                   name.includes('emergency line') ||
-                                   name.includes('ethics line') ||
-                                   name.includes('outage') ||
-                                   name.includes('ldapqueries') ||
-                                   name.includes('conference') ||
-                                   name.includes('conf rm') ||
-                                   name.includes('lobby') ||
-                                   name.includes('reception');
-            
-            // Include only @intlxsolutions.com users that aren't system accounts
-            const shouldInclude = hasIntlxDomain && !isSystemAccount;
-            
-            if (shouldInclude) {
-                console.log(`[Agent Status] ✅ Including: ${contact.displayName || contact.name} (${contact.email})`);
-            }
-            
-            return shouldInclude;
-        });
-
-        console.log(`[Agent Status] Filtered to ${intlxContacts.length} @intlxsolutions.com users`);
-
-        if (intlxContacts.length === 0) {
-            console.log('[Agent Status] ⚠️ No @intlxsolutions.com users found after filtering');
-            return [];
-        }
-
-        // Step 4: Get messaging token for presence data
-        console.log('[Agent Status] Getting messaging token for presence...');
-        const messagingToken = await getIntermediaToken();
-        console.log('[Agent Status] ✅ Got messaging token');
-
-        // Step 5: Get presence for each contact (reduced batch size for rate limiting)
-        const agents = [];
-        const BATCH_SIZE = 2; // Smaller batches to avoid rate limiting
-        
-        for (let i = 0; i < intlxContacts.length; i += BATCH_SIZE) {
-            const batch = intlxContacts.slice(i, i + BATCH_SIZE);
-            
-            console.log(`[Agent Status] Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(intlxContacts.length/BATCH_SIZE)}`);
-            
-            const presencePromises = batch.map(async (contact) => {
-                try {
-                    if (!contact.id) {
-                        console.log('[Agent Status] ⚠️ Skipping contact - no ID');
-                        return null;
-                    }
-
-                    console.log(`[Agent Status] Getting presence for ${contact.displayName || contact.id}`);
-
-                    // Get presence from messaging API
-                    const presenceResponse = await fetch(
-                        `https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${contact.id}`,
-                        {
-                            headers: {
-                                'Authorization': `Bearer ${messagingToken}`,
-                                'Accept': 'application/json'
-                            }
-                        }
-                    );
-
-                    let presenceData = null;
-                    if (presenceResponse.ok) {
-                        presenceData = await presenceResponse.json();
-                        console.log(`[Agent Status] ✅ ${contact.displayName}: ${presenceData?.presence || 'unknown'}`);
-                    } else if (presenceResponse.status === 429) {
-                        console.log(`[Agent Status] ⚠️ Rate limited for ${contact.displayName}, will retry`);
-                        // For rate limiting, still create the agent but mark as unknown
-                        presenceData = { presence: 'unknown', rateLimited: true };
-                    } else {
-                        console.log(`[Agent Status] ❌ Presence failed for ${contact.displayName}: ${presenceResponse.status}`);
-                    }
-
-                    // Create agent object with frontend-compatible fields
-                    const mappedStatus = presenceData ? 
-                        mapMessagingStatus(presenceData.presence || presenceData.status) : 
-                        'offline';
-
-                    return {
-                        id: contact.id,
-                        name: contact.displayName || contact.name || contact.firstName + ' ' + contact.lastName || `User ${contact.id}`,
-                        email: contact.email || contact.primaryEmail || `${contact.id}@intlx.com`,
-                        extension: contact.pbx?.extension || contact.phoneNumber || 'N/A',
-                        phone: contact.phoneNumbers?.[0]?.number || 'Unknown',
-                        // Status fields (frontend expects both)
-                        status: mappedStatus,
-                        phoneStatus: mappedStatus, // Frontend expects this field
-                        presenceStatus: mappedStatus, // Frontend expects this field
-                        onCall: false, // Messaging API doesn't provide call status
-                        lastActivity: presenceData?.lastActivity || presenceData?.lastSeen || new Date().toISOString(),
-                        // Source info for frontend
-                        source: 'address_book', // Frontend expects this value
-                        company: 'Intlx Solutions',
-                        // Frontend compatibility flags
-                        hasPhoneData: !!presenceData,
-                        hasPresenceData: !!presenceData,
-                        presenceMessage: presenceData?.message || '',
-                        // Raw data for debugging
-                        rawContactData: contact,
-                        rawPresenceData: presenceData,
-                        rateLimited: presenceData?.rateLimited || false
-                    };
-
-                } catch (error) {
-                    console.log(`[Agent Status] ❌ Error processing contact ${contact.displayName}:`, error.message);
-                    return null;
-                }
-            });
-
-            const batchResults = await Promise.all(presencePromises);
-            const validAgents = batchResults.filter(agent => agent !== null);
-            agents.push(...validAgents);
-
-            // Longer delay between batches to avoid rate limiting
-            if (i + BATCH_SIZE < intlxContacts.length) {
-                console.log('[Agent Status] Waiting 1 second before next batch...');
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-        }
-
-        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} @intlxsolutions.com agents`);
-        
-        // Log summary
-        const statusCounts = agents.reduce((counts, agent) => {
-            counts[agent.status] = (counts[agent.status] || 0) + 1;
-            return counts;
-        }, {});
-        
-        console.log(`[Agent Status] Status summary:`, statusCounts);
-        
-        return agents;
-
-    } catch (error) {
-        console.error('[Agent Status] ❌ Critical error:', error.message);
-        return [];
-    }
-}
-
 
 /**
  * Debug endpoint to check address book authentication
@@ -2144,6 +1958,22 @@ router.get('/debug-address-book-auth', async (req, res) => {
             error: error.message
         });
     }
+});
+
+// TEMPORARY: Add this to test the cleanup, remove after verification
+router.get('/debug-function-count', (req, res) => {
+    const apiFileContent = require('fs').readFileSync(__filename, 'utf8');
+    const functionMatches = apiFileContent.match(/async function fetchAgentStatuses/g) || [];
+    const functionCount = functionMatches.length;
+    
+    res.json({
+        fetchAgentStatusesFunctionCount: functionCount,
+        shouldBe: 1,
+        cleanupComplete: functionCount === 1,
+        message: functionCount === 1 ? 
+            'Cleanup successful! Only 1 function found.' : 
+            `Found ${functionCount} functions - need to remove duplicates.`
+    });
 });
 
 /**
