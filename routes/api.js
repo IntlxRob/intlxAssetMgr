@@ -2456,9 +2456,11 @@ router.post('/setup/sync-elevate-ids', async (req, res) => {
             
             if (matchingZendeskUser) {
                 usersToUpdate.push({
-                    id: matchingZendeskUser.id,
-                    elevate_id: addressBookUser.id
-                });
+                id: matchingZendeskUser.id,
+                user_fields: {
+                elevate_id: addressBookUser.id  // Correct - targets custom field
+               }
+            });
                 
                 matchResults.push({
                     zendesk_user_id: matchingZendeskUser.id,
