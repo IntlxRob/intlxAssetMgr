@@ -2481,19 +2481,28 @@ router.post('/setup/sync-elevate-ids', async (req, res) => {
                     });
                     
                     if (updateResponse.ok) {
-                        updated++;
-                        updateResults.push({
-                            zendesk_user_id: matchingZendeskUser.id,
-                            name: matchingZendeskUser.name,
-                            email: matchingZendeskUser.email,
-                            elevate_id: addressBookUser.id,
-                            status: 'updated'
-                        });
-                    } else {
-                        errors++;
-                        const errorText = await updateResponse.text();
-                        console.error(`[Setup] Failed to update ${matchingZendeskUser.name}: ${errorText}`);
-                    }
+    updated++;
+    updateResults.push({
+        zendesk_user_id: matchingZendeskUser.id,
+        name: matchingZendeskUser.name,
+        email: matchingZendeskUser.email,
+        elevate_id: addressBookUser.id,
+        status: 'updated'
+    });
+} else {
+    errors++;
+    const errorText = await updateResponse.text();
+    console.error(`[Setup] Failed to update ${matchingZendeskUser.name}: ${updateResponse.status} - ${errorText}`);
+    updateResults.push({
+        zendesk_user_id: matchingZendeskUser.id,
+        name: matchingZendeskUser.name,
+        email: matchingZendeskUser.email,
+        elevate_id: addressBookUser.id,
+        status: 'error',
+        error_status: updateResponse.status,
+        error_message: errorText
+    });
+}
                     
                     // Small delay to avoid rate limits
                     await new Promise(resolve => setTimeout(resolve, 200));
