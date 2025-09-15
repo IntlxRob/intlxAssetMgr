@@ -2468,6 +2468,10 @@ router.post('/setup/sync-elevate-ids', async (req, res) => {
                         elevate_id: addressBookUser.id
                           }
                    };
+
+                   console.log(`[Debug Sync] About to update user ${matchingZendeskUser.id}`);
+                   console.log(`[Debug Sync] Payload:`, JSON.stringify(updatePayload));
+                   console.log(`[Debug Sync] URL: https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/${matchingZendeskUser.id}.json`);
                     
                     const updateResponse = await fetch(`https://intlxsolutions.zendesk.com/api/v2/users/${matchingZendeskUser.id}.json`, {
                         method: 'PUT',
