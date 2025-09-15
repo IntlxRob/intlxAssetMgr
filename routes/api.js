@@ -1719,7 +1719,7 @@ async function fetchAgentStatuses() {
 
         // Step 5: Get presence for each contact (reduced batch size for rate limiting)
         const agents = [];
-        const BATCH_SIZE = 3; // Smaller batches to avoid rate limiting
+        const BATCH_SIZE = 2; // Smaller batches to avoid rate limiting
         
         for (let i = 0; i < intlxContacts.length; i += BATCH_SIZE) {
             const batch = intlxContacts.slice(i, i + BATCH_SIZE);
@@ -1801,7 +1801,7 @@ async function fetchAgentStatuses() {
             // Longer delay between batches to avoid rate limiting
             if (i + BATCH_SIZE < intlxContacts.length) {
                 console.log('[Agent Status] Waiting 1 second before next batch...');
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
 
