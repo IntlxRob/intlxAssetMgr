@@ -1284,30 +1284,180 @@ router.post('/debug-mirror-curl', async (req, res) => {
     }
 });
 
-// ============================================
-// NO MOCK DATA FIX: Return empty arrays instead of crashing
-// ============================================
-
 /**
- * FILTERED: Fetch agent statuses for Intlx Solutions users only
+ * UPDATED: Fetch agent statuses using Zendesk user elevate_id fields
  */
 async function fetchAgentStatuses() {
     try {
-        console.log('[Agent Status] Fetching Intlx Solutions users only');
-
-        // Step 1: Check Address Book authentication
-        if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
-            console.log('[Agent Status] Address Book token expired, attempting refresh...');
-            const refreshed = await refreshAddressBookToken();
-            if (!refreshed) {
-                console.log('[Agent Status] ⚠️ Address Book authentication required');
-                return [];
+        console.log('[Agent Status] Fetching agent statuses using Zendesk user Elevate IDs');
+        
+        // Step 1: Get Zendesk users with Elevate IDs
+        const zendeskUsers = await getZendeskUsersWithElevateIds();
+        if (!zendeskUsers || zendeskUsers.length === 0) {
+            console.log('[Agent Status] No users with Elevate IDs found. Run /api/setup/sync-elevate-ids first.');
+            return [];
+        }
+        
+        console.log(`[Agent Status] Found ${zendeskUsers.length} users with Elevate IDs, fetching presence data...`);
+        
+        // Step 2: Get messaging token for presence lookups
+        const messagingToken = await getIntermediaToken();
+        
+        // Step 3: Fetch presence for each user (in batches to avoid rate limits)
+        const agents = [];
+        const BATCH_SIZE = 3;
+        let batchNumber = 0;
+        
+        for (let i = 0; i < zendeskUsers.length; i += BATCH_SIZE) {
+            const batch = zendeskUsers.slice(i, i + BATCH_SIZE);
+            batchNumber++;
+            console.log(`[Agent Status] Processing batch ${batchNumber}/${Math.ceil(zendeskUsers.length/BATCH_SIZE)}`);
+            
+            const batchPromises = batch.map(async (user) => {
+                try {
+                    console.log(`[Agent Status] Getting presence for ${user.name}`);
+                    
+                    // Try the messaging presence endpoint
+                    const presenceResponse = await fetch(`https://api.elevate.services/messaging/v1/presences/${user.elevate_id}`, {
+                        headers: {
+                            'Authorization': `Bearer ${messagingToken}`,
+                            'Accept': 'application/json'
+                        }
+                    });
+                    
+                    let presenceData = null;
+                    if (presenceResponse.ok) {
+                        presenceData = await presenceResponse.json();
+                    }
+                    
+                    // Map the presence to our detailed states
+                    const mappedStatus = presenceData?.presence ? 
+                        mapMessagingStatus(presenceData.presence) : 
+                        'Offline';
+                    
+                    console.log(`[Agent Status] ✅ ${user.name}: ${presenceData?.presence || 'offline'}`);
+                    
+                    return {
+                        id: user.elevate_id,
+                        name: user.name,
+                        email: user.email,
+                        extension: 'N/A', // We don't have extensions from Zendesk
+                        phone: 'Unknown',
+                        status: mappedStatus,
+                        phoneStatus: mappedStatus,
+                        presenceStatus: mappedStatus,
+                        onCall: false,
+                        lastActivity: new Date().toISOString(),
+                        source: 'zendesk_elevate_id', // Clean single source identifier
+                        company: 'Intlx Solutions',
+                        hasPhoneData: !!presenceData,
+                        hasPresenceData: !!presenceData,
+                        zendeskUserId: user.zendesk_user_id, // Keep reference to Zendesk user
+                        rawPresenceData: presenceData || { presence: 'offline', updated: new Date().toISOString() }
+                    };
+                } catch (error) {
+                    console.log(`[Agent Status] ❌ ${user.name}: ${error.message}`);
+                    
+                    // Return offline status for failed lookups
+                    return {
+                        id: user.elevate_id,
+                        name: user.name,
+                        email: user.email,
+                        extension: 'N/A',
+                        phone: 'Unknown',
+                        status: 'Offline',
+                        phoneStatus: 'Offline',
+                        presenceStatus: 'Offline',
+                        onCall: false,
+                        lastActivity: new Date().toISOString(),
+                        source: 'zendesk_elevate_id',
+                        company: 'Intlx Solutions',
+                        hasPhoneData: false,
+                        hasPresenceData: false,
+                        zendeskUserId: user.zendesk_user_id,
+                        rawPresenceData: { presence: 'offline', updated: new Date().toISOString(), error: error.message }
+                    };
+                }
+            });
+            
+            const batchResults = await Promise.all(batchPromises);
+            agents.push(...batchResults);
+            
+            // Wait between batches to avoid rate limits
+            if (i + BATCH_SIZE < zendeskUsers.length) {
+                console.log('[Agent Status] Waiting 1 second before next batch...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
-
-        // ... rest of the updated function from the artifact
+        
+        // Generate status summary with detailed states
+        const statusSummary = agents.reduce((summary, agent) => {
+            const status = agent.status || 'Unknown';
+            summary[status] = (summary[status] || 0) + 1;
+            return summary;
+        }, {});
+        
+        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents from Zendesk Elevate IDs`);
+        console.log(`[Agent Status] Status summary:`, statusSummary);
+        
+        return agents;
+        
     } catch (error) {
         console.error('[Agent Status] ❌ Critical error:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Helper function to get Zendesk users with Elevate IDs
+ */
+async function getZendeskUsersWithElevateIds() {
+    try {
+        // Get all Zendesk users (may need pagination for large organizations)
+        let allUsers = [];
+        let page = 1;
+        let hasMore = true;
+        
+        while (hasMore && page <= 10) { // Safety limit of 10 pages
+            const response = await fetch(`https://intlxsolutions.zendesk.com/api/v2/users.json?per_page=100&page=${page}`, {
+                headers: {
+                    'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Zendesk API error: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            const users = data.users || [];
+            allUsers.push(...users);
+            
+            hasMore = data.next_page !== null && users.length === 100;
+            page++;
+        }
+        
+        // Filter to users with Elevate IDs and active status
+        const usersWithElevateIds = allUsers
+            .filter(user => 
+                user.user_fields?.elevate_id && 
+                user.active && 
+                user.role !== 'end-user' // Only agents/admins
+            )
+            .map(user => ({
+                zendesk_user_id: user.id,
+                name: user.name,
+                email: user.email,
+                elevate_id: user.user_fields.elevate_id,
+                role: user.role
+            }));
+        
+        console.log(`[Agent Status] Found ${usersWithElevateIds.length} active agents with Elevate IDs out of ${allUsers.length} total users`);
+        
+        return usersWithElevateIds;
+        
+    } catch (error) {
+        console.error('[Agent Status] Error getting Zendesk users with Elevate IDs:', error.message);
         return [];
     }
 }
