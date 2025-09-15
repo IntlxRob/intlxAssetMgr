@@ -2390,13 +2390,13 @@ router.get('/agent-status', async (req, res) => {
 });
 
 /**
- * One-time setup: Sync Elevate IDs from Address Book to Zendesk user fields
+ * Updated: Bulk sync Elevate IDs using Zendesk's create_or_update_many endpoint
  */
 router.post('/setup/sync-elevate-ids', async (req, res) => {
     try {
-        console.log('[Setup] Starting Elevate ID sync from Address Book to Zendesk user fields...');
+        console.log('[Setup] Starting bulk Elevate ID sync...');
         
-        // Get all users from Address Book
+        // Step 1: Get all users from Address Book
         if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
             const refreshed = await refreshAddressBookToken();
             if (!refreshed) {
@@ -2421,7 +2421,7 @@ router.post('/setup/sync-elevate-ids', async (req, res) => {
         const contactsData = await contactsResponse.json();
         const contacts = contactsData.results || [];
         
-        // Filter to @intlxsolutions.com users
+        // Step 2: Filter to @intlxsolutions.com users
         const intlxUsers = contacts.filter(contact => 
             contact.email && 
             contact.email.toLowerCase().includes('@intlxsolutions.com')
@@ -2429,10 +2429,10 @@ router.post('/setup/sync-elevate-ids', async (req, res) => {
         
         console.log(`[Setup] Found ${intlxUsers.length} @intlxsolutions.com users in Address Book`);
         
-        // Get all Zendesk users to match by email
+        // Step 3: Get all Zendesk users to match by email
         const zendeskUsersResponse = await fetch(`https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users.json?per_page=100`, {
             headers: {
-                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
             }
         });
         
@@ -2445,89 +2445,78 @@ router.post('/setup/sync-elevate-ids', async (req, res) => {
         
         console.log(`[Setup] Found ${zendeskUsers.length} Zendesk users`);
         
-        // Match Address Book users to Zendesk users by email and update
-        const updateResults = [];
-        let matched = 0;
-        let updated = 0;
-        let errors = 0;
+        // Step 4: Build bulk update payload
+        const usersToUpdate = [];
+        const matchResults = [];
         
         for (const addressBookUser of intlxUsers) {
-            try {
-                // Find matching Zendesk user by email
-                const matchingZendeskUser = zendeskUsers.find(zu => 
-                    zu.email && zu.email.toLowerCase() === addressBookUser.email.toLowerCase()
-                );
+            const matchingZendeskUser = zendeskUsers.find(zu => 
+                zu.email && zu.email.toLowerCase() === addressBookUser.email.toLowerCase()
+            );
+            
+            if (matchingZendeskUser) {
+                usersToUpdate.push({
+                    id: matchingZendeskUser.id,
+                    elevate_id: addressBookUser.id
+                });
                 
-                if (matchingZendeskUser) {
-                    matched++;
-                    console.log(`[Setup] Updating ${matchingZendeskUser.name} with Elevate ID: ${addressBookUser.id}`);
-                    
-                    // Update the Zendesk user with their Elevate ID
-                    const updatePayload = {
-                    user: {
-                        elevate_id: addressBookUser.id
-                          }
-                   };
-
-                   console.log(`[Debug Sync] About to update user ${matchingZendeskUser.id}`);
-                   console.log(`[Debug Sync] Payload:`, JSON.stringify(updatePayload));
-                   console.log(`[Debug Sync] URL: https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/${matchingZendeskUser.id}.json`);
-                    
-                    const updateResponse = await fetch(`https://intlxsolutions.zendesk.com/api/v2/users/${matchingZendeskUser.id}.json`, {
-                        method: 'PUT',
-                        headers: {
-                            'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify(updatePayload)
-                    });
-                    
-                    if (updateResponse.ok) {
-    updated++;
-    updateResults.push({
-        zendesk_user_id: matchingZendeskUser.id,
-        name: matchingZendeskUser.name,
-        email: matchingZendeskUser.email,
-        elevate_id: addressBookUser.id,
-        status: 'updated'
-    });
-} else {
-    errors++;
-    const errorText = await updateResponse.text();
-    console.error(`[Setup] Failed to update ${matchingZendeskUser.name}: ${updateResponse.status} - ${errorText}`);
-    updateResults.push({
-        zendesk_user_id: matchingZendeskUser.id,
-        name: matchingZendeskUser.name,
-        email: matchingZendeskUser.email,
-        elevate_id: addressBookUser.id,
-        status: 'error',
-        error_status: updateResponse.status,
-        error_message: errorText
-    });
-}
-                    
-                    // Small delay to avoid rate limits
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
-            } catch (error) {
-                errors++;
-                console.error(`[Setup] Error processing ${addressBookUser.email}:`, error.message);
+                matchResults.push({
+                    zendesk_user_id: matchingZendeskUser.id,
+                    name: matchingZendeskUser.name,
+                    email: matchingZendeskUser.email,
+                    elevate_id: addressBookUser.id
+                });
+            } else {
+                console.log(`[Setup] No Zendesk user found for ${addressBookUser.email}`);
             }
         }
         
-        console.log(`[Setup] Sync complete. Matched: ${matched}, Updated: ${updated}, Errors: ${errors}`);
+        console.log(`[Setup] Matched ${usersToUpdate.length} users for bulk update`);
         
-        res.json({
-            success: updated > 0,
-            matched: matched,
-            updated: updated,
-            errors: errors,
-            results: updateResults,
-            message: `Successfully updated ${updated} Zendesk users with Elevate IDs`
+        // Step 5: Bulk update using create_or_update_many
+        const bulkUpdatePayload = {
+            users: usersToUpdate
+        };
+        
+        console.log(`[Setup] Sending bulk update for ${usersToUpdate.length} users...`);
+        
+        const bulkUpdateResponse = await fetch(`https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/create_or_update_many.json`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(bulkUpdatePayload)
         });
         
+        const responseText = await bulkUpdateResponse.text();
+        
+        if (bulkUpdateResponse.ok) {
+            const bulkResult = JSON.parse(responseText);
+            console.log(`[Setup] Bulk update successful!`);
+            
+            res.json({
+                success: true,
+                matched: usersToUpdate.length,
+                updated: usersToUpdate.length,
+                errors: 0,
+                bulk_response: bulkResult,
+                results: matchResults,
+                message: `Successfully updated ${usersToUpdate.length} Zendesk users with Elevate IDs using bulk API`
+            });
+        } else {
+            console.error(`[Setup] Bulk update failed: ${bulkUpdateResponse.status} - ${responseText}`);
+            res.json({
+                success: false,
+                error: `Bulk update failed: ${bulkUpdateResponse.status}`,
+                response: responseText,
+                matched: usersToUpdate.length,
+                message: 'Bulk API call failed'
+            });
+        }
+        
     } catch (error) {
-        console.error('[Setup] Error syncing Elevate IDs:', error);
+        console.error('[Setup] Error in bulk sync:', error);
         res.status(500).json({
             success: false,
             error: error.message
