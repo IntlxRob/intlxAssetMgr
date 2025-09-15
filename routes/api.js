@@ -977,7 +977,7 @@ async function getContactsWithEnhancedPresence() {
             if (matchingPresence) {
                 const presence = matchingPresence.presence || {};
                 presenceInfo = {
-                    status: normalizePresenceStatus(presence.presence || presence.status),
+                    status: mapMessagingStatus(presence.presence || presence.status),
                     message: presence.message || presence.statusMessage || '',
                     activity: presence.activity || '',
                     lastUpdated: presence.lastUpdated || presence.lastSeen || new Date().toISOString(),
@@ -1016,46 +1016,6 @@ async function getContactsWithEnhancedPresence() {
     } catch (error) {
         console.error('[Presence] Error getting contacts with enhanced presence:', error.message);
         throw error;
-    }
-}
-
-/**
- * Normalize presence status to standard values
- */
-function normalizePresenceStatus(status) {
-    if (!status) return 'unknown';
-    
-    const normalized = status.toLowerCase().trim();
-    
-    // Map API values to standard statuses
-    switch (normalized) {
-        case 'available':
-        case 'online':
-        case 'active':
-        case 'ready':
-            return 'available';
-            
-        case 'busy':
-        case 'dnd':
-        case 'do not disturb':
-        case 'occupied':
-        case 'in_meeting':
-        case 'meeting':
-            return 'busy';
-            
-        case 'away':
-        case 'idle':
-        case 'absent':
-        case 'temporarily_away':
-            return 'away';
-            
-        case 'offline':
-        case 'invisible':
-        case 'disconnected':
-            return 'offline';
-            
-        default:
-            return 'unknown';
     }
 }
 
@@ -2233,33 +2193,113 @@ function processMessagingPresenceData(data, endpoint) {
     return agents;
 }
 
+// ============================================
+// SINGLE DETAILED PRESENCE MAPPING FUNCTION
+// ============================================
+
 /**
- * Map messaging API status to our standard statuses
+ * MASTER: Map Intermedia presence states to human-readable formats
+ * This is the ONLY mapping function - replace all others with this
  */
-function mapMessagingStatus(status) {
-    if (!status) return 'unknown';
+function mapMessagingStatus(presenceState) {
+    if (!presenceState) return 'Offline';
     
-    const lowerStatus = status.toLowerCase();
+    // Normalize input (handle spaces and case variations)
+    const normalizedState = presenceState.toLowerCase().replace(/\s+/g, '');
     
-    switch (lowerStatus) {
-        case 'available':
+    switch (normalizedState) {
+        // Available states
         case 'online':
+            return 'Online';
+        case 'agentavailable':
+        case 'available':
+        case 'ready':
         case 'active':
-            return 'available';
+            return 'Available';
+            
+        // Busy states
         case 'busy':
+            return 'Busy';
+        case 'agentbusy':
+            return 'Agent Busy';
+        case 'onphone':
+            return 'On Phone';
+        case 'inmeeting':
+        case 'in_meeting':
+        case 'meeting':
+            return 'In Meeting';
+        case 'scrsharing':
+            return 'Screen Sharing';
+        case 'agentoncall':
+            return 'Agent On Call';
         case 'occupied':
-        case 'dnd':
-        case 'do not disturb':
-            return 'busy';
+            return 'Occupied';
+            
+        // Away states
         case 'away':
+            return 'Away';
+        case 'onbreak':
+            return 'On Break';
+        case 'dnd':
+        case 'donotdisturb':
+            return 'Do Not Disturb';
+        case 'outsick':
+            return 'Out Sick';
+        case 'vacationing':
+            return 'On Vacation';
+        case 'offwork':
+            return 'Off Work';
         case 'idle':
+            return 'Idle';
         case 'absent':
-            return 'away';
+        case 'temporarilyaway':
+            return 'Temporarily Away';
+            
+        // Offline
         case 'offline':
         case 'invisible':
-            return 'offline';
+        case 'disconnected':
+            return 'Offline';
+            
         default:
-            return 'unknown';
+            console.log(`[Mapping] Unknown presence state: "${presenceState}"`);
+            return presenceState; // Return original if unknown
+    }
+}
+
+// ============================================
+// UPDATE PRESENCE CACHE WITH DEBUG LOGGING
+// ============================================
+
+/**
+ * Update presence in cache when notification received
+ */
+function updatePresenceCache(userId, presence) {
+    if (!intermediaCache.agentStatuses) {
+        intermediaCache.agentStatuses = new Map();
+    }
+    
+    const existingAgent = intermediaCache.agentStatuses.get(userId);
+    if (existingAgent) {
+        // ADD DEBUG LOG HERE
+        const mappedStatus = mapMessagingStatus(presence);
+        console.log(`[Debug] mapMessagingStatus("${presence}") returned: "${mappedStatus}"`);
+        
+        const updatedAgent = {
+            ...existingAgent,
+            status: mappedStatus,
+            phoneStatus: mappedStatus,
+            presenceStatus: mappedStatus,
+            lastActivity: new Date().toISOString(),
+            rawPresenceData: { presence, updated: new Date().toISOString() }
+        };
+        
+        intermediaCache.agentStatuses.set(userId, updatedAgent);
+        intermediaCache.lastStatusUpdate = Date.now();
+        
+        console.log(`[Presence] Updated cache for ${existingAgent.name}: ${presence} -> ${mappedStatus}`);
+    } else {
+        console.log(`[Presence] Received update for unknown user: ${userId}`);
     }
 }
 
