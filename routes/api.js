@@ -1443,9 +1443,11 @@ async function createDirectPresenceSubscription() {
         console.log(`[Presence] Expires at: ${subscription.expires_at}`);
         
         // Schedule automatic renewal
-        if (subscription.expires_at) {
-            scheduleSubscriptionRenewal(subscription.id, subscription.expires_at);
-        }
+        if (subscription.whenExpired) {
+        scheduleSubscriptionRenewal(subscription.id, subscription.whenExpired);
+            } else if (subscription.expires_at) {
+        scheduleSubscriptionRenewal(subscription.id, subscription.expires_at);
+            }
         
         return subscription.id;
         
@@ -1501,10 +1503,13 @@ async function renewSubscription(subscriptionId) {
         }
         
         const renewedSub = await renewResponse.json();
-        console.log(`[Presence] ✅ Subscription renewed until: ${renewedSub.expires_at}`);
-        
+        const expiryTime = renewedSub.whenExpired || renewedSub.expires_at;
+        console.log(`[Presence] ✅ Subscription renewed until: ${expiryTime}`);
+
         // Schedule next renewal
-        scheduleSubscriptionRenewal(subscriptionId, renewedSub.expires_at);
+        if (expiryTime) {
+            scheduleSubscriptionRenewal(subscriptionId, expiryTime);
+        }
         
     } catch (error) {
         console.error('[Presence] ❌ Failed to renew subscription:', error);
@@ -2457,23 +2462,26 @@ router.get('/debug-fix-renewal', async (req, res) => {
             const renewedSub = await renewResponse.json();
             console.log('[Debug] Renewed subscription:', JSON.stringify(renewedSub, null, 2));
             
-            if (renewedSub.expires_at) {
-                scheduleSubscriptionRenewal(renewedSub.id, renewedSub.expires_at);
-                
-                return res.json({
-                    success: true,
-                    renewedSubscription: renewedSub,
-                    renewalScheduled: true,
-                    expiresAt: renewedSub.expires_at
-                });
-            } else {
-                return res.json({
-                    success: true,
-                    renewedSubscription: renewedSub,
-                    renewalScheduled: false,
-                    message: 'Renewal succeeded but no expires_at field found'
-                });
-            }
+            if (renewedSub.whenExpired) {
+    scheduleSubscriptionRenewal(renewedSub.id, renewedSub.whenExpired);
+    
+    return res.json({
+        success: true,
+        renewedSubscription: renewedSub,
+        renewalScheduled: true,
+        expiresAt: renewedSub.whenExpired
+    });
+} else if (renewedSub.expires_at) {
+    scheduleSubscriptionRenewal(renewedSub.id, renewedSub.expires_at);
+    
+    return res.json({
+        success: true,
+        renewedSubscription: renewedSub,
+        renewalScheduled: true,
+        expiresAt: renewedSub.expires_at
+    });
+}
+
         } else {
             const errorText = await renewResponse.text();
             return res.json({
