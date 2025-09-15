@@ -2630,6 +2630,122 @@ router.post('/notifications', (req, res) => {
 });
 
 /**
+ * Debug: Check actual user field structure and test update
+ */
+router.get('/debug/check-user-fields', async (req, res) => {
+    try {
+        // Get your own user to see the current field structure
+        const response = await fetch(`https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/me.json`, {
+            headers: {
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const user = data.user;
+        
+        res.json({
+            success: true,
+            user_id: user.id,
+            name: user.name,
+            email: user.email,
+            current_user_fields: user.user_fields,
+            field_structure: Object.keys(user.user_fields || {}),
+            message: "Check if 'elevate_id' appears in current_user_fields or field_structure"
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Debug: Test different field name formats
+ */
+router.post('/debug/test-field-formats', async (req, res) => {
+    try {
+        const response = await fetch(`https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/me.json`, {
+            headers: {
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+            }
+        });
+        
+        const userData = await response.json();
+        const myUserId = userData.user.id;
+        
+        // Test different field format possibilities
+        const testFormats = [
+            { elevate_id: "test-123" },                    // Direct field name
+            { "34953577249559": "test-123" },              // Field ID as key
+            { custom_fields: { elevate_id: "test-123" } }, // Nested format
+            { user_fields: { elevate_id: "test-123" } }    // Nested user_fields
+        ];
+        
+        const results = [];
+        
+        for (let i = 0; i < testFormats.length; i++) {
+            const testPayload = {
+                user: testFormats[i]
+            };
+            
+            try {
+                const updateResponse = await fetch(`https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/${myUserId}.json`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(testPayload)
+                });
+                
+                const responseText = await updateResponse.text();
+                
+                results.push({
+                    format: `Format ${i + 1}`,
+                    payload: testFormats[i],
+                    status: updateResponse.status,
+                    success: updateResponse.ok,
+                    response: updateResponse.ok ? "SUCCESS" : responseText
+                });
+                
+                if (updateResponse.ok) {
+                    break; // Stop at first successful format
+                }
+                
+            } catch (error) {
+                results.push({
+                    format: `Format ${i + 1}`,
+                    payload: testFormats[i],
+                    error: error.message
+                });
+            }
+            
+            // Small delay between tests
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        res.json({
+            success: true,
+            test_results: results,
+            message: "Look for the format that returns success: true"
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Updated debug endpoint for direct subscriptions
  */
 router.get('/debug-presence-subscriptions', (req, res) => {
