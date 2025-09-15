@@ -1093,20 +1093,6 @@ router.get('/address-book/contacts-with-presence', async (req, res) => {
         const contacts = contactsData.results || [];
         
         console.log(`[Presence] Found ${contacts.length} address book contacts`);
-
-        // Get presence for each contact
-        const contactsWithPresence = await Promise.all(
-            contacts.map(async (contact) => {
-                const presence = await getUserPresence(contact.id);
-                return {
-                    ...contact,
-                    presence: {
-                        status: presence,
-                        lastUpdated: new Date().toISOString()
-                    }
-                };
-            })
-        );
         
         console.log(`[Presence] Enhanced ${contactsWithPresence.length} contacts with presence data`);
         
