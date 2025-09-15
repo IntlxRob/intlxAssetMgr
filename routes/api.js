@@ -2497,6 +2497,116 @@ router.get('/debug-fix-renewal', async (req, res) => {
 });
 
 /**
+ * Debug: Check the actual subscription configuration
+ */
+router.get('/debug-subscription-webhook', async (req, res) => {
+    try {
+        const messagingToken = await getIntermediaToken();
+        
+        // Get list of all subscriptions to see the configuration
+        const listResponse = await fetch('https://api.elevate.services/messaging/v1/subscriptions', {
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        let subscriptions = [];
+        if (listResponse.ok) {
+            const data = await listResponse.json();
+            subscriptions = data.subscriptions || data.results || data || [];
+        }
+        
+        res.json({
+            currentSubscriptionId: presenceSubscriptionState.subscriptionId,
+            allSubscriptions: subscriptions,
+            listStatus: listResponse.status
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Delete current subscription and create new one with correct webhook
+ */
+router.get('/debug-recreate-subscription', async (req, res) => {
+    try {
+        const messagingToken = await getIntermediaToken();
+        
+        // Delete current subscription
+        if (presenceSubscriptionState.subscriptionId) {
+            console.log('[Debug] Deleting current subscription...');
+            const deleteResponse = await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${presenceSubscriptionState.subscriptionId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': `Bearer ${messagingToken}`
+                }
+            });
+            console.log(`[Debug] Delete response: ${deleteResponse.status}`);
+        }
+        
+        // Clear subscription state
+        presenceSubscriptionState.subscriptionId = null;
+        presenceSubscriptionState.isInitialized = false;
+        if (presenceSubscriptionState.renewalTimer) {
+            clearTimeout(presenceSubscriptionState.renewalTimer);
+            presenceSubscriptionState.renewalTimer = null;
+        }
+        
+        // Create new subscription with explicit webhook format
+        console.log('[Debug] Creating new subscription with webhook...');
+        const subscriptionResponse = await fetch('https://api.elevate.services/messaging/v1/subscriptions/accounts/_me/users/_all', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                event_types: ['presence_changed'],
+                delivery_method: {
+                    transport: 'webhook',
+                    webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
+                },
+                filters: {
+                    email_domains: ['intlxsolutions.com']
+                }
+            })
+        });
+        
+        if (!subscriptionResponse.ok) {
+            const errorText = await subscriptionResponse.text();
+            return res.json({
+                success: false,
+                error: `Subscription creation failed: ${subscriptionResponse.status} - ${errorText}`
+            });
+        }
+        
+        const subscription = await subscriptionResponse.json();
+        console.log('[Debug] New subscription created:', JSON.stringify(subscription, null, 2));
+        
+        presenceSubscriptionState.subscriptionId = subscription.id;
+        presenceSubscriptionState.isInitialized = true;
+        
+        // Set up renewal if expiry info exists
+        const expiryTime = subscription.whenExpired || subscription.expires_at;
+        if (expiryTime) {
+            scheduleSubscriptionRenewal(subscription.id, expiryTime);
+        }
+        
+        res.json({
+            success: true,
+            newSubscription: subscription,
+            hasWebhookDelivery: !subscription.deliveryMethod?.uri?.includes('elevate-events.serverdata.net')
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * Fetch presence using the voice API (as per ServerData support)
  */
 async function fetchVoicePresence() {
