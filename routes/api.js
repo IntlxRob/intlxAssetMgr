@@ -2390,6 +2390,103 @@ router.get('/debug-presence-subscriptions', (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+/**
+ * Debug endpoint to check subscription details and renewal info
+ */
+router.get('/debug-subscription-details', async (req, res) => {
+    try {
+        if (!presenceSubscriptionState.subscriptionId) {
+            return res.json({ error: 'No subscription ID found' });
+        }
+        
+        const messagingToken = await getIntermediaToken();
+        
+        // Get subscription details from API
+        const subResponse = await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${presenceSubscriptionState.subscriptionId}`, {
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Accept': 'application/json'
+            }
+        });
+        
+        let subscriptionDetails = null;
+        if (subResponse.ok) {
+            subscriptionDetails = await subResponse.json();
+        } else {
+            const errorText = await subResponse.text();
+            subscriptionDetails = { error: `${subResponse.status}: ${errorText}` };
+        }
+        
+        res.json({
+            localState: presenceSubscriptionState,
+            subscriptionDetails: subscriptionDetails,
+            renewalTimerActive: !!presenceSubscriptionState.renewalTimer
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Debug endpoint to manually set up renewal timer
+ */
+router.get('/debug-fix-renewal', async (req, res) => {
+    try {
+        if (!presenceSubscriptionState.subscriptionId) {
+            return res.json({ error: 'No subscription ID found' });
+        }
+        
+        const messagingToken = await getIntermediaToken();
+        
+        // Try to renew the subscription to get expiry info
+        console.log('[Debug] Attempting to renew subscription for expiry info');
+        
+        const renewResponse = await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${presenceSubscriptionState.subscriptionId}/renew`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                duration: '24h'
+            })
+        });
+        
+        if (renewResponse.ok) {
+            const renewedSub = await renewResponse.json();
+            console.log('[Debug] Renewed subscription:', JSON.stringify(renewedSub, null, 2));
+            
+            if (renewedSub.expires_at) {
+                scheduleSubscriptionRenewal(renewedSub.id, renewedSub.expires_at);
+                
+                return res.json({
+                    success: true,
+                    renewedSubscription: renewedSub,
+                    renewalScheduled: true,
+                    expiresAt: renewedSub.expires_at
+                });
+            } else {
+                return res.json({
+                    success: true,
+                    renewedSubscription: renewedSub,
+                    renewalScheduled: false,
+                    message: 'Renewal succeeded but no expires_at field found'
+                });
+            }
+        } else {
+            const errorText = await renewResponse.text();
+            return res.json({
+                success: false,
+                error: `Renewal failed: ${renewResponse.status} - ${errorText}`
+            });
+        }
+        
+    } catch (error) {
+        console.error('[Debug] Error fixing renewal:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 /**
  * Fetch presence using the voice API (as per ServerData support)
