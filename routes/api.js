@@ -1562,11 +1562,15 @@ function updatePresenceCache(userId, presence) {
     
     const existingAgent = intermediaCache.agentStatuses.get(userId);
     if (existingAgent) {
+
+        const mappedStatus = mapMessagingStatus(presence);
+        console.log(`[Debug] mapMessagingStatus("${presence}") returned: "${mappedStatus}"`);
+
         const updatedAgent = {
             ...existingAgent,
-            status: mapMessagingStatus(presence),
-            phoneStatus: mapMessagingStatus(presence),
-            presenceStatus: mapMessagingStatus(presence),
+            status: mappedStatus,
+            phoneStatus: mappedStatus,
+            presenceStatus: mappedStatus,
             lastActivity: new Date().toISOString(),
             rawPresenceData: { presence, updated: new Date().toISOString() }
         };
