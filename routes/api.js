@@ -1353,29 +1353,32 @@ async function fetchAgentStatuses() {
 }
 
 /**
- * Map messaging API status to standard statuses
+ * Updated mapping for all Intermedia presence states
  */
-function mapMessagingStatus(status) {
-    if (!status) return 'offline';
+function mapMessagingStatus(presenceState) {
+    if (!presenceState) return 'offline';
     
-    const lowerStatus = status.toLowerCase();
+    const lowerState = presenceState.toLowerCase();
     
-    switch (lowerStatus) {
-        case 'available':
+    switch (lowerState) {
         case 'online':
-        case 'active':
+        case 'agent_available':
             return 'available';
         case 'busy':
-        case 'occupied':
-        case 'dnd':
-        case 'do not disturb':
+        case 'agent_busy':
+        case 'onphone':
+        case 'inmetting':
+        case 'scrsharing':
+        case 'agent_oncall':
             return 'busy';
         case 'away':
-        case 'idle':
-        case 'absent':
+        case 'onbreak':
+        case 'dnd':
+        case 'outsick':
+        case 'vacationing':
+        case 'offwork':
             return 'away';
         case 'offline':
-        case 'invisible':
             return 'offline';
         default:
             return 'unknown';
@@ -2330,8 +2333,7 @@ router.get('/agent-status', async (req, res) => {
 });
 
 /**
- * CORRECTED: Webhook endpoint for Intermedia presence notifications
- * POST /api/notifications
+ * CORRECTED: Handle real Intermedia presence payload structure
  */
 router.post('/notifications', (req, res) => {
     try {
@@ -2346,17 +2348,17 @@ router.post('/notifications', (req, res) => {
             const presenceUpdates = Array.isArray(payload) ? payload : [payload];
             
             presenceUpdates.forEach(update => {
-                if (update.userId && update.presence) {
-                    console.log(`[Notifications] User ${update.userId} changed status to: ${update.presence}`);
+                // FIXED: Use presenceState instead of presence
+                if (update.userId && update.presenceState) {
+                    console.log(`[Notifications] User ${update.userId} changed status to: ${update.presenceState} at ${update.whenRaised}`);
                     
                     // Update cache immediately
-                    updatePresenceCache(update.userId, update.presence);
+                    updatePresenceCache(update.userId, update.presenceState);
                 } else {
                     console.log(`[Notifications] Incomplete presence data:`, update);
                 }
             });
             
-            // Respond quickly (within 3 seconds as documented)
             res.status(200).json({ 
                 received: true, 
                 processed: true,
@@ -2375,7 +2377,6 @@ router.post('/notifications', (req, res) => {
         
     } catch (error) {
         console.error('[Notifications] Error processing webhook:', error);
-        // Still return 200 to avoid retries for parsing errors
         res.status(200).json({ 
             received: true, 
             processed: false, 
