@@ -2344,33 +2344,57 @@ router.get('/agent-status', async (req, res) => {
 });
 
 /**
- * Webhook endpoint to receive real-time presence notifications
+ * CORRECTED: Webhook endpoint for Intermedia presence notifications
  * POST /api/notifications
  */
 router.post('/notifications', (req, res) => {
     try {
-        const { event_type, user_id, data, timestamp } = req.body;
+        const { eventType, version, whenRaised, payload } = req.body;
         
-        console.log(`[Notifications] Received ${event_type} for user ${user_id}`);
+        console.log(`[Notifications] Received webhook:`, JSON.stringify(req.body, null, 2));
         
-        if (event_type === 'presence_changed' && user_id && data?.presence) {
-            console.log(`[Notifications] User ${user_id} changed status to: ${data.presence}`);
+        if (eventType === 'messaging.presence-control.changed' && payload) {
+            console.log(`[Notifications] Processing presence notification with ${Array.isArray(payload) ? payload.length : 1} items`);
             
-            // Update cache immediately
-            updatePresenceCache(user_id, data.presence);
+            // Handle payload (could be array or single object)
+            const presenceUpdates = Array.isArray(payload) ? payload : [payload];
             
-            // Here you could broadcast to connected clients via WebSocket/SSE
-            // For now, the cache update is sufficient
+            presenceUpdates.forEach(update => {
+                if (update.userId && update.presence) {
+                    console.log(`[Notifications] User ${update.userId} changed status to: ${update.presence}`);
+                    
+                    // Update cache immediately
+                    updatePresenceCache(update.userId, update.presence);
+                } else {
+                    console.log(`[Notifications] Incomplete presence data:`, update);
+                }
+            });
             
-            res.status(200).json({ received: true, processed: true });
+            // Respond quickly (within 3 seconds as documented)
+            res.status(200).json({ 
+                received: true, 
+                processed: true,
+                eventType: eventType,
+                itemsProcessed: presenceUpdates.length
+            });
+            
         } else {
-            console.log(`[Notifications] Ignored event: ${event_type}`);
-            res.status(200).json({ received: true, processed: false, reason: 'event_type_not_handled' });
+            console.log(`[Notifications] Ignored event type: ${eventType}`);
+            res.status(200).json({ 
+                received: true, 
+                processed: false, 
+                reason: `Unsupported event type: ${eventType}`
+            });
         }
         
     } catch (error) {
         console.error('[Notifications] Error processing webhook:', error);
-        res.status(500).json({ error: 'Failed to process notification' });
+        // Still return 200 to avoid retries for parsing errors
+        res.status(200).json({ 
+            received: true, 
+            processed: false, 
+            error: 'Processing error' 
+        });
     }
 });
 
