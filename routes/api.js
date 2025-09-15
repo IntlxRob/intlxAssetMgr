@@ -2641,7 +2641,7 @@ router.get('/setup/get-users-with-elevate-ids', async (req, res) => {
 });
 
 /**
- * CORRECTED: Handle real Intermedia presence payload structure
+ * FIXED: Handle multiple field name variants from Intermedia webhooks
  */
 router.post('/notifications', (req, res) => {
     try {
@@ -2656,14 +2656,22 @@ router.post('/notifications', (req, res) => {
             const presenceUpdates = Array.isArray(payload) ? payload : [payload];
             
             presenceUpdates.forEach(update => {
-                // FIXED: Use presenceState instead of presence
-                if (update.userId && update.presenceState) {
-                    console.log(`[Notifications] User ${update.userId} changed status to: ${update.presenceState} at ${update.whenRaised}`);
+                // FLEXIBLE: Accept multiple field name variants
+                const userId = update.userId || update.unifiedUserId || update.user_id;
+                const presenceState = update.presenceState || update.presence || update.status;
+                
+                if (userId && presenceState) {
+                    console.log(`[Notifications] User ${userId} changed status to: ${presenceState} at ${whenRaised || 'unknown time'}`);
                     
                     // Update cache immediately
-                    updatePresenceCache(update.userId, update.presenceState);
+                    updatePresenceCache(userId, presenceState);
                 } else {
-                    console.log(`[Notifications] Incomplete presence data:`, update);
+                    console.log(`[Notifications] Incomplete presence data - missing userId or presence:`, {
+                        available_fields: Object.keys(update),
+                        userId_found: !!userId,
+                        presence_found: !!presenceState,
+                        raw_update: update
+                    });
                 }
             });
             
