@@ -1915,8 +1915,7 @@ async function cleanupPresenceSubscriptions() {
  */
 async function fetchAgentStatuses() {
     try {
-        console.log('[Agent Status] Fetching @intlxsolutions.com users only');
-
+        console.log('[Agent Status] Fetching agent statuses using stored Zendesk Elevate IDs');
         // Step 1: Check Address Book authentication
         if (!global.addressBookToken || global.addressBookTokenExpiry < Date.now()) {
             console.log('[Agent Status] Address Book token expired, attempting refresh...');
