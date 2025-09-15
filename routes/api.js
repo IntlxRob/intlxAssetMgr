@@ -2016,6 +2016,58 @@ router.get('/debug-find-all-functions', (req, res) => {
     });
 });
 
+// Add this enhanced debug endpoint
+router.get('/debug-zendesk-code-vs-manual', async (req, res) => {
+    try {
+        const email = process.env.ZENDESK_EMAIL;
+        const token = process.env.ZENDESK_TOKEN;
+        const subdomain = process.env.ZENDESK_SUBDOMAIN;
+        
+        // Show exactly what your code sees
+        const codeAuth = Buffer.from(`${email}/token:${token}`).toString('base64');
+        const codeUrl = `https://${subdomain}.zendesk.com/api/v2/users.json?per_page=100&page=1`;
+        
+        // Show exactly what manual curl used
+        const manualAuth = Buffer.from(`rob.johnston@intlxsolutions.com/token:LJ3usrUgoeBZ2fCnGJX2mawtixdr0XnOh7rxPSuI`).toString('base64');
+        const manualUrl = `https://intlxsolutions.zendesk.com/api/v2/users/me.json`;
+        
+        // Test the exact same call your getZendeskUsersWithElevateIds function makes
+        console.log('[Debug] Testing code path...');
+        const response = await fetch(codeUrl, {
+            headers: {
+                'Authorization': `Basic ${codeAuth}`,
+            }
+        });
+        
+        const responseText = await response.text();
+        
+        res.json({
+            success: response.ok,
+            status: response.status,
+            comparison: {
+                codeAuth: codeAuth,
+                manualAuth: manualAuth,
+                authMatch: codeAuth === manualAuth,
+                codeUrl: codeUrl,
+                manualUrl: manualUrl
+            },
+            environmentVariables: {
+                email: email,
+                token: token ? `${token.substring(0, 8)}...` : 'MISSING',
+                subdomain: subdomain
+            },
+            responsePreview: responseText.substring(0, 300),
+            message: response.ok ? 'Code path works!' : 'Code path failing - see comparison'
+        });
+        
+    } catch (error) {
+        res.json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 /**
  * Debug endpoint to test messaging API user endpoints
  */
