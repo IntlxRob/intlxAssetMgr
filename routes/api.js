@@ -1353,35 +1353,48 @@ async function fetchAgentStatuses() {
 }
 
 /**
- * Updated mapping for all Intermedia presence states
+ * Map Intermedia presence states to human-readable formats
  */
 function mapMessagingStatus(presenceState) {
-    if (!presenceState) return 'offline';
+    if (!presenceState) return 'Offline';
     
-    const lowerState = presenceState.toLowerCase();
+    // Normalize input (handle spaces and case variations)
+    const normalizedState = presenceState.toLowerCase().replace(/\s+/g, '');
     
-    switch (lowerState) {
+    switch (normalizedState) {
         case 'online':
-        case 'agent_available':
-            return 'available';
+            return 'Online';
+        case 'agentavailable':
+            return 'Available';
         case 'busy':
-        case 'agent_busy':
+            return 'Busy';
+        case 'agentbusy':
+            return 'Agent Busy';
         case 'onphone':
-        case 'inmetting':
+            return 'On Phone';
+        case 'inmeeting':
+            return 'In Meeting';
         case 'scrsharing':
-        case 'agent_oncall':
-            return 'busy';
+            return 'Screen Sharing';
+        case 'agentoncall':
+            return 'Agent On Call';
         case 'away':
+            return 'Away';
         case 'onbreak':
+            return 'On Break';
         case 'dnd':
+            return 'Do Not Disturb';
         case 'outsick':
+            return 'Out Sick';
         case 'vacationing':
+            return 'On Vacation';
         case 'offwork':
-            return 'away';
+            return 'Off Work';
         case 'offline':
-            return 'offline';
+            return 'Offline';
         default:
-            return 'unknown';
+            console.log(`[Mapping] Unknown presence state: "${presenceState}"`);
+            return presenceState; // Return original if unknown
     }
 }
 
