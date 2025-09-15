@@ -1396,6 +1396,245 @@ function mapMessagingStatus(status) {
     }
 }
 
+// ============================================
+// PRESENCE SUBSCRIPTION SYSTEM
+// ============================================
+
+// Global subscription state
+let presenceSubscriptionState = {
+    hubId: null,
+    subscriptionId: null,
+    renewalTimer: null,
+    isInitialized: false
+};
+
+/**
+ * Initialize the notifications hub
+ */
+async function initializeNotificationsHub() {
+    try {
+        console.log('[Presence] Initializing notifications hub...');
+        
+        const messagingToken = await getIntermediaToken();
+        const hubResponse = await fetch('https://api.elevate.services/messaging/v1/notifications/hub', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                transport: 'webhooks',
+                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
+            })
+        });
+        
+        if (!hubResponse.ok) {
+            throw new Error(`Hub creation failed: ${hubResponse.status} ${await hubResponse.text()}`);
+        }
+        
+        const hubData = await hubResponse.json();
+        presenceSubscriptionState.hubId = hubData.hub_id;
+        
+        console.log(`[Presence] ✅ Notifications hub created: ${hubData.hub_id}`);
+        return hubData.hub_id;
+        
+    } catch (error) {
+        console.error('[Presence] ❌ Failed to initialize notifications hub:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Subscribe to presence changes for all users
+ */
+async function subscribeToAllUsersPresence(hubId) {
+    try {
+        console.log('[Presence] Creating subscription for all users...');
+        
+        const messagingToken = await getIntermediaToken();
+        const subscriptionResponse = await fetch('https://api.elevate.services/messaging/v1/subscriptions/accounts/_me/users/_all', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                hub_id: hubId,
+                event_types: ['presence_changed'],
+                filters: {
+                    // Only subscribe to @intlxsolutions.com users
+                    email_domains: ['intlxsolutions.com']
+                }
+            })
+        });
+        
+        if (!subscriptionResponse.ok) {
+            throw new Error(`Subscription creation failed: ${subscriptionResponse.status} ${await subscriptionResponse.text()}`);
+        }
+        
+        const subscription = await subscriptionResponse.json();
+        presenceSubscriptionState.subscriptionId = subscription.id;
+        
+        console.log(`[Presence] ✅ Subscription created: ${subscription.id}`);
+        console.log(`[Presence] Expires at: ${subscription.expires_at}`);
+        
+        // Schedule automatic renewal
+        scheduleSubscriptionRenewal(subscription.id, subscription.expires_at);
+        
+        return subscription.id;
+        
+    } catch (error) {
+        console.error('[Presence] ❌ Failed to create subscription:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Schedule automatic subscription renewal
+ */
+function scheduleSubscriptionRenewal(subscriptionId, expiresAt) {
+    // Clear existing timer
+    if (presenceSubscriptionState.renewalTimer) {
+        clearTimeout(presenceSubscriptionState.renewalTimer);
+    }
+    
+    // Calculate renewal time (5 minutes before expiry)
+    const expiryTime = new Date(expiresAt).getTime();
+    const renewalTime = expiryTime - (5 * 60 * 1000); // 5 minutes buffer
+    const delay = renewalTime - Date.now();
+    
+    console.log(`[Presence] Scheduling renewal in ${Math.round(delay / 60000)} minutes`);
+    
+    presenceSubscriptionState.renewalTimer = setTimeout(async () => {
+        await renewSubscription(subscriptionId);
+    }, Math.max(delay, 30000)); // Minimum 30 seconds delay
+}
+
+/**
+ * Renew the presence subscription
+ */
+async function renewSubscription(subscriptionId) {
+    try {
+        console.log(`[Presence] Renewing subscription: ${subscriptionId}`);
+        
+        const messagingToken = await getIntermediaToken();
+        const renewResponse = await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${subscriptionId}/renew`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${messagingToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                duration: '24h' // Renew for 24 hours
+            })
+        });
+        
+        if (!renewResponse.ok) {
+            throw new Error(`Renewal failed: ${renewResponse.status} ${await renewResponse.text()}`);
+        }
+        
+        const renewedSub = await renewResponse.json();
+        console.log(`[Presence] ✅ Subscription renewed until: ${renewedSub.expires_at}`);
+        
+        // Schedule next renewal
+        scheduleSubscriptionRenewal(subscriptionId, renewedSub.expires_at);
+        
+    } catch (error) {
+        console.error('[Presence] ❌ Failed to renew subscription:', error);
+        console.log('[Presence] Attempting to recreate subscription...');
+        
+        // Fallback: recreate the entire subscription system
+        setTimeout(() => {
+            initializePresenceSubscriptions();
+        }, 30000); // Retry in 30 seconds
+    }
+}
+
+/**
+ * Initialize the complete presence subscription system
+ */
+async function initializePresenceSubscriptions() {
+    try {
+        console.log('[Presence] Initializing real-time presence system...');
+        
+        // Step 1: Create notifications hub
+        const hubId = await initializeNotificationsHub();
+        
+        // Step 2: Subscribe to all users' presence
+        const subscriptionId = await subscribeToAllUsersPresence(hubId);
+        
+        // Step 3: Get initial presence data
+        const initialAgents = await fetchAgentStatuses();
+        
+        presenceSubscriptionState.isInitialized = true;
+        console.log('[Presence] ✅ Real-time presence system fully initialized');
+        
+        return initialAgents;
+        
+    } catch (error) {
+        console.error('[Presence] ❌ Failed to initialize presence subscriptions:', error);
+        presenceSubscriptionState.isInitialized = false;
+        
+        // Fallback to polling if subscriptions fail
+        console.log('[Presence] Falling back to polling mode');
+        return await fetchAgentStatuses();
+    }
+}
+
+/**
+ * Update presence in cache when notification received
+ */
+function updatePresenceCache(userId, presence) {
+    if (!intermediaCache.agentStatuses) {
+        intermediaCache.agentStatuses = new Map();
+    }
+    
+    const existingAgent = intermediaCache.agentStatuses.get(userId);
+    if (existingAgent) {
+        const updatedAgent = {
+            ...existingAgent,
+            status: mapMessagingStatus(presence),
+            phoneStatus: mapMessagingStatus(presence),
+            presenceStatus: mapMessagingStatus(presence),
+            lastActivity: new Date().toISOString(),
+            rawPresenceData: { presence, updated: new Date().toISOString() }
+        };
+        
+        intermediaCache.agentStatuses.set(userId, updatedAgent);
+        intermediaCache.lastStatusUpdate = Date.now();
+        
+        console.log(`[Presence] Updated cache for ${existingAgent.name}: ${presence}`);
+    } else {
+        console.log(`[Presence] Received update for unknown user: ${userId}`);
+    }
+}
+
+/**
+ * Clean up subscriptions on shutdown
+ */
+async function cleanupPresenceSubscriptions() {
+    try {
+        if (presenceSubscriptionState.renewalTimer) {
+            clearTimeout(presenceSubscriptionState.renewalTimer);
+        }
+        
+        if (presenceSubscriptionState.subscriptionId) {
+            console.log('[Presence] Cleaning up subscription...');
+            // Could add DELETE subscription API call here if available
+        }
+        
+        presenceSubscriptionState = {
+            hubId: null,
+            subscriptionId: null,
+            renewalTimer: null,
+            isInitialized: false
+        };
+        
+    } catch (error) {
+        console.error('[Presence] Error during cleanup:', error);
+    }
+}
+
 /**
  * COMPLETE: Fetch agent statuses for @intlxsolutions.com users only
  */
@@ -1584,16 +1823,6 @@ async function fetchAgentStatuses() {
     }
 }
 
-/**
- * Remove any existing calls to getMockAgentStatuses()
- * SEARCH FOR AND DELETE these lines in your api.js:
- * 
- * - return getMockAgentStatuses();
- * - const mockAgents = getMockAgentStatuses();
- * - agents : getMockAgentStatuses();
- * 
- * Replace them all with: return [];
- */
 
 /**
  * Debug endpoint to check address book authentication
@@ -1870,57 +2099,142 @@ function mapMessagingStatus(status) {
 }
 
 /**
- * API endpoint to get current agent statuses
+ * UPDATED: Agent status endpoint with subscription support
  * GET /api/agent-status
  */
 router.get('/agent-status', async (req, res) => {
     try {
         console.log('[API] Agent status requested');
         
-        // Check cache first
+        // Initialize subscriptions if not already done
+        if (!presenceSubscriptionState.isInitialized) {
+            console.log('[API] Initializing presence subscriptions...');
+            try {
+                const agents = await initializePresenceSubscriptions();
+                console.log(`[API] Returning ${agents.length} agent statuses (newly initialized)`);
+                
+                return res.json({
+                    success: true,
+                    agents: agents,
+                    cached: false,
+                    subscriptionEnabled: true,
+                    lastUpdated: new Date().toISOString()
+                });
+            } catch (error) {
+                console.error('[API] Subscription initialization failed, falling back to polling:', error);
+            }
+        }
+        
+        // Check cache first (now updated by real-time notifications)
         const now = Date.now();
-        if (intermediaCache.agentStatuses.size > 0 && 
-            now - intermediaCache.lastStatusUpdate < AGENT_STATUS_CACHE_DURATION) {
-            console.log('[API] Returning cached agent statuses');
+        const CACHE_DURATION = 300000; // 5 minutes (much longer since we have real-time updates)
+        
+        if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0 && 
+            intermediaCache.lastStatusUpdate && 
+            now - intermediaCache.lastStatusUpdate < CACHE_DURATION) {
+            
+            console.log('[API] Returning cached agent statuses (updated by subscriptions)');
             const cachedStatuses = Array.from(intermediaCache.agentStatuses.values());
             return res.json({
                 success: true,
                 agents: cachedStatuses,
                 cached: true,
+                subscriptionEnabled: presenceSubscriptionState.isInitialized,
                 lastUpdated: new Date(intermediaCache.lastStatusUpdate).toISOString()
             });
         }
 
-        // Fetch fresh data
+        // Fallback: fetch fresh data if cache is stale or empty
+        console.log('[API] Fetching fresh agent data...');
         const agents = await fetchAgentStatuses();
         
         // Update cache
-        intermediaCache.agentStatuses.clear();
-        agents.forEach(agent => {
-            intermediaCache.agentStatuses.set(agent.id, agent);
-        });
-        intermediaCache.lastStatusUpdate = now;
+        if (agents.length > 0) {
+            if (!intermediaCache.agentStatuses) {
+                intermediaCache.agentStatuses = new Map();
+            }
+            intermediaCache.agentStatuses.clear();
+            agents.forEach(agent => {
+                intermediaCache.agentStatuses.set(agent.id, agent);
+            });
+            intermediaCache.lastStatusUpdate = now;
+        }
 
-        console.log(`[API] Returning ${agents.length} agent statuses`);
+        console.log(`[API] Returning ${agents.length} agent statuses (fresh data)`);
         
         res.json({
-            success: true,
+            success: agents.length > 0,
             agents: agents,
             cached: false,
-            lastUpdated: new Date().toISOString()
+            subscriptionEnabled: presenceSubscriptionState.isInitialized,
+            lastUpdated: new Date().toISOString(),
+            message: agents.length === 0 ? 'No agent data available - check authentication' : undefined
         });
 
     } catch (error) {
         console.error('[API] Error fetching agent status:', error.message);
         
-        // Return mock data on error
-        return [];
-        res.status(500).json({
-        success: false,
-        error: error.message,
-        agents: [], // Empty array instead of mock data
-        lastUpdated: new Date().toISOString()
+        res.json({
+            success: false,
+            error: error.message,
+            agents: [],
+            subscriptionEnabled: false,
+            lastUpdated: new Date().toISOString()
         });
+    }
+});
+
+/**
+ * Webhook endpoint to receive real-time presence notifications
+ * POST /api/notifications
+ */
+router.post('/notifications', (req, res) => {
+    try {
+        const { event_type, user_id, data, timestamp } = req.body;
+        
+        console.log(`[Notifications] Received ${event_type} for user ${user_id}`);
+        
+        if (event_type === 'presence_changed' && user_id && data?.presence) {
+            console.log(`[Notifications] User ${user_id} changed status to: ${data.presence}`);
+            
+            // Update cache immediately
+            updatePresenceCache(user_id, data.presence);
+            
+            // Here you could broadcast to connected clients via WebSocket/SSE
+            // For now, the cache update is sufficient
+            
+            res.status(200).json({ received: true, processed: true });
+        } else {
+            console.log(`[Notifications] Ignored event: ${event_type}`);
+            res.status(200).json({ received: true, processed: false, reason: 'event_type_not_handled' });
+        }
+        
+    } catch (error) {
+        console.error('[Notifications] Error processing webhook:', error);
+        res.status(500).json({ error: 'Failed to process notification' });
+    }
+});
+
+/**
+ * Debug endpoint to check subscription status
+ */
+router.get('/debug-presence-subscriptions', (req, res) => {
+    try {
+        res.json({
+            subscriptionState: {
+                isInitialized: presenceSubscriptionState.isInitialized,
+                hubId: presenceSubscriptionState.hubId,
+                subscriptionId: presenceSubscriptionState.subscriptionId,
+                hasRenewalTimer: !!presenceSubscriptionState.renewalTimer
+            },
+            cacheInfo: {
+                agentCount: intermediaCache.agentStatuses ? intermediaCache.agentStatuses.size : 0,
+                lastUpdate: intermediaCache.lastStatusUpdate ? 
+                    new Date(intermediaCache.lastStatusUpdate).toISOString() : null
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
