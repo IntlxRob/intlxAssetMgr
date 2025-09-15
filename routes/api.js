@@ -1976,6 +1976,46 @@ router.get('/debug-function-count', (req, res) => {
     });
 });
 
+// Enhanced debugging - add this to your router endpoints section
+router.get('/debug-find-all-functions', (req, res) => {
+    const fs = require('fs');
+    const apiFileContent = fs.readFileSync(__filename, 'utf8');
+    const lines = apiFileContent.split('\n');
+    
+    // Find ALL function definitions
+    const allFunctions = [];
+    const fetchAgentStatusesFunctions = [];
+    const addressBookReferences = [];
+    
+    lines.forEach((line, index) => {
+        const lineNum = index + 1;
+        const trimmedLine = line.trim();
+        
+        // Find all function definitions
+        if (trimmedLine.startsWith('async function ') || trimmedLine.startsWith('function ')) {
+            allFunctions.push({ lineNum, content: trimmedLine });
+        }
+        
+        // Find specific fetchAgentStatuses
+        if (trimmedLine.includes('fetchAgentStatuses')) {
+            fetchAgentStatusesFunctions.push({ lineNum, content: trimmedLine });
+        }
+        
+        // Find Address Book references in function context
+        if (trimmedLine.includes('addressBookToken') || trimmedLine.includes('intlxsolutions.com')) {
+            addressBookReferences.push({ lineNum, content: trimmedLine });
+        }
+    });
+    
+    res.json({
+        totalFunctions: allFunctions.length,
+        fetchAgentStatusesReferences: fetchAgentStatusesFunctions.length,
+        fetchAgentStatusesFunctions,
+        addressBookReferences: addressBookReferences.slice(0, 10), // First 10 refs
+        allFunctions: allFunctions.slice(0, 20) // First 20 functions
+    });
+});
+
 /**
  * Debug endpoint to test messaging API user endpoints
  */
