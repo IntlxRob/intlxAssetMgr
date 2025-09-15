@@ -1422,7 +1422,7 @@ async function getZendeskUsersWithElevateIds() {
         while (hasMore && page <= 10) { // Safety limit of 10 pages
             const response = await fetch(`https://intlxsolutions.zendesk.com/api/v2/users.json?per_page=100&page=${page}`, {
                 headers: {
-                    'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
+                    'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
                 }
             });
             
