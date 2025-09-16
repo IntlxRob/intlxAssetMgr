@@ -2071,6 +2071,138 @@ router.get('/debug-zendesk-code-vs-manual', async (req, res) => {
     }
 });
 
+// Add this debug endpoint to your api.js
+
+router.get('/debug-webhook-cache-state', async (req, res) => {
+    try {
+        const cacheSize = intermediaCache.agentStatuses ? intermediaCache.agentStatuses.size : 0;
+        const cacheKeys = intermediaCache.agentStatuses ? Array.from(intermediaCache.agentStatuses.keys()) : [];
+        const sampleCache = intermediaCache.agentStatuses && cacheSize > 0 ? 
+            Array.from(intermediaCache.agentStatuses.values()).slice(0, 2) : [];
+
+        res.json({
+            // Subscription state
+            subscriptionState: {
+                isInitialized: presenceSubscriptionState.isInitialized,
+                subscriptionId: presenceSubscriptionState.subscriptionId,
+                hasRenewalTimer: !!presenceSubscriptionState.renewalTimer
+            },
+            
+            // Cache state
+            cacheState: {
+                hasCacheMap: !!intermediaCache.agentStatuses,
+                cacheSize: cacheSize,
+                lastUpdate: intermediaCache.lastStatusUpdate ? 
+                    new Date(intermediaCache.lastStatusUpdate).toISOString() : null,
+                cacheKeys: cacheKeys.slice(0, 5), // First 5 user IDs
+                sampleAgents: sampleCache
+            },
+            
+            // Conditional check results
+            checks: {
+                subscriptionInitialized: presenceSubscriptionState.isInitialized,
+                hasSubscriptionId: !!presenceSubscriptionState.subscriptionId,
+                cacheExists: !!(intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0),
+                wouldUseCache: presenceSubscriptionState.isInitialized && 
+                              presenceSubscriptionState.subscriptionId &&
+                              intermediaCache.agentStatuses && 
+                              intermediaCache.agentStatuses.size > 0
+            }
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Add this to your api.js to force webhook subscription creation
+
+router.get('/debug-force-webhook-setup', async (req, res) => {
+    try {
+        console.log('[Debug] Forcing webhook subscription setup...');
+        
+        // Step 1: Check current subscription state
+        console.log('[Debug] Current subscription state:', {
+            isInitialized: presenceSubscriptionState.isInitialized,
+            subscriptionId: presenceSubscriptionState.subscriptionId
+        });
+        
+        // Step 2: Get token with notifications scope
+        const tokenResponse = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.service.notifications'
+            })
+        });
+        
+        if (!tokenResponse.ok) {
+            return res.json({ success: false, error: 'Failed to get token' });
+        }
+        
+        const tokenData = await tokenResponse.json();
+        console.log('[Debug] ✅ Got notifications token');
+        
+        // Step 3: Create subscription
+        const subscriptionPayload = {
+            "events": ["messaging.presence-control.changed"],
+            "ttl": "08:00:00",
+            "delivery": {
+                "transport": "webhook",
+                "uri": "https://intlxassetmgr-proxy.onrender.com/api/notifications"
+            }
+        };
+        
+        const subscriptionResponse = await fetch('https://api.elevate.services/notifications/v2/accounts/_me/subscriptions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${tokenData.access_token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(subscriptionPayload)
+        });
+        
+        const subscriptionResult = await subscriptionResponse.json();
+        
+        if (subscriptionResponse.ok) {
+            // Update subscription state
+            presenceSubscriptionState.subscriptionId = subscriptionResult.id || subscriptionResult.subscriptionId;
+            presenceSubscriptionState.isInitialized = true;
+            
+            console.log('[Debug] ✅ Webhook subscription created:', subscriptionResult);
+            
+            // Step 4: Initialize cache if it doesn't exist
+            if (!intermediaCache.agentStatuses) {
+                intermediaCache.agentStatuses = new Map();
+                console.log('[Debug] ✅ Initialized agent status cache');
+            }
+            
+            res.json({
+                success: true,
+                subscriptionCreated: true,
+                subscriptionId: presenceSubscriptionState.subscriptionId,
+                cacheInitialized: true,
+                nextStep: 'Test by changing your status in the Intermedia app'
+            });
+            
+        } else {
+            console.log('[Debug] ❌ Subscription creation failed:', subscriptionResult);
+            res.json({
+                success: false,
+                error: subscriptionResult,
+                step: 'subscription_creation_failed'
+            });
+        }
+        
+    } catch (error) {
+        console.error('[Debug] Error in force webhook setup:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 /**
  * Debug endpoint to test messaging API user endpoints
  */
