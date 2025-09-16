@@ -1672,11 +1672,12 @@ function updatePresenceCache(userId, presence) {
     }
     
     const existingAgent = intermediaCache.agentStatuses.get(userId);
+    
     if (existingAgent) {
-
+        // Update existing user
         const mappedStatus = mapMessagingStatus(presence);
         console.log(`[Debug] mapMessagingStatus("${presence}") returned: "${mappedStatus}"`);
-
+        
         const updatedAgent = {
             ...existingAgent,
             status: mappedStatus,
@@ -1687,12 +1688,17 @@ function updatePresenceCache(userId, presence) {
         };
         
         intermediaCache.agentStatuses.set(userId, updatedAgent);
-        intermediaCache.lastStatusUpdate = Date.now();
+        console.log(`[Presence] Updated existing user ${existingAgent.name}: ${presence} -> ${mappedStatus}`);
         
-        console.log(`[Presence] Updated cache for ${existingAgent.name}: ${presence}`);
     } else {
-        console.log(`[Presence] Received update for unknown user: ${userId}`);
+        // NEW: Handle unknown users by looking them up
+        console.log(`[Presence] Webhook for unknown user ${userId}, attempting to look up user info...`);
+        
+        // Try to find this user in Zendesk data
+        lookupAndAddUser(userId, presence);
     }
+    
+    intermediaCache.lastStatusUpdate = Date.now();
 }
 
 /**
@@ -1882,6 +1888,58 @@ function updatePresenceCache(userId, presence) {
         console.log(`[Presence] Updated cache for ${existingAgent.name}: ${presence}`);
     } else {
         console.log(`[Presence] Received update for unknown user: ${userId}`);
+    }
+}
+
+/**
+ * NEW: Lookup unknown user and add to cache
+ */
+async function lookupAndAddUser(userId, presence) {
+    try {
+        // First, check if this user exists in our Zendesk users with Elevate IDs
+        const response = await fetch('https://intlxsolutions.zendesk.com/api/v2/users.json?per_page=100', {
+            headers: {
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+            }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            const zendeskUser = data.users.find(user => user.user_fields?.elevate_id === userId);
+            
+            if (zendeskUser) {
+                // Found the user in Zendesk, add to cache
+                const mappedStatus = mapMessagingStatus(presence);
+                
+                const newAgent = {
+                    id: userId,
+                    name: zendeskUser.name,
+                    email: zendeskUser.email,
+                    extension: 'N/A',
+                    phone: 'Unknown',
+                    status: mappedStatus,
+                    phoneStatus: mappedStatus,
+                    presenceStatus: mappedStatus,
+                    onCall: false,
+                    lastActivity: new Date().toISOString(),
+                    source: 'zendesk_elevate_id',
+                    company: 'Intlx Solutions',
+                    hasPhoneData: false,
+                    hasPresenceData: true,
+                    zendeskUserId: zendeskUser.id,
+                    rawPresenceData: { presence, updated: new Date().toISOString() }
+                };
+                
+                intermediaCache.agentStatuses.set(userId, newAgent);
+                console.log(`[Presence] Added new user to cache: ${zendeskUser.name} with status ${mappedStatus}`);
+                
+            } else {
+                console.log(`[Presence] User ${userId} not found in Zendesk users with Elevate IDs`);
+            }
+        }
+        
+    } catch (error) {
+        console.error(`[Presence] Error looking up user ${userId}:`, error.message);
     }
 }
 
@@ -2382,80 +2440,43 @@ router.get('/agent-status', async (req, res) => {
     try {
         console.log('[API] Agent status requested');
         
-        // Initialize subscriptions if not already done
-        if (!presenceSubscriptionState.isInitialized) {
-            console.log('[API] Initializing presence subscriptions...');
-            try {
-                const agents = await initializeDirectPresenceSubscriptions();
-                console.log(`[API] Returning ${agents.length} agent statuses (newly initialized)`);
+        // Check if we have a valid webhook subscription
+        if (presenceSubscriptionState.isInitialized && presenceSubscriptionState.subscriptionId) {
+            // Use cached data from webhook updates
+            console.log('[API] Returning cached agent statuses (updated by webhooks)');
+            
+            if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0) {
+                const agents = Array.from(intermediaCache.agentStatuses.values());
                 
                 return res.json({
                     success: true,
                     agents: agents,
-                    cached: false,
-                    subscriptionEnabled: true,
-                    lastUpdated: new Date().toISOString()
+                    cached: true,
+                    source: 'webhook_cache',
+                    subscriptionId: presenceSubscriptionState.subscriptionId,
+                    lastUpdated: intermediaCache.lastStatusUpdate ? 
+                        new Date(intermediaCache.lastStatusUpdate).toISOString() : null
                 });
-            } catch (error) {
-                console.error('[API] Subscription initialization failed, falling back to polling:', error);
             }
         }
         
-        // Check cache first (now updated by real-time notifications)
-        const now = Date.now();
-        const CACHE_DURATION = 300000; // 5 minutes (much longer since we have real-time updates)
-        
-        if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0 && 
-            intermediaCache.lastStatusUpdate && 
-            now - intermediaCache.lastStatusUpdate < CACHE_DURATION) {
-            
-            console.log('[API] Returning cached agent statuses (updated by subscriptions)');
-            const cachedStatuses = Array.from(intermediaCache.agentStatuses.values());
-            return res.json({
-                success: true,
-                agents: cachedStatuses,
-                cached: true,
-                subscriptionEnabled: presenceSubscriptionState.isInitialized,
-                lastUpdated: new Date(intermediaCache.lastStatusUpdate).toISOString()
-            });
-        }
-
-        // Fallback: fetch fresh data if cache is stale or empty
-        console.log('[API] Fetching fresh agent data...');
+        // If no webhook cache, fetch fresh data
+        console.log('[API] No webhook cache available, fetching fresh presence data...');
         const agents = await fetchAgentStatuses();
         
-        // Update cache
-        if (agents.length > 0) {
-            if (!intermediaCache.agentStatuses) {
-                intermediaCache.agentStatuses = new Map();
-            }
-            intermediaCache.agentStatuses.clear();
-            agents.forEach(agent => {
-                intermediaCache.agentStatuses.set(agent.id, agent);
-            });
-            intermediaCache.lastStatusUpdate = now;
-        }
-
-        console.log(`[API] Returning ${agents.length} agent statuses (fresh data)`);
-        
-        res.json({
-            success: agents.length > 0,
+        return res.json({
+            success: true,
             agents: agents,
             cached: false,
-            subscriptionEnabled: presenceSubscriptionState.isInitialized,
-            lastUpdated: new Date().toISOString(),
-            message: agents.length === 0 ? 'No agent data available - check authentication' : undefined
-        });
-
-    } catch (error) {
-        console.error('[API] Error fetching agent status:', error.message);
-        
-        res.json({
-            success: false,
-            error: error.message,
-            agents: [],
-            subscriptionEnabled: false,
+            source: 'fresh_fetch',
             lastUpdated: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('[API] Error getting agent status:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });
@@ -2821,6 +2842,73 @@ router.get('/debug-correct-webhook-subscription', async (req, res) => {
     }
 });
 
+router.get('/debug-presence-comparison', async (req, res) => {
+    try {
+        // Get cached data
+        const cachedAgents = intermediaCache.agentStatuses ? 
+            Array.from(intermediaCache.agentStatuses.values()) : [];
+        
+        // Get fresh data
+        const freshAgents = await fetchAgentStatuses();
+        
+        // Compare
+        const comparison = {
+            cached: {
+                count: cachedAgents.length,
+                agents: cachedAgents.map(a => ({
+                    name: a.name,
+                    status: a.status,
+                    source: a.source,
+                    lastActivity: a.lastActivity
+                }))
+            },
+            fresh: {
+                count: freshAgents.length,
+                agents: freshAgents.map(a => ({
+                    name: a.name,
+                    status: a.status,
+                    source: a.source,
+                    lastActivity: a.lastActivity
+                }))
+            },
+            differences: []
+        };
+        
+        // Find differences
+        cachedAgents.forEach(cached => {
+            const fresh = freshAgents.find(f => f.id === cached.id);
+            if (!fresh) {
+                comparison.differences.push({
+                    name: cached.name,
+                    issue: 'User in cache but not in fresh data'
+                });
+            } else if (cached.status !== fresh.status) {
+                comparison.differences.push({
+                    name: cached.name,
+                    cached_status: cached.status,
+                    fresh_status: fresh.status,
+                    issue: 'Status mismatch between cache and fresh'
+                });
+            }
+        });
+        
+        freshAgents.forEach(fresh => {
+            const cached = cachedAgents.find(c => c.id === fresh.id);
+            if (!cached) {
+                comparison.differences.push({
+                    name: fresh.name,
+                    issue: 'User in fresh data but not in cache'
+                });
+            }
+        });
+        
+        res.json(comparison);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 /**
  * Test webhook verification endpoint
  */
@@ -3029,149 +3117,11 @@ router.get('/debug-presence-subscriptions', (req, res) => {
  * FIXED: Create webhook subscription with proper delivery method format
  */
 router.get('/debug-create-proper-webhook-subscription', async (req, res) => {
-    try {
-        const messagingToken = await getIntermediaToken();
-        
-        // Delete current subscription first
-        if (presenceSubscriptionState.subscriptionId) {
-            console.log('[Debug] Deleting current subscription...');
-            await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${presenceSubscriptionState.subscriptionId}`, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${messagingToken}`
-                }
-            });
-        }
-        
-        // Clear subscription state
-        presenceSubscriptionState.subscriptionId = null;
-        presenceSubscriptionState.isInitialized = false;
-        if (presenceSubscriptionState.renewalTimer) {
-            clearTimeout(presenceSubscriptionState.renewalTimer);
-            presenceSubscriptionState.renewalTimer = null;
-        }
-        
-        // Try multiple webhook formats to find one that works
-        const webhookFormats = [
-            // Format 1: Full delivery_method object
-            {
-                event_types: ['messaging.presence-control.changed'],
-                delivery_method: {
-                    transport: 'webhook',
-                    webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
-                },
-                filters: {
-                    email_domains: ['intlxsolutions.com']
-                }
-            },
-            // Format 2: Direct webhook_url field
-            {
-                event_types: ['messaging.presence-control.changed'],
-                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
-                filters: {
-                    email_domains: ['intlxsolutions.com']
-                }
-            },
-            // Format 3: Different event name
-            {
-                event_types: ['presence_changed'],
-                delivery_method: {
-                    transport: 'webhook',
-                    webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
-                },
-                filters: {
-                    email_domains: ['intlxsolutions.com']
-                }
-            },
-            // Format 4: Simple webhook_url with different event
-            {
-                event_types: ['presence_changed'],
-                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
-                filters: {
-                    email_domains: ['intlxsolutions.com']
-                }
-            }
-        ];
-        
-        let successfulSubscription = null;
-        
-        for (let i = 0; i < webhookFormats.length; i++) {
-            console.log(`[Debug] Trying webhook format ${i + 1}...`);
-            
-            try {
-                const subscriptionResponse = await fetch('https://api.elevate.services/messaging/v1/subscriptions/accounts/_me/users/_all', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${messagingToken}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(webhookFormats[i])
-                });
-                
-                if (subscriptionResponse.ok) {
-                    const subscription = await subscriptionResponse.json();
-                    console.log(`[Debug] Format ${i + 1} subscription created:`, JSON.stringify(subscription, null, 2));
-                    
-                    // Check if this one actually uses webhooks
-                    const hasDirectWebhook = !subscription.deliveryMethod?.uri?.includes('elevate-events.serverdata.net');
-                    
-                    if (hasDirectWebhook) {
-                        successfulSubscription = {
-                            formatUsed: i + 1,
-                            subscription: subscription,
-                            payload: webhookFormats[i]
-                        };
-                        
-                        // Set up the subscription state
-                        presenceSubscriptionState.subscriptionId = subscription.id;
-                        presenceSubscriptionState.isInitialized = true;
-                        
-                        if (subscription.whenExpired) {
-                            scheduleSubscriptionRenewal(subscription.id, subscription.whenExpired);
-                        }
-                        
-                        break; // Stop at first successful webhook format
-                    } else {
-                        console.log(`[Debug] Format ${i + 1} created subscription but uses Intermedia's delivery system`);
-                        // Delete this subscription and try next format
-                        await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${subscription.id}`, {
-                            method: 'DELETE',
-                            headers: { 'Authorization': `Bearer ${messagingToken}` }
-                        });
-                    }
-                } else {
-                    const errorText = await subscriptionResponse.text();
-                    console.log(`[Debug] Format ${i + 1} failed: ${subscriptionResponse.status} - ${errorText}`);
-                }
-                
-            } catch (error) {
-                console.log(`[Debug] Format ${i + 1} error:`, error.message);
-            }
-        }
-        
-        if (successfulSubscription) {
-            res.json({
-                success: true,
-                message: `Successfully created webhook subscription using format ${successfulSubscription.formatUsed}`,
-                subscription: successfulSubscription.subscription,
-                payloadUsed: successfulSubscription.payload,
-                hasDirectWebhook: true
-            });
-        } else {
-            res.json({
-                success: false,
-                message: 'All webhook formats failed or use Intermedia delivery system',
-                note: 'Intermedia may not support direct webhooks for this API scope'
-            });
-        }
-        
-    } catch (error) {
-        console.error('[Debug] Error creating webhook subscription:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
+    res.json({
+        deprecated: true,
+        message: 'This endpoint is deprecated. Use /debug-correct-webhook-subscription instead',
+        redirect: '/api/debug-correct-webhook-subscription'
+    });
 });
 
 /**
@@ -3311,78 +3261,11 @@ router.get('/debug-subscription-webhook', async (req, res) => {
  * Delete current subscription and create new one with correct webhook
  */
 router.get('/debug-recreate-subscription', async (req, res) => {
-    try {
-        const messagingToken = await getIntermediaToken();
-        
-        // Delete current subscription
-        if (presenceSubscriptionState.subscriptionId) {
-            console.log('[Debug] Deleting current subscription...');
-            const deleteResponse = await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${presenceSubscriptionState.subscriptionId}`, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${messagingToken}`
-                }
-            });
-            console.log(`[Debug] Delete response: ${deleteResponse.status}`);
-        }
-        
-        // Clear subscription state
-        presenceSubscriptionState.subscriptionId = null;
-        presenceSubscriptionState.isInitialized = false;
-        if (presenceSubscriptionState.renewalTimer) {
-            clearTimeout(presenceSubscriptionState.renewalTimer);
-            presenceSubscriptionState.renewalTimer = null;
-        }
-        
-        // Create new subscription with explicit webhook format
-        console.log('[Debug] Creating new subscription with webhook...');
-        const subscriptionResponse = await fetch('https://api.elevate.services/messaging/v1/subscriptions/accounts/_me/users/_all', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${messagingToken}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                event_types: ['presence_changed'],
-                delivery_method: {
-                    transport: 'webhook',
-                    webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
-                },
-                filters: {
-                    email_domains: ['intlxsolutions.com']
-                }
-            })
-        });
-        
-        if (!subscriptionResponse.ok) {
-            const errorText = await subscriptionResponse.text();
-            return res.json({
-                success: false,
-                error: `Subscription creation failed: ${subscriptionResponse.status} - ${errorText}`
-            });
-        }
-        
-        const subscription = await subscriptionResponse.json();
-        console.log('[Debug] New subscription created:', JSON.stringify(subscription, null, 2));
-        
-        presenceSubscriptionState.subscriptionId = subscription.id;
-        presenceSubscriptionState.isInitialized = true;
-        
-        // Set up renewal if expiry info exists
-        const expiryTime = subscription.whenExpired || subscription.expires_at;
-        if (expiryTime) {
-            scheduleSubscriptionRenewal(subscription.id, expiryTime);
-        }
-        
-        res.json({
-            success: true,
-            newSubscription: subscription,
-            hasWebhookDelivery: !subscription.deliveryMethod?.uri?.includes('elevate-events.serverdata.net')
-        });
-        
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    res.json({
+        deprecated: true,
+        message: 'This endpoint is deprecated. Use /debug-correct-webhook-subscription instead',
+        redirect: '/api/debug-correct-webhook-subscription'
+    });
 });
 
 /**
