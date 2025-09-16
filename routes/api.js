@@ -2115,6 +2115,142 @@ router.get('/debug-webhook-cache-state', async (req, res) => {
     }
 });
 
+// Add these endpoints to your api.js file (after any existing router.get() endpoint)
+
+/**
+ * Debug endpoint to populate initial cache for all agents
+ */
+router.get('/debug-populate-initial-cache', async (req, res) => {
+    try {
+        console.log('[Debug] Populating initial cache for all agents...');
+        
+        // Step 1: Get fresh data for all agents using existing function
+        const freshAgents = await fetchAgentStatuses();
+        console.log(`[Debug] Fetched ${freshAgents.length} agents from fresh API`);
+        
+        // Step 2: Populate cache with fresh data
+        if (!intermediaCache.agentStatuses) {
+            intermediaCache.agentStatuses = new Map();
+        }
+        
+        let added = 0;
+        let updated = 0;
+        let preserved = 0;
+        
+        freshAgents.forEach(agent => {
+            const existingAgent = intermediaCache.agentStatuses.get(agent.id);
+            
+            if (existingAgent) {
+                // Keep webhook data if it's newer than fresh data
+                const existingTime = existingAgent.rawPresenceData?.updated ? 
+                    new Date(existingAgent.rawPresenceData.updated).getTime() : 0;
+                const freshTime = new Date().getTime() - 60000; // Fresh data is "1 minute old"
+                
+                if (existingTime > freshTime) {
+                    console.log(`[Debug] Keeping newer webhook data for ${agent.name} (${existingAgent.status})`);
+                    preserved++;
+                } else {
+                    intermediaCache.agentStatuses.set(agent.id, agent);
+                    updated++;
+                }
+            } else {
+                intermediaCache.agentStatuses.set(agent.id, agent);
+                added++;
+            }
+        });
+        
+        intermediaCache.lastStatusUpdate = Date.now();
+        
+        console.log(`[Debug] Cache populated: ${added} added, ${updated} updated, ${preserved} preserved, ${intermediaCache.agentStatuses.size} total`);
+        
+        // Step 3: Return summary
+        const cacheAgents = Array.from(intermediaCache.agentStatuses.values());
+        const statusCounts = {
+            online: cacheAgents.filter(a => ['Online', 'Available'].includes(a.status)).length,
+            busy: cacheAgents.filter(a => ['Busy', 'On Phone'].includes(a.status)).length,
+            away: cacheAgents.filter(a => ['Away', 'Idle'].includes(a.status)).length,
+            offline: cacheAgents.filter(a => ['Offline'].includes(a.status)).length
+        };
+        
+        res.json({
+            success: true,
+            message: `Cache populated with ${intermediaCache.agentStatuses.size} agents`,
+            added: added,
+            updated: updated,
+            preserved: preserved,
+            totalCached: intermediaCache.agentStatuses.size,
+            statusBreakdown: statusCounts,
+            webhookRealtimeUsers: cacheAgents
+                .filter(a => a.rawPresenceData?.updated)
+                .map(a => ({ name: a.name, status: a.status, source: 'webhook' })),
+            nextStep: 'Now test the /agent-status endpoint - should return cached data!'
+        });
+        
+    } catch (error) {
+        console.error('[Debug] Error populating cache:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Debug endpoint to check detailed agent status with data sources
+ */
+router.get('/debug-agent-status-detailed', async (req, res) => {
+    try {
+        console.log('[API] Debug agent status requested');
+        
+        // Check if we have a valid webhook subscription and cache
+        if (presenceSubscriptionState.isInitialized && 
+            presenceSubscriptionState.subscriptionId && 
+            intermediaCache.agentStatuses && 
+            intermediaCache.agentStatuses.size > 0) {
+            
+            console.log('[API] Returning cached agent statuses (updated by webhooks)');
+            
+            const agents = Array.from(intermediaCache.agentStatuses.values());
+            
+            // Add data source info to each agent
+            const agentsWithSource = agents.map(agent => ({
+                ...agent,
+                dataSource: agent.rawPresenceData?.updated ? 'webhook_realtime' : 'api_fresh'
+            }));
+            
+            return res.json({
+                success: true,
+                agents: agentsWithSource,
+                cached: true,
+                source: 'webhook_cache',
+                subscriptionId: presenceSubscriptionState.subscriptionId,
+                lastUpdated: intermediaCache.lastStatusUpdate ? 
+                    new Date(intermediaCache.lastStatusUpdate).toISOString() : null,
+                totalAgents: agentsWithSource.length,
+                realtimeAgents: agentsWithSource.filter(a => a.dataSource === 'webhook_realtime').length
+            });
+        }
+        
+        // If no webhook cache, fetch fresh data
+        console.log('[API] No webhook cache available, fetching fresh presence data...');
+        const agents = await fetchAgentStatuses();
+        
+        return res.json({
+            success: true,
+            agents: agents.map(agent => ({ ...agent, dataSource: 'api_fresh' })),
+            cached: false,
+            source: 'fresh_fetch',
+            lastUpdated: new Date().toISOString(),
+            totalAgents: agents.length,
+            realtimeAgents: 0
+        });
+        
+    } catch (error) {
+        console.error('[API] Error getting agent status:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 // Add this to your api.js to force webhook subscription creation
 
 router.get('/debug-force-webhook-setup', async (req, res) => {
