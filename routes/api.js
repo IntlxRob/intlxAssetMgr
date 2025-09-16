@@ -2023,7 +2023,7 @@ router.get('/debug-find-all-functions', (req, res) => {
 router.get('/debug-zendesk-code-vs-manual', async (req, res) => {
     try {
         const email = process.env.ZENDESK_EMAIL;
-        const token = process.env.ZENDESK_TOKEN;
+        const token = process.env.ZENDESK_API_TOKEN;
         const subdomain = process.env.ZENDESK_SUBDOMAIN;
         
         // Show exactly what your code sees
