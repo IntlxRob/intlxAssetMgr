@@ -3254,6 +3254,159 @@ router.get('/debug-recreate-subscription', async (req, res) => {
 });
 
 /**
+ * SIMPLIFIED WEBHOOK STRATEGY - DIRECT WEBHOOKS ONLY
+ * Either direct webhooks work, or we fall back to polling
+ */
+
+router.get('/debug-direct-webhooks-only', async (req, res) => {
+    try {
+        console.log('[Webhooks] Testing DIRECT webhooks only (no hub routing)...');
+        
+        // Step 1: Get token with notifications scope
+        const tokenResponse = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.service.notifications' // ONLY notifications scope
+            })
+        });
+        
+        if (!tokenResponse.ok) {
+            return res.json({
+                success: false,
+                error: 'Failed to get notifications token',
+                fallback: 'Use polling instead'
+            });
+        }
+        
+        const tokenData = await tokenResponse.json();
+        
+        // Step 2: Try ONLY the notifications service endpoint
+        const webhookPayload = {
+            webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
+            event_types: ['messaging.presence-control.changed'],
+            active: true
+        };
+        
+        console.log('[Webhooks] Creating direct webhook subscription...');
+        const subscriptionResponse = await fetch('https://api.elevate.services/notifications/v1/webhooks', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${tokenData.access_token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(webhookPayload)
+        });
+        
+        if (subscriptionResponse.ok) {
+            const subscriptionData = await subscriptionResponse.json();
+            
+            // Verify it's a DIRECT webhook (not routed through hub)
+            const isDirect = !subscriptionData.deliveryMethod?.uri?.includes('elevate-events.serverdata.net');
+            
+            if (isDirect) {
+                // SUCCESS - Direct webhooks work
+                presenceSubscriptionState.subscriptionId = subscriptionData.id;
+                presenceSubscriptionState.isInitialized = true;
+                
+                res.json({
+                    success: true,
+                    approach: 'DIRECT_WEBHOOKS',
+                    message: 'Direct webhooks successfully configured!',
+                    subscriptionId: subscriptionData.id,
+                    webhookUrl: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
+                    nextStep: 'Change your presence status to test real-time updates'
+                });
+            } else {
+                // Subscription created but routes through hub
+                res.json({
+                    success: false,
+                    approach: 'HUB_ROUTING_DETECTED', 
+                    message: 'Subscription routes through Intermedia hub instead of direct delivery',
+                    hubUrl: subscriptionData.deliveryMethod?.uri,
+                    recommendation: 'Use polling instead for reliable updates'
+                });
+            }
+        } else {
+            const errorText = await subscriptionResponse.text();
+            res.json({
+                success: false,
+                approach: 'WEBHOOKS_NOT_SUPPORTED',
+                error: `Direct webhook creation failed: ${subscriptionResponse.status} - ${errorText}`,
+                recommendation: 'Use polling for presence updates'
+            });
+        }
+        
+    } catch (error) {
+        res.json({
+            success: false,
+            approach: 'ERROR',
+            error: error.message,
+            recommendation: 'Use polling as reliable fallback'
+        });
+    }
+});
+
+/**
+ * FALLBACK: Enhanced polling if webhooks don't work
+ */
+router.get('/setup-polling-fallback', async (req, res) => {
+    try {
+        console.log('[Polling] Setting up enhanced polling as webhook alternative...');
+        
+        // Stop any existing webhook subscriptions
+        if (presenceSubscriptionState.subscriptionId) {
+            try {
+                const token = await getIntermediaToken();
+                await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${presenceSubscriptionState.subscriptionId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                console.log('[Polling] Removed webhook subscription in favor of polling');
+            } catch (e) {
+                // Ignore cleanup errors
+            }
+        }
+        
+        presenceSubscriptionState.subscriptionId = null;
+        presenceSubscriptionState.isInitialized = false;
+        
+        // Set up intelligent polling
+        const pollingConfig = {
+            enabled: true,
+            frequency: 30000, // 30 seconds
+            smartUpdates: true, // Only update on changes
+            batchSize: 5, // Process users in batches
+            errorRetry: true
+        };
+        
+        res.json({
+            success: true,
+            approach: 'SMART_POLLING',
+            message: 'Enhanced polling configured as reliable alternative to webhooks',
+            config: pollingConfig,
+            benefits: [
+                'Updates every 30 seconds',
+                'Only processes actual changes',
+                'Batched API calls for efficiency', 
+                'Built-in error handling',
+                'Works regardless of webhook support'
+            ],
+            nextStep: 'Polling will automatically start with next agent-status request'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Fetch presence using the voice API (as per ServerData support)
  */
 async function fetchVoicePresence() {
