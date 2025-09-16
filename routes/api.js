@@ -2641,10 +2641,22 @@ router.get('/setup/get-users-with-elevate-ids', async (req, res) => {
 });
 
 /**
- * FIXED: Handle multiple field name variants from Intermedia webhooks
+ * CORRECT WEBHOOK IMPLEMENTATION - BASED ON OFFICIAL ELEVATE DOCS
+ * Using the exact API endpoint and payload format from documentation
  */
+
+// First, update the webhook handler to support verification challenges
 router.post('/notifications', (req, res) => {
     try {
+        // Handle webhook verification challenge (required by Elevate)
+        if (req.query.challenge) {
+            console.log('[Webhook] Verification challenge received:', req.query.challenge);
+            return res.status(200).json({
+                challenge: req.query.challenge
+            });
+        }
+
+        // Handle actual webhook notifications
         const { eventType, version, whenRaised, payload } = req.body;
         
         console.log(`[Notifications] Received webhook:`, JSON.stringify(req.body, null, 2));
@@ -2656,7 +2668,7 @@ router.post('/notifications', (req, res) => {
             const presenceUpdates = Array.isArray(payload) ? payload : [payload];
             
             presenceUpdates.forEach(update => {
-                // FLEXIBLE: Accept multiple field name variants
+                // Flexible field handling (userId or unifiedUserId, presenceState or presence)
                 const userId = update.userId || update.unifiedUserId || update.user_id;
                 const presenceState = update.presenceState || update.presence || update.status;
                 
@@ -2699,6 +2711,126 @@ router.post('/notifications', (req, res) => {
             error: 'Processing error' 
         });
     }
+});
+
+/**
+ * CORRECTED: Create webhook subscription using official API format
+ */
+router.get('/debug-correct-webhook-subscription', async (req, res) => {
+    try {
+        console.log('[Webhook] Creating webhook subscription using official API format...');
+        
+        // Step 1: Get access token with correct scope (from docs)
+        const tokenResponse = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.service.notifications' // Exact scope from docs
+            })
+        });
+        
+        if (!tokenResponse.ok) {
+            const errorText = await tokenResponse.text();
+            return res.json({
+                success: false,
+                error: `Token request failed: ${tokenResponse.status} - ${errorText}`
+            });
+        }
+        
+        const tokenData = await tokenResponse.json();
+        console.log('[Webhook] ✅ Access token obtained with notifications scope');
+        
+        // Step 2: Clean up any existing subscriptions
+        if (presenceSubscriptionState.subscriptionId) {
+            try {
+                await fetch(`https://api.elevate.services/notifications/v2/accounts/_me/subscriptions/${presenceSubscriptionState.subscriptionId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
+                });
+                console.log('[Webhook] Cleaned up existing subscription');
+            } catch (e) {
+                console.log('[Webhook] No existing subscription to clean up');
+            }
+        }
+        
+        // Step 3: Create subscription using EXACT format from documentation
+        const subscriptionPayload = {
+            "events": ["messaging.presence-control.changed"], // Exact event type from docs
+            "ttl": "08:00:00", // 8 hour TTL as shown in docs
+            "delivery": {
+                "transport": "webhook",
+                "uri": "https://intlxassetmgr-proxy.onrender.com/api/notifications"
+                // Note: No auth for now - can add basic auth later if needed
+            }
+        };
+        
+        console.log('[Webhook] Creating subscription with payload:', JSON.stringify(subscriptionPayload, null, 2));
+        
+        // Use EXACT endpoint from documentation
+        const subscriptionResponse = await fetch('https://api.elevate.services/notifications/v2/accounts/_me/subscriptions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${tokenData.access_token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(subscriptionPayload)
+        });
+        
+        console.log('[Webhook] Subscription API response status:', subscriptionResponse.status);
+        
+        if (subscriptionResponse.ok) {
+            const subscriptionData = await subscriptionResponse.json();
+            console.log('[Webhook] ✅ Subscription created successfully:', JSON.stringify(subscriptionData, null, 2));
+            
+            // Update subscription state
+            presenceSubscriptionState.subscriptionId = subscriptionData.id || subscriptionData.subscriptionId;
+            presenceSubscriptionState.isInitialized = true;
+            
+            res.json({
+                success: true,
+                message: 'Webhook subscription created successfully using official API!',
+                subscriptionData: subscriptionData,
+                webhookUrl: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
+                eventType: 'messaging.presence-control.changed',
+                nextStep: 'Change your presence status to test real-time webhooks',
+                verificationHandled: true
+            });
+            
+        } else {
+            const errorText = await subscriptionResponse.text();
+            console.log('[Webhook] ❌ Subscription creation failed:', errorText);
+            
+            res.json({
+                success: false,
+                error: `Subscription creation failed: ${subscriptionResponse.status} - ${errorText}`,
+                endpoint: 'https://api.elevate.services/notifications/v2/accounts/_me/subscriptions',
+                tokenScope: 'api.service.notifications',
+                payloadUsed: subscriptionPayload
+            });
+        }
+        
+    } catch (error) {
+        console.error('[Webhook] Error creating correct webhook subscription:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Test webhook verification endpoint
+ */
+router.get('/debug-test-webhook-verification', (req, res) => {
+    res.json({
+        message: 'Test webhook verification by calling:',
+        testUrl: 'POST https://intlxassetmgr-proxy.onrender.com/api/notifications?challenge=test123',
+        expectedResponse: { challenge: 'test123' },
+        note: 'This simulates what Elevate does during subscription creation'
+    });
 });
 
 /**
