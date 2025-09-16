@@ -2122,49 +2122,50 @@ router.get('/debug-webhook-cache-state', async (req, res) => {
  */
 router.get('/debug-populate-initial-cache', async (req, res) => {
     try {
-        console.log('[Debug] Populating initial cache for all agents...');
+        console.log('[Debug] Populating initial cache - PRESERVING webhook data...');
         
-        // Step 1: Get fresh data for all agents using existing function
+        // Step 1: Get fresh data for all agents
         const freshAgents = await fetchAgentStatuses();
         console.log(`[Debug] Fetched ${freshAgents.length} agents from fresh API`);
         
-        // Step 2: Populate cache with fresh data
+        // Step 2: Ensure cache exists
         if (!intermediaCache.agentStatuses) {
             intermediaCache.agentStatuses = new Map();
         }
         
-        let added = 0;
-        let updated = 0;
-        let preserved = 0;
+        const originalCacheSize = intermediaCache.agentStatuses.size;
         
-        freshAgents.forEach(agent => {
-            const existingAgent = intermediaCache.agentStatuses.get(agent.id);
+        let added = 0;
+        let preserved = 0;
+        let freshDataSkipped = 0;
+        
+        // Step 3: Add ONLY fresh agents that don't exist in webhook cache
+        freshAgents.forEach(freshAgent => {
+            const existingAgent = intermediaCache.agentStatuses.get(freshAgent.id);
             
             if (existingAgent) {
-                // Keep webhook data if it's newer than fresh data
-                const existingTime = existingAgent.rawPresenceData?.updated ? 
-                    new Date(existingAgent.rawPresenceData.updated).getTime() : 0;
-                const freshTime = new Date().getTime() - 60000; // Fresh data is "1 minute old"
-                
-                if (existingTime > freshTime) {
-                    console.log(`[Debug] Keeping newer webhook data for ${agent.name} (${existingAgent.status})`);
-                    preserved++;
-                } else {
-                    intermediaCache.agentStatuses.set(agent.id, agent);
-                    updated++;
-                }
+                // PRESERVE existing webhook data (it's more accurate than fresh API)
+                console.log(`[Debug] PRESERVING webhook data for ${existingAgent.name}: ${existingAgent.status} (webhook) vs ${freshAgent.status} (fresh API)`);
+                preserved++;
+                freshDataSkipped++;
             } else {
-                intermediaCache.agentStatuses.set(agent.id, agent);
+                // Add new agent from fresh data (no webhook data available)
+                intermediaCache.agentStatuses.set(freshAgent.id, {
+                    ...freshAgent,
+                    dataSource: 'fresh_api_initial'
+                });
+                console.log(`[Debug] ADDED new agent from fresh API: ${freshAgent.name} - ${freshAgent.status}`);
                 added++;
             }
         });
         
         intermediaCache.lastStatusUpdate = Date.now();
         
-        console.log(`[Debug] Cache populated: ${added} added, ${updated} updated, ${preserved} preserved, ${intermediaCache.agentStatuses.size} total`);
-        
-        // Step 3: Return summary
+        // Step 4: Analyze final cache
         const cacheAgents = Array.from(intermediaCache.agentStatuses.values());
+        const webhookAgents = cacheAgents.filter(a => a.rawPresenceData?.updated);
+        const freshApiAgents = cacheAgents.filter(a => !a.rawPresenceData?.updated);
+        
         const statusCounts = {
             online: cacheAgents.filter(a => ['Online', 'Available'].includes(a.status)).length,
             busy: cacheAgents.filter(a => ['Busy', 'On Phone'].includes(a.status)).length,
@@ -2172,22 +2173,111 @@ router.get('/debug-populate-initial-cache', async (req, res) => {
             offline: cacheAgents.filter(a => ['Offline'].includes(a.status)).length
         };
         
+        const webhookStatusCounts = {
+            online: webhookAgents.filter(a => ['Online', 'Available'].includes(a.status)).length,
+            busy: webhookAgents.filter(a => ['Busy', 'On Phone'].includes(a.status)).length,
+            away: webhookAgents.filter(a => ['Away', 'Idle'].includes(a.status)).length,
+            offline: webhookAgents.filter(a => ['Offline'].includes(a.status)).length
+        };
+        
+        console.log(`[Debug] Cache populated: ${added} added, ${preserved} preserved, ${intermediaCache.agentStatuses.size} total`);
+        console.log(`[Debug] Webhook agents (real-time): ${webhookAgents.length}, Fresh API agents: ${freshApiAgents.length}`);
+        
         res.json({
             success: true,
             message: `Cache populated with ${intermediaCache.agentStatuses.size} agents`,
-            added: added,
-            updated: updated,
-            preserved: preserved,
-            totalCached: intermediaCache.agentStatuses.size,
+            analysis: {
+                originalCacheSize: originalCacheSize,
+                freshAgentsReceived: freshAgents.length,
+                added: added,
+                preserved: preserved,
+                freshDataSkipped: freshDataSkipped,
+                totalCached: intermediaCache.agentStatuses.size
+            },
+            dataSources: {
+                webhookAgents: {
+                    count: webhookAgents.length,
+                    statusBreakdown: webhookStatusCounts,
+                    users: webhookAgents.map(a => ({ name: a.name, status: a.status, lastUpdate: a.rawPresenceData?.updated }))
+                },
+                freshApiAgents: {
+                    count: freshApiAgents.length,
+                    note: freshApiAgents.length > 0 ? "These users haven't changed status since webhook subscription was created" : "All users have real-time webhook data!"
+                }
+            },
             statusBreakdown: statusCounts,
-            webhookRealtimeUsers: cacheAgents
-                .filter(a => a.rawPresenceData?.updated)
-                .map(a => ({ name: a.name, status: a.status, source: 'webhook' })),
-            nextStep: 'Now test the /agent-status endpoint - should return cached data!'
+            issue: {
+                freshApiProblem: freshDataSkipped > 0,
+                description: freshDataSkipped > 0 ? 
+                    `Fresh API showing ${freshAgents.filter(a => a.status === 'Offline').length}/${freshAgents.length} users as Offline, but webhooks show ${webhookAgents.filter(a => a.status !== 'Offline').length} users are actually Online/Away/Busy` : 
+                    "No issues detected"
+            },
+            nextStep: 'Check your UI - should now show all agents with accurate status data!'
         });
         
     } catch (error) {
         console.error('[Debug] Error populating cache:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ALSO ADD this diagnostic endpoint to investigate the fresh API issue:
+router.get('/debug-fresh-api-vs-webhooks', async (req, res) => {
+    try {
+        console.log('[Debug] Comparing fresh API data vs webhook data...');
+        
+        // Get fresh API data
+        const freshAgents = await fetchAgentStatuses();
+        
+        // Get webhook cache data
+        const webhookAgents = intermediaCache.agentStatuses ? 
+            Array.from(intermediaCache.agentStatuses.values()).filter(a => a.rawPresenceData?.updated) : [];
+        
+        // Compare data for same users
+        const comparisons = [];
+        webhookAgents.forEach(webhookAgent => {
+            const freshAgent = freshAgents.find(f => f.id === webhookAgent.id);
+            if (freshAgent) {
+                comparisons.push({
+                    name: webhookAgent.name,
+                    webhookStatus: webhookAgent.status,
+                    freshApiStatus: freshAgent.status,
+                    mismatch: webhookAgent.status !== freshAgent.status,
+                    webhookUpdated: webhookAgent.rawPresenceData?.updated,
+                    timeDifference: webhookAgent.rawPresenceData?.updated ? 
+                        Math.round((Date.now() - new Date(webhookAgent.rawPresenceData.updated).getTime()) / 1000) + 's ago' : 
+                        'unknown'
+                });
+            }
+        });
+        
+        const mismatches = comparisons.filter(c => c.mismatch);
+        
+        res.json({
+            success: true,
+            summary: {
+                webhookAgents: webhookAgents.length,
+                freshApiAgents: freshAgents.length,
+                comparisons: comparisons.length,
+                mismatches: mismatches.length,
+                accuracy: mismatches.length === 0 ? "Perfect match" : `${mismatches.length}/${comparisons.length} mismatches`
+            },
+            comparisons: comparisons,
+            issue: mismatches.length > 0 ? {
+                problem: "Fresh API data is stale/incorrect",
+                recommendation: "Use webhook data as primary source, fresh API only for missing users",
+                commonMismatch: mismatches.length > 0 ? `Webhooks show users as '${mismatches[0].webhookStatus}' but fresh API shows '${mismatches[0].freshApiStatus}'` : null
+            } : null,
+            freshApiAllOfflineIssue: {
+                detected: freshAgents.every(a => a.status === 'Offline'),
+                description: freshAgents.every(a => a.status === 'Offline') ? 
+                    "ALL fresh API calls return 'Offline' - this suggests API endpoint/token issue" : 
+                    "Fresh API returns mixed statuses"
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Debug] Error comparing data:', error);
         res.status(500).json({ error: error.message });
     }
 });
