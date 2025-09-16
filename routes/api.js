@@ -1864,34 +1864,6 @@ async function initializePresenceSubscriptions() {
 }
 
 /**
- * Update presence in cache when notification received
- */
-function updatePresenceCache(userId, presence) {
-    if (!intermediaCache.agentStatuses) {
-        intermediaCache.agentStatuses = new Map();
-    }
-    
-    const existingAgent = intermediaCache.agentStatuses.get(userId);
-    if (existingAgent) {
-        const updatedAgent = {
-            ...existingAgent,
-            status: mapMessagingStatus(presence),
-            phoneStatus: mapMessagingStatus(presence),
-            presenceStatus: mapMessagingStatus(presence),
-            lastActivity: new Date().toISOString(),
-            rawPresenceData: { presence, updated: new Date().toISOString() }
-        };
-        
-        intermediaCache.agentStatuses.set(userId, updatedAgent);
-        intermediaCache.lastStatusUpdate = Date.now();
-        
-        console.log(`[Presence] Updated cache for ${existingAgent.name}: ${presence}`);
-    } else {
-        console.log(`[Presence] Received update for unknown user: ${userId}`);
-    }
-}
-
-/**
  * NEW: Lookup unknown user and add to cache
  */
 async function lookupAndAddUser(userId, presence) {
@@ -1942,33 +1914,6 @@ async function lookupAndAddUser(userId, presence) {
         console.error(`[Presence] Error looking up user ${userId}:`, error.message);
     }
 }
-
-/**
- * Clean up subscriptions on shutdown
- */
-async function cleanupPresenceSubscriptions() {
-    try {
-        if (presenceSubscriptionState.renewalTimer) {
-            clearTimeout(presenceSubscriptionState.renewalTimer);
-        }
-        
-        if (presenceSubscriptionState.subscriptionId) {
-            console.log('[Presence] Cleaning up subscription...');
-            // Could add DELETE subscription API call here if available
-        }
-        
-        presenceSubscriptionState = {
-            hubId: null,
-            subscriptionId: null,
-            renewalTimer: null,
-            isInitialized: false
-        };
-        
-    } catch (error) {
-        console.error('[Presence] Error during cleanup:', error);
-    }
-}
-
 
 /**
  * Debug endpoint to check address book authentication
@@ -2399,38 +2344,6 @@ function mapMessagingStatus(presenceState) {
 // ============================================
 // UPDATE PRESENCE CACHE WITH DEBUG LOGGING
 // ============================================
-
-/**
- * Update presence in cache when notification received
- */
-function updatePresenceCache(userId, presence) {
-    if (!intermediaCache.agentStatuses) {
-        intermediaCache.agentStatuses = new Map();
-    }
-    
-    const existingAgent = intermediaCache.agentStatuses.get(userId);
-    if (existingAgent) {
-        // ADD DEBUG LOG HERE
-        const mappedStatus = mapMessagingStatus(presence);
-        console.log(`[Debug] mapMessagingStatus("${presence}") returned: "${mappedStatus}"`);
-        
-        const updatedAgent = {
-            ...existingAgent,
-            status: mappedStatus,
-            phoneStatus: mappedStatus,
-            presenceStatus: mappedStatus,
-            lastActivity: new Date().toISOString(),
-            rawPresenceData: { presence, updated: new Date().toISOString() }
-        };
-        
-        intermediaCache.agentStatuses.set(userId, updatedAgent);
-        intermediaCache.lastStatusUpdate = Date.now();
-        
-        console.log(`[Presence] Updated cache for ${existingAgent.name}: ${presence} -> ${mappedStatus}`);
-    } else {
-        console.log(`[Presence] Received update for unknown user: ${userId}`);
-    }
-}
 
 /**
  * UPDATED: Agent status endpoint with subscription support
@@ -3114,17 +3027,6 @@ router.get('/debug-presence-subscriptions', (req, res) => {
 });
 
 /**
- * FIXED: Create webhook subscription with proper delivery method format
- */
-router.get('/debug-create-proper-webhook-subscription', async (req, res) => {
-    res.json({
-        deprecated: true,
-        message: 'This endpoint is deprecated. Use /debug-correct-webhook-subscription instead',
-        redirect: '/api/debug-correct-webhook-subscription'
-    });
-});
-
-/**
  * Debug endpoint to check subscription details and renewal info
  */
 router.get('/debug-subscription-details', async (req, res) => {
@@ -3255,17 +3157,6 @@ router.get('/debug-subscription-webhook', async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
-});
-
-/**
- * Delete current subscription and create new one with correct webhook
- */
-router.get('/debug-recreate-subscription', async (req, res) => {
-    res.json({
-        deprecated: true,
-        message: 'This endpoint is deprecated. Use /debug-correct-webhook-subscription instead',
-        redirect: '/api/debug-correct-webhook-subscription'
-    });
 });
 
 /**
