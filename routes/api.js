@@ -2892,6 +2892,156 @@ router.get('/debug-presence-subscriptions', (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+/**
+ * FIXED: Create webhook subscription with proper delivery method format
+ */
+router.get('/debug-create-proper-webhook-subscription', async (req, res) => {
+    try {
+        const messagingToken = await getIntermediaToken();
+        
+        // Delete current subscription first
+        if (presenceSubscriptionState.subscriptionId) {
+            console.log('[Debug] Deleting current subscription...');
+            await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${presenceSubscriptionState.subscriptionId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': `Bearer ${messagingToken}`
+                }
+            });
+        }
+        
+        // Clear subscription state
+        presenceSubscriptionState.subscriptionId = null;
+        presenceSubscriptionState.isInitialized = false;
+        if (presenceSubscriptionState.renewalTimer) {
+            clearTimeout(presenceSubscriptionState.renewalTimer);
+            presenceSubscriptionState.renewalTimer = null;
+        }
+        
+        // Try multiple webhook formats to find one that works
+        const webhookFormats = [
+            // Format 1: Full delivery_method object
+            {
+                event_types: ['messaging.presence-control.changed'],
+                delivery_method: {
+                    transport: 'webhook',
+                    webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
+                },
+                filters: {
+                    email_domains: ['intlxsolutions.com']
+                }
+            },
+            // Format 2: Direct webhook_url field
+            {
+                event_types: ['messaging.presence-control.changed'],
+                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
+                filters: {
+                    email_domains: ['intlxsolutions.com']
+                }
+            },
+            // Format 3: Different event name
+            {
+                event_types: ['presence_changed'],
+                delivery_method: {
+                    transport: 'webhook',
+                    webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications'
+                },
+                filters: {
+                    email_domains: ['intlxsolutions.com']
+                }
+            },
+            // Format 4: Simple webhook_url with different event
+            {
+                event_types: ['presence_changed'],
+                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
+                filters: {
+                    email_domains: ['intlxsolutions.com']
+                }
+            }
+        ];
+        
+        let successfulSubscription = null;
+        
+        for (let i = 0; i < webhookFormats.length; i++) {
+            console.log(`[Debug] Trying webhook format ${i + 1}...`);
+            
+            try {
+                const subscriptionResponse = await fetch('https://api.elevate.services/messaging/v1/subscriptions/accounts/_me/users/_all', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${messagingToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(webhookFormats[i])
+                });
+                
+                if (subscriptionResponse.ok) {
+                    const subscription = await subscriptionResponse.json();
+                    console.log(`[Debug] Format ${i + 1} subscription created:`, JSON.stringify(subscription, null, 2));
+                    
+                    // Check if this one actually uses webhooks
+                    const hasDirectWebhook = !subscription.deliveryMethod?.uri?.includes('elevate-events.serverdata.net');
+                    
+                    if (hasDirectWebhook) {
+                        successfulSubscription = {
+                            formatUsed: i + 1,
+                            subscription: subscription,
+                            payload: webhookFormats[i]
+                        };
+                        
+                        // Set up the subscription state
+                        presenceSubscriptionState.subscriptionId = subscription.id;
+                        presenceSubscriptionState.isInitialized = true;
+                        
+                        if (subscription.whenExpired) {
+                            scheduleSubscriptionRenewal(subscription.id, subscription.whenExpired);
+                        }
+                        
+                        break; // Stop at first successful webhook format
+                    } else {
+                        console.log(`[Debug] Format ${i + 1} created subscription but uses Intermedia's delivery system`);
+                        // Delete this subscription and try next format
+                        await fetch(`https://api.elevate.services/messaging/v1/subscriptions/${subscription.id}`, {
+                            method: 'DELETE',
+                            headers: { 'Authorization': `Bearer ${messagingToken}` }
+                        });
+                    }
+                } else {
+                    const errorText = await subscriptionResponse.text();
+                    console.log(`[Debug] Format ${i + 1} failed: ${subscriptionResponse.status} - ${errorText}`);
+                }
+                
+            } catch (error) {
+                console.log(`[Debug] Format ${i + 1} error:`, error.message);
+            }
+        }
+        
+        if (successfulSubscription) {
+            res.json({
+                success: true,
+                message: `Successfully created webhook subscription using format ${successfulSubscription.formatUsed}`,
+                subscription: successfulSubscription.subscription,
+                payloadUsed: successfulSubscription.payload,
+                hasDirectWebhook: true
+            });
+        } else {
+            res.json({
+                success: false,
+                message: 'All webhook formats failed or use Intermedia delivery system',
+                note: 'Intermedia may not support direct webhooks for this API scope'
+            });
+        }
+        
+    } catch (error) {
+        console.error('[Debug] Error creating webhook subscription:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 /**
  * Debug endpoint to check subscription details and renewal info
  */
