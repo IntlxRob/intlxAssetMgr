@@ -2538,7 +2538,7 @@ router.get('/setup/get-users-with-elevate-ids', async (req, res) => {
     try {
         const response = await fetch('https://intlxsolutions.zendesk.com/api/v2/users.json?per_page=100', {
             headers: {
-                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_TOKEN}`).toString('base64')}`,
+                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
             }
         });
         
