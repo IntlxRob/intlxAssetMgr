@@ -6894,15 +6894,20 @@ router.post('/webhook/renew-presence', async (req, res) => {
  */
 router.get('/webhook/status', async (req, res) => {
   try {
-    const cacheSize = Object.keys(presenceCache || {}).length;
-    const lastUpdate = presenceLastUpdated;
+    // Use the correct variable names from your existing code
+    const cacheSize = intermediaCache.agentStatuses ? intermediaCache.agentStatuses.size : 0;
+    const lastUpdate = intermediaCache.lastStatusUpdate ? new Date(intermediaCache.lastStatusUpdate) : null;
     
     res.json({
       webhook_cache_active: cacheSize > 0,
       cached_users: cacheSize,
-      last_webhook_update: lastUpdate,
+      last_webhook_update: lastUpdate ? lastUpdate.toISOString() : null,
       minutes_since_update: lastUpdate ? Math.floor((Date.now() - lastUpdate.getTime()) / 60000) : null,
-      status: cacheSize > 0 ? 'WEBHOOK_ACTIVE' : 'NO_WEBHOOK_DATA'
+      status: cacheSize > 0 ? 'WEBHOOK_ACTIVE' : 'NO_WEBHOOK_DATA',
+      subscription_state: {
+        isInitialized: presenceSubscriptionState?.isInitialized || false,
+        subscriptionId: presenceSubscriptionState?.subscriptionId || null
+      }
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
