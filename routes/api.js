@@ -6979,48 +6979,169 @@ router.get('/webhook/test-notifications-token', async (req, res) => {
  */
 router.post('/webhook/presence', (req, res) => {
     try {
-        console.log('[Webhook] Received webhook call');
+        console.log('[Webhook] ===== WEBHOOK RECEIVED =====');
         console.log('[Webhook] Method:', req.method);
-        console.log('[Webhook] Headers:', req.headers);
-        console.log('[Webhook] Body:', req.body);
+        console.log('[Webhook] Body:', JSON.stringify(req.body, null, 2));
+        console.log('[Webhook] Body type:', typeof req.body);
+        console.log('[Webhook] Body keys:', req.body ? Object.keys(req.body) : 'null');
         
-        // Handle webhook verification challenge (if present in query)
+        // Check if intermediaCache exists
+        console.log('[Webhook] Cache check - intermediaCache exists:', !!intermediaCache);
+        console.log('[Webhook] Cache check - agentStatuses exists:', !!intermediaCache?.agentStatuses);
+        console.log('[Webhook] Cache check - current size:', intermediaCache?.agentStatuses?.size || 'undefined');
+        
+        // Handle verification challenges first
         if (req.query.challenge) {
-            console.log('[Webhook] ✅ Verification challenge received in query:', req.query.challenge);
-            return res.status(200).json({ challenge: req.query.challenge });
-        }
-        
-        // Handle webhook verification challenge (if present in body)
-        if (req.body && req.body.challenge) {
-            console.log('[Webhook] ✅ Verification challenge received in body:', req.body.challenge);
-            return res.status(200).json({ challenge: req.body.challenge });
-        }
-        
-        // Handle actual webhook notification
-        if (req.body) {
-            console.log('[Webhook] ✅ Presence update received:', JSON.stringify(req.body, null, 2));
-            
-            // TODO: Process the presence update and update your cache
-            // This is where you'd update intermediaCache.agentStatuses with new presence data
-            
-            // For now, just log it and respond with success
+            console.log('[Webhook] ✅ Verification challenge received:', req.query.challenge);
             return res.status(200).json({ 
-                received: true, 
-                timestamp: new Date().toISOString(),
-                message: 'Presence update processed successfully'
+                challenge: req.query.challenge,
+                status: 'verified'
             });
         }
         
-        // Default response for any other webhook calls
-        res.status(200).json({ 
-            status: 'ok', 
-            message: 'Webhook endpoint is active',
-            timestamp: new Date().toISOString()
+        if (req.body && req.body.challenge) {
+            console.log('[Webhook] ✅ Verification challenge in body:', req.body.challenge);
+            return res.status(200).json({ 
+                challenge: req.body.challenge,
+                status: 'verified'
+            });
+        }
+        
+        // Process actual data
+        if (req.body && typeof req.body === 'object') {
+            console.log('[Webhook] ✅ Processing webhook data...');
+            
+            // Ensure cache exists
+            if (!intermediaCache) {
+                console.log('[Webhook] ❌ intermediaCache is undefined! Creating...');
+                global.intermediaCache = {
+                    agentStatuses: new Map(),
+                    lastStatusUpdate: null
+                };
+            }
+            
+            if (!intermediaCache.agentStatuses) {
+                console.log('[Webhook] ❌ agentStatuses Map is undefined! Creating...');
+                intermediaCache.agentStatuses = new Map();
+            }
+            
+            const body = req.body;
+            console.log('[Webhook] Body analysis:', {
+                hasUserId: !!(body.userId),
+                hasPresence: !!(body.presence),
+                hasTest: !!(body.test),
+                allKeys: Object.keys(body)
+            });
+            
+            // Try to extract user data from any format
+            let userId = null;
+            let presence = null;
+            let processed = false;
+            
+            // Direct format
+            if (body.userId && body.presence) {
+                userId = body.userId;
+                presence = body.presence;
+                console.log('[Webhook] Found direct format: userId =', userId, ', presence =', presence);
+            }
+            // Look for common field variations
+            else {
+                userId = body.userId || body.unifiedUserId || body.user_id || body.id;
+                presence = body.presence || body.presenceState || body.status || body.state;
+                console.log('[Webhook] Found via field search: userId =', userId, ', presence =', presence);
+            }
+            
+            // Process if we found data
+            if (userId && presence) {
+                console.log('[Webhook] 🔄 Processing presence update...');
+                console.log('[Webhook] User ID:', userId);
+                console.log('[Webhook] Presence:', presence);
+                
+                try {
+                    // Map the presence to a readable status
+                    let mappedStatus = 'Offline';
+                    const state = presence.toLowerCase();
+                    
+                    switch (state) {
+                        case 'available':
+                        case 'online':
+                        case 'active':
+                            mappedStatus = 'Available';
+                            break;
+                        case 'busy':
+                        case 'oncall':
+                        case 'dnd':
+                            mappedStatus = 'Busy';
+                            break;
+                        case 'away':
+                        case 'idle':
+                            mappedStatus = 'Away';
+                            break;
+                        default:
+                            mappedStatus = 'Offline';
+                    }
+                    
+                    console.log('[Webhook] Mapped status:', presence, '→', mappedStatus);
+                    
+                    // Create/update the user in cache
+                    const userRecord = {
+                        id: userId,
+                        name: `User ${userId}`,
+                        email: `${userId}@example.com`,
+                        status: mappedStatus,
+                        phoneStatus: mappedStatus,
+                        presenceStatus: mappedStatus,
+                        lastActivity: new Date().toISOString(),
+                        rawPresenceData: { 
+                            presence: presence, 
+                            updated: new Date().toISOString(),
+                            source: 'webhook'
+                        }
+                    };
+                    
+                    console.log('[Webhook] Creating user record:', JSON.stringify(userRecord, null, 2));
+                    
+                    // Add to cache
+                    intermediaCache.agentStatuses.set(userId, userRecord);
+                    intermediaCache.lastStatusUpdate = Date.now();
+                    
+                    console.log('[Webhook] ✅ Added to cache. New size:', intermediaCache.agentStatuses.size);
+                    console.log('[Webhook] ✅ Updated lastStatusUpdate to:', new Date(intermediaCache.lastStatusUpdate).toISOString());
+                    
+                    processed = true;
+                    
+                } catch (updateError) {
+                    console.error('[Webhook] ❌ Error updating cache:', updateError);
+                }
+            } else {
+                console.log('[Webhook] ⚠️ No userId/presence found in webhook data');
+                console.log('[Webhook] Available data:', body);
+            }
+            
+            return res.status(200).json({
+                received: true,
+                processed: processed,
+                timestamp: new Date().toISOString(),
+                cache_size: intermediaCache?.agentStatuses?.size || 0,
+                debug: {
+                    userId_found: !!userId,
+                    presence_found: !!presence,
+                    cache_initialized: !!intermediaCache?.agentStatuses,
+                    processing_attempted: processed
+                }
+            });
+        }
+        
+        // Default response
+        res.status(200).json({
+            status: 'ok',
+            message: 'Webhook endpoint active but no data to process',
+            cache_size: intermediaCache?.agentStatuses?.size || 0
         });
         
     } catch (error) {
-        console.error('[Webhook] Error processing webhook:', error);
-        res.status(500).json({ error: error.message });
+        console.error('[Webhook] ❌ FATAL ERROR:', error);
+        res.status(500).json({ error: error.message, stack: error.stack });
     }
 });
 
