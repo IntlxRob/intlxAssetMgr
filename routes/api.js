@@ -7215,6 +7215,54 @@ router.get('/webhook/status', async (req, res) => {
   }
 });
 
+/**
+ * Quick fix: Initialize subscription state so agent-status uses webhook cache
+ * GET /api/webhook/initialize-state
+ */
+router.get('/webhook/initialize-state', (req, res) => {
+    try {
+        // Show current state
+        const beforeState = {
+            presenceSubscriptionState_exists: !!global.presenceSubscriptionState,
+            isInitialized: global.presenceSubscriptionState?.isInitialized || false,
+            subscriptionId: global.presenceSubscriptionState?.subscriptionId || null,
+            webhookSubscriptionId: global.webhookSubscriptionId || null
+        };
+        
+        console.log('[Webhook] State before fix:', beforeState);
+        
+        // Initialize the presence subscription state that agent-status endpoint checks
+        global.presenceSubscriptionState = {
+            subscriptionId: global.webhookSubscriptionId || "58d08627-1fcf-430a-9e2d-f834ffca1a26",
+            renewalTimer: null,
+            isInitialized: true
+        };
+        
+        console.log('[Webhook] ✅ Subscription state initialized for agent-status endpoint');
+        console.log('[Webhook] Subscription ID set to:', global.presenceSubscriptionState.subscriptionId);
+        console.log('[Webhook] isInitialized set to:', global.presenceSubscriptionState.isInitialized);
+        
+        res.json({
+            success: true,
+            message: 'Subscription state initialized - agent-status endpoint will now use webhook cache',
+            before_state: beforeState,
+            after_state: global.presenceSubscriptionState,
+            cache_status: {
+                cache_exists: !!intermediaCache?.agentStatuses,
+                cache_size: intermediaCache?.agentStatuses?.size || 0,
+                last_update: intermediaCache?.lastStatusUpdate ? 
+                    new Date(intermediaCache.lastStatusUpdate).toISOString() : null
+            },
+            fix_explanation: 'agent-status endpoint was checking presenceSubscriptionState.isInitialized but this was never set when webhook was created',
+            next_step: 'Test /api/agent-status - it should now use webhook cache instead of API polling'
+        });
+        
+    } catch (error) {
+        console.error('[Webhook] Error initializing state:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ============================================
 // END OF WEBHOOK ENDPOINTS
 // ============================================
