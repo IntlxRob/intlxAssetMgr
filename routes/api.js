@@ -6773,145 +6773,189 @@ router.get('/ops-calendar/upcoming', async (req, res) => {
  * List all current webhook subscriptions
  * GET /api/webhook/list-subscriptions
  */
-router.get('/webhook/list-subscriptions', async (req, res) => {
-  try {
-    console.log('[Webhook] Listing existing subscriptions...');
-    
-    const token = await getIntermediaToken();
-    if (!token) {
-      return res.status(401).json({ error: 'No valid Intermedia token available' });
-    }
-    
-    const response = await fetch('https://api.elevate.services/notifications/v2/accounts/_me/subscriptions', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    });
+async function getNotificationsToken() {
+    try {
+        const clientId = process.env.INTERMEDIA_CLIENT_ID;
+        const clientSecret = process.env.INTERMEDIA_CLIENT_SECRET;
+        
+        if (!clientId || !clientSecret) {
+            throw new Error('Missing INTERMEDIA_CLIENT_ID or INTERMEDIA_CLIENT_SECRET');
+        }
+        
+        console.log('[Webhook] Getting notifications token...');
+        
+        const response = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: clientId,
+                client_secret: clientSecret,
+                scope: 'api.service.notifications' // CORRECT scope for webhook subscriptions
+            })
+        });
 
-    if (response.ok) {
-      const subscriptions = await response.json();
-      console.log('[Webhook] Current subscriptions found:', subscriptions?.length || 0);
-      console.log('[Webhook] Subscription details:', JSON.stringify(subscriptions, null, 2));
-      
-      // Look for presence-related subscriptions
-      const presenceSubscriptions = subscriptions?.filter(sub => 
-        sub.events?.some(event => event.includes('presence') || event === '*')
-      ) || [];
-      
-      console.log('[Webhook] Presence subscriptions:', presenceSubscriptions.length);
-      
-      res.json({
-        total: subscriptions?.length || 0,
-        all_subscriptions: subscriptions,
-        presence_subscriptions: presenceSubscriptions
-      });
-    } else {
-      const error = await response.text();
-      console.error('[Webhook] Failed to list subscriptions:', response.status, error);
-      res.status(response.status).json({ error: error, status: response.status });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Token request failed: ${response.status} - ${errorText}`);
+        }
+
+        const tokenData = await response.json();
+        console.log('[Webhook] ✅ Notifications token obtained');
+        return tokenData.access_token;
+        
+    } catch (error) {
+        console.error('[Webhook] Token error:', error.message);
+        throw error;
     }
-    
-  } catch (error) {
-    console.error('[Webhook] List subscriptions error:', error);
-    res.status(500).json({ error: error.message });
-  }
+}
+
+/**
+ * Create a new webhook subscription for presence events
+ * POST /api/webhook/create-subscription
+ */
+router.post('/webhook/create-subscription', async (req, res) => {
+    try {
+        console.log('[Webhook] Creating new webhook subscription...');
+        
+        const token = await getNotificationsToken();
+        const webhookUrl = `${process.env.BASE_URL || 'https://intlxassetmgr-proxy.onrender.com'}/api/webhook/presence`;
+        
+        console.log('[Webhook] Webhook URL:', webhookUrl);
+        
+        const subscriptionPayload = {
+            "events": ["*"], // All events including presence updates
+            "ttl": "24:00:00", // 24 hours
+            "delivery": {
+                "transport": "webhook",
+                "uri": webhookUrl
+            }
+        };
+        
+        console.log('[Webhook] Creating subscription with payload:', subscriptionPayload);
+        
+        const response = await fetch('https://api.elevate.services/notifications/v2/accounts/_me/subscriptions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(subscriptionPayload)
+        });
+
+        if (response.ok) {
+            const subscription = await response.json();
+            console.log('[Webhook] ✅ Subscription created successfully!');
+            console.log('[Webhook] Subscription ID:', subscription.id);
+            console.log('[Webhook] Expires:', subscription.whenExpired);
+            
+            // Store the subscription ID for future renewals
+            global.webhookSubscriptionId = subscription.id;
+            
+            res.json({
+                success: true,
+                message: 'Webhook subscription created successfully',
+                subscription: subscription,
+                subscription_id: subscription.id,
+                expires: subscription.whenExpired,
+                webhook_url: webhookUrl,
+                next_step: 'Webhook should start receiving presence updates immediately'
+            });
+            
+        } else {
+            const error = await response.text();
+            console.error('[Webhook] Failed to create subscription:', response.status, error);
+            res.status(response.status).json({
+                error: error,
+                status: response.status,
+                webhook_url: webhookUrl,
+                note: 'Make sure the webhook URL is publicly accessible'
+            });
+        }
+        
+    } catch (error) {
+        console.error('[Webhook] Create subscription error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 /**
- * Renew an existing webhook subscription
- * POST /api/webhook/renew-presence
+ * Renew existing webhook subscription using stored ID
+ * POST /api/webhook/renew-subscription
  */
-router.post('/webhook/renew-presence', async (req, res) => {
-  try {
-    const subscriptionId = req.body.subscriptionId;
-    
-    if (!subscriptionId) {
-      return res.status(400).json({ 
-        error: 'subscriptionId is required',
-        usage: 'POST body should include: {"subscriptionId": "your-uuid-here"}'
-      });
-    }
-    
-    console.log('[Webhook] Renewing presence subscription:', subscriptionId);
-    
-    const token = await getIntermediaToken();
-    if (!token) {
-      return res.status(401).json({ error: 'No valid Intermedia token available' });
-    }
-    
-    const renewalPayload = {
-      "events": ["*"], // All events including presence
-      "ttl": "24:00:00" // 24 hours TTL - you can adjust this
-    };
-    
-    console.log('[Webhook] Renewal payload:', renewalPayload);
-    
-    const response = await fetch(`https://api.elevate.services/notifications/v2/accounts/_me/subscriptions/${subscriptionId}/_renew`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(renewalPayload)
-    });
+router.post('/webhook/renew-subscription', async (req, res) => {
+    try {
+        const subscriptionId = req.body.subscriptionId || global.webhookSubscriptionId;
+        
+        if (!subscriptionId) {
+            return res.status(400).json({
+                error: 'No subscription ID available',
+                solution: 'Create a new subscription first using /api/webhook/create-subscription'
+            });
+        }
+        
+        console.log('[Webhook] Renewing subscription:', subscriptionId);
+        
+        const token = await getNotificationsToken();
+        
+        const response = await fetch(`https://api.elevate.services/notifications/v2/accounts/_me/subscriptions/${subscriptionId}/_renew`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                "events": ["*"],
+                "ttl": "24:00:00"
+            })
+        });
 
-    if (response.ok) {
-      const renewedSubscription = await response.json();
-      console.log('[Webhook] ✅ Subscription renewed successfully!');
-      console.log('[Webhook] New expiry:', renewedSubscription.whenExpired);
-      console.log('[Webhook] Webhook URI:', renewedSubscription.delivery?.uri);
-      
-      res.json({ 
-        success: true, 
-        message: 'Webhook subscription renewed successfully',
-        subscription: renewedSubscription,
-        subscription_id: renewedSubscription.id,
-        expires: renewedSubscription.whenExpired,
-        webhook_url: renewedSubscription.delivery?.uri,
-        events: renewedSubscription.events
-      });
-    } else {
-      const error = await response.text();
-      console.error('[Webhook] Failed to renew subscription:', response.status, error);
-      res.status(response.status).json({ 
-        error: error, 
-        status: response.status,
-        subscription_id: subscriptionId
-      });
+        if (response.ok) {
+            const renewedSubscription = await response.json();
+            console.log('[Webhook] ✅ Subscription renewed successfully!');
+            
+            res.json({
+                success: true,
+                message: 'Webhook subscription renewed successfully',
+                subscription: renewedSubscription,
+                expires: renewedSubscription.whenExpired
+            });
+        } else {
+            const error = await response.text();
+            console.error('[Webhook] Failed to renew subscription:', response.status, error);
+            res.status(response.status).json({ error: error, status: response.status });
+        }
+        
+    } catch (error) {
+        console.error('[Webhook] Renewal error:', error);
+        res.status(500).json({ error: error.message });
     }
-    
-  } catch (error) {
-    console.error('[Webhook] Renewal error:', error);
-    res.status(500).json({ error: error.message });
-  }
 });
 
 /**
- * Check webhook cache status
- * GET /api/webhook/status
+ * Test the notifications token
+ * GET /api/webhook/test-notifications-token
  */
-router.get('/webhook/status', async (req, res) => {
-  try {
-    // Use the correct variable names from your existing code
-    const cacheSize = intermediaCache.agentStatuses ? intermediaCache.agentStatuses.size : 0;
-    const lastUpdate = intermediaCache.lastStatusUpdate ? new Date(intermediaCache.lastStatusUpdate) : null;
-    
-    res.json({
-      webhook_cache_active: cacheSize > 0,
-      cached_users: cacheSize,
-      last_webhook_update: lastUpdate ? lastUpdate.toISOString() : null,
-      minutes_since_update: lastUpdate ? Math.floor((Date.now() - lastUpdate.getTime()) / 60000) : null,
-      status: cacheSize > 0 ? 'WEBHOOK_ACTIVE' : 'NO_WEBHOOK_DATA',
-      subscription_state: {
-        isInitialized: presenceSubscriptionState?.isInitialized || false,
-        subscriptionId: presenceSubscriptionState?.subscriptionId || null
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+router.get('/webhook/test-notifications-token', async (req, res) => {
+    try {
+        const token = await getNotificationsToken();
+        
+        res.json({
+            success: true,
+            tokenObtained: true,
+            tokenPreview: token.substring(0, 20) + '...',
+            scope: 'api.service.notifications',
+            message: 'Notifications token is working - ready to create webhook subscriptions!'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
 });
 
 // ============================================
