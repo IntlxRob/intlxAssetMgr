@@ -6969,6 +6969,99 @@ router.get('/webhook/test-notifications-token', async (req, res) => {
 });
 
 // ============================================
+// WEBHOOK RECEIVER ENDPOINT
+// ============================================
+
+/**
+ * Webhook endpoint to receive presence notifications
+ * POST /api/webhook/presence
+ * Also handles webhook verification during subscription creation
+ */
+router.post('/webhook/presence', (req, res) => {
+    try {
+        console.log('[Webhook] Received webhook call');
+        console.log('[Webhook] Method:', req.method);
+        console.log('[Webhook] Headers:', req.headers);
+        console.log('[Webhook] Body:', req.body);
+        
+        // Handle webhook verification challenge (if present)
+        if (req.query.challenge) {
+            console.log('[Webhook] ✅ Verification challenge received:', req.query.challenge);
+            return res.status(200).send(req.query.challenge);
+        }
+        
+        // Handle actual webhook notification
+        if (req.body) {
+            console.log('[Webhook] ✅ Presence update received:', JSON.stringify(req.body, null, 2));
+            
+            // TODO: Process the presence update and update your cache
+            // This is where you'd update intermediaCache.agentStatuses with new presence data
+            
+            // For now, just log it and respond with success
+            return res.status(200).json({ 
+                received: true, 
+                timestamp: new Date().toISOString(),
+                message: 'Presence update processed successfully'
+            });
+        }
+        
+        // Default response for any other webhook calls
+        res.status(200).json({ 
+            status: 'ok', 
+            message: 'Webhook endpoint is active',
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('[Webhook] Error processing webhook:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Handle webhook verification via GET (some services use GET for verification)
+ * GET /api/webhook/presence
+ */
+router.get('/webhook/presence', (req, res) => {
+    try {
+        console.log('[Webhook] GET verification request received');
+        console.log('[Webhook] Query params:', req.query);
+        
+        // Handle verification challenge
+        if (req.query.challenge) {
+            console.log('[Webhook] ✅ GET verification challenge:', req.query.challenge);
+            return res.status(200).send(req.query.challenge);
+        }
+        
+        // Default response for webhook health check
+        res.status(200).json({
+            status: 'active',
+            endpoint: '/api/webhook/presence',
+            methods: ['GET', 'POST'],
+            message: 'Webhook endpoint is ready to receive presence notifications'
+        });
+        
+    } catch (error) {
+        console.error('[Webhook] Error in GET webhook:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Test the webhook endpoint manually
+ * GET /api/webhook/test
+ */
+router.get('/webhook/test', (req, res) => {
+    res.json({
+        message: 'Webhook endpoint test',
+        webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/webhook/presence',
+        status: 'The webhook endpoint should now be accessible',
+        verification_url: 'https://intlxassetmgr-proxy.onrender.com/api/webhook/presence?challenge=test123',
+        next_step: 'Try creating the webhook subscription again'
+    });
+});
+
+// ============================================
 // END OF WEBHOOK ENDPOINTS
 // ============================================
 
