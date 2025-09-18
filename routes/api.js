@@ -7067,6 +7067,33 @@ router.get('/webhook/test', (req, res) => {
     });
 });
 
+/**
+ * Check webhook cache status and subscription state
+ * GET /api/webhook/status
+ */
+router.get('/webhook/status', async (req, res) => {
+  try {
+    // Use the correct variable names from your existing code
+    const cacheSize = intermediaCache.agentStatuses ? intermediaCache.agentStatuses.size : 0;
+    const lastUpdate = intermediaCache.lastStatusUpdate ? new Date(intermediaCache.lastStatusUpdate) : null;
+    
+    res.json({
+      webhook_cache_active: cacheSize > 0,
+      cached_users: cacheSize,
+      last_webhook_update: lastUpdate ? lastUpdate.toISOString() : null,
+      minutes_since_update: lastUpdate ? Math.floor((Date.now() - lastUpdate.getTime()) / 60000) : null,
+      status: cacheSize > 0 ? 'WEBHOOK_ACTIVE' : 'NO_WEBHOOK_DATA',
+      subscription_state: {
+        subscriptionId: global.webhookSubscriptionId || null,
+        hasStoredSubscription: !!global.webhookSubscriptionId
+      },
+      webhook_endpoint: 'https://intlxassetmgr-proxy.onrender.com/api/webhook/presence'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============================================
 // END OF WEBHOOK ENDPOINTS
 // ============================================
