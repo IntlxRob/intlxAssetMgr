@@ -6826,13 +6826,18 @@ router.post('/webhook/create-subscription', async (req, res) => {
         console.log('[Webhook] Webhook URL:', webhookUrl);
         
         const subscriptionPayload = {
-            "events": ["*"], // All events including presence updates
-            "ttl": "24:00:00", // 24 hours
-            "delivery": {
-                "transport": "webhook",
-                "uri": webhookUrl
-            }
-        };
+    "events": [
+        "presence.updated",
+        "presence.changed", 
+        "user.presence.updated",
+        "messaging.presence.updated"
+    ], // Specific presence event types
+    "ttl": "24:00:00", // 24 hours
+    "delivery": {
+        "transport": "webhook",
+        "uri": webhookUrl
+    }
+};
         
         console.log('[Webhook] Creating subscription with payload:', subscriptionPayload);
         
@@ -6907,9 +6912,14 @@ router.post('/webhook/renew-subscription', async (req, res) => {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                "events": ["*"],
-                "ttl": "24:00:00"
-            })
+    "events": [
+        "presence.updated",
+        "presence.changed", 
+        "user.presence.updated",
+        "messaging.presence.updated"
+    ],
+    "ttl": "24:00:00"
+})
         });
 
         if (response.ok) {
