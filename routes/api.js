@@ -6984,10 +6984,16 @@ router.post('/webhook/presence', (req, res) => {
         console.log('[Webhook] Headers:', req.headers);
         console.log('[Webhook] Body:', req.body);
         
-        // Handle webhook verification challenge (if present)
+        // Handle webhook verification challenge (if present in query)
         if (req.query.challenge) {
-            console.log('[Webhook] ✅ Verification challenge received:', req.query.challenge);
-            return res.status(200).send(req.query.challenge);
+            console.log('[Webhook] ✅ Verification challenge received in query:', req.query.challenge);
+            return res.status(200).json({ challenge: req.query.challenge });
+        }
+        
+        // Handle webhook verification challenge (if present in body)
+        if (req.body && req.body.challenge) {
+            console.log('[Webhook] ✅ Verification challenge received in body:', req.body.challenge);
+            return res.status(200).json({ challenge: req.body.challenge });
         }
         
         // Handle actual webhook notification
@@ -7030,7 +7036,7 @@ router.get('/webhook/presence', (req, res) => {
         // Handle verification challenge
         if (req.query.challenge) {
             console.log('[Webhook] ✅ GET verification challenge:', req.query.challenge);
-            return res.status(200).send(req.query.challenge);
+            return res.status(200).json({ challenge: req.query.challenge });
         }
         
         // Default response for webhook health check
