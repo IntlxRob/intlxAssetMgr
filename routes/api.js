@@ -576,6 +576,55 @@ let intermediaCache = {
     lastStatusUpdate: 0
 };
 
+// ADD THIS FUNCTION RIGHT AFTER THE CACHE VARIABLES:
+/**
+ * Initialize presence cache with all agent data
+ * This is called on server startup
+ */
+async function initializePresenceCache() {
+    try {
+        console.log('[Cache] Initializing presence cache on server startup...');
+        
+        if (intermediaCache.isUpdating) {
+            console.log('[Cache] Already updating, skipping...');
+            return;
+        }
+        
+        intermediaCache.isUpdating = true;
+        
+        // Clear existing cache
+        if (intermediaCache.agentStatuses) {
+            intermediaCache.agentStatuses.clear();
+        } else {
+            intermediaCache.agentStatuses = new Map();
+        }
+        
+        // Fetch fresh agent data
+        const agents = await fetchAgentStatuses();
+        
+        // Populate cache
+        agents.forEach(agent => {
+            const agentWithSource = {
+                ...agent,
+                dataSource: 'server_startup_init',
+                initializedAt: new Date().toISOString()
+            };
+            intermediaCache.agentStatuses.set(agent.id, agentWithSource);
+        });
+        
+        intermediaCache.lastStatusUpdate = Date.now();
+        intermediaCache.isUpdating = false;
+        
+        console.log(`[Cache] Successfully initialized cache with ${agents.length} agents`);
+        return agents;
+        
+    } catch (error) {
+        console.error('[Cache] Failed to initialize cache:', error);
+        intermediaCache.isUpdating = false;
+        throw error;
+    }
+}
+
 /**
  * 🔧 FIXED: fetchAgentStatuses with correct presence API endpoint
  * REPLACE your existing fetchAgentStatuses function with this version
@@ -1214,6 +1263,26 @@ router.get('/address-book/contacts-with-presence', async (req, res) => {
         } else {
             res.status(500).json({ error: error.message });
         }
+    }
+});
+
+/**
+ * Manual cache reset endpoint
+ */
+router.get('/reset-cache-manual', async (req, res) => {
+    try {
+        await initializePresenceCache();
+        res.json({ 
+            success: true, 
+            message: 'Cache manually reset successfully',
+            timestamp: new Date().toISOString(),
+            agentCount: intermediaCache.agentStatuses.size
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
@@ -3262,130 +3331,56 @@ function processMessagingPresenceData(data, endpoint) {
  */
 router.get('/agent-status', async (req, res) => {
     try {
-        console.log('[API] Agent status requested (auto-initialize enabled)');
+        console.log('[API] Agent status requested (enhanced auto-initialize)');
         
-        // PRIORITY 1: Check if we have webhook cache data
+        // Check if cache is healthy
+        const cacheHealthy = intermediaCache.agentStatuses && 
+                           intermediaCache.agentStatuses.size > 0 &&
+                           intermediaCache.lastStatusUpdate &&
+                           (Date.now() - intermediaCache.lastStatusUpdate) < 600000; // 10 minutes
+        
+        if (!cacheHealthy) {
+            console.log('[API] Cache unhealthy or empty, reinitializing...');
+            await initializePresenceCache();
+        }
+        
+        // Return cached data
         if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0) {
-            console.log('[API] ✅ Using existing webhook cache data');
-            console.log('[API] Cache size:', intermediaCache.agentStatuses.size);
-            
             const agents = Array.from(intermediaCache.agentStatuses.values()).map(agent => ({
                 ...agent,
-                dataSource: agent.dataSource || 'webhook_cache'
+                dataSource: agent.dataSource || 'cache'
             }));
             
             return res.json({
                 success: true,
                 agents: agents,
                 cached: true,
-                source: 'hybrid_cache',
+                source: 'auto_managed_cache',
                 cache_size: intermediaCache.agentStatuses.size,
                 lastUpdated: intermediaCache.lastStatusUpdate ? 
                     new Date(intermediaCache.lastStatusUpdate).toISOString() : null,
-                realtimeAgents: agents.filter(a => a.dataSource === 'webhook_realtime').length,
-                totalAgents: agents.length,
-                note: 'Using cached data with real-time webhook updates'
+                totalAgents: agents.length
             });
         }
         
-        // PRIORITY 2: Auto-initialize cache if webhooks are active but no data yet
-        if (presenceSubscriptionState && presenceSubscriptionState.subscriptionId) {
-            console.log('[API] 🔄 Webhooks active but no cache data - auto-initializing...');
-            
-            try {
-                // Get current presence data for ALL users
-                console.log('[API] Fetching current presence data for all users...');
-                const currentAgents = await fetchAgentStatuses();
-                console.log(`[API] ✅ Fetched current data for ${currentAgents.length} agents`);
-                
-                // Initialize cache
-                if (!intermediaCache.agentStatuses) {
-                    intermediaCache.agentStatuses = new Map();
-                }
-                
-                // Populate cache with current data
-                currentAgents.forEach(agent => {
-                    const agentWithSource = {
-                        ...agent,
-                        dataSource: 'auto_initialized',
-                        initializedAt: new Date().toISOString()
-                    };
-                    intermediaCache.agentStatuses.set(agent.id, agentWithSource);
-                });
-                
-                intermediaCache.lastStatusUpdate = Date.now();
-                
-                console.log(`[API] 🎉 Auto-initialized cache with ${currentAgents.length} agents`);
-                console.log(`[API] Webhook subscription ${presenceSubscriptionState.subscriptionId} will now update these users in real-time`);
-                
-                return res.json({
-                    success: true,
-                    agents: currentAgents.map(agent => ({ 
-                        ...agent, 
-                        dataSource: 'auto_initialized' 
-                    })),
-                    cached: true,
-                    source: 'auto_initialized',
-                    cache_size: currentAgents.length,
-                    lastUpdated: new Date().toISOString(),
-                    message: '🎉 Cache auto-initialized! Users now visible with current presence. Webhooks will provide real-time updates.',
-                    webhook_subscription: presenceSubscriptionState.subscriptionId,
-                    realtimeAgents: 0,
-                    totalAgents: currentAgents.length
-                });
-                
-            } catch (initError) {
-                console.error('[API] ❌ Auto-initialization failed:', initError);
-                console.log('[API] Falling back to regular API polling');
-                // Fall through to regular API polling
-            }
-        }
-        
-        // PRIORITY 3: Check if webhooks exist but subscription state is missing
-        if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0 && !presenceSubscriptionState?.subscriptionId) {
-            console.log('[API] ⚠️ Found webhook cache but missing subscription state');
-            
-            const agents = Array.from(intermediaCache.agentStatuses.values()).map(agent => ({
-                ...agent,
-                dataSource: agent.dataSource || 'webhook_cache'
-            }));
-            
-            return res.json({
-                success: true,
-                agents: agents,
-                cached: true,
-                source: 'webhook_cache',
-                cache_size: intermediaCache.agentStatuses.size,
-                lastUpdated: intermediaCache.lastStatusUpdate ? 
-                    new Date(intermediaCache.lastStatusUpdate).toISOString() : null,
-                realtimeAgents: agents.filter(a => a.dataSource === 'webhook_realtime').length,
-                totalAgents: agents.length,
-                note: 'Using webhook cache despite missing subscription state'
-            });
-        }
-        
-        // FALLBACK: Regular API polling (no webhooks or initialization failed)
-        console.log('[API] No webhooks or cache - using API polling fallback...');
+        // Fallback to fresh fetch
+        console.log('[API] No cache available, fetching fresh data...');
         const agents = await fetchAgentStatuses();
         
         return res.json({
             success: true,
-            agents: agents.map(agent => ({ ...agent, dataSource: 'api_polling' })),
+            agents: agents.map(agent => ({ ...agent, dataSource: 'fresh_fetch' })),
             cached: false,
-            source: 'api_polling',
-            cache_size: 0,
+            source: 'fresh_fetch',
             lastUpdated: new Date().toISOString(),
-            realtimeAgents: 0,
-            totalAgents: agents.length,
-            note: 'Using API polling - no webhook cache available. Consider running webhook setup.'
+            totalAgents: agents.length
         });
         
     } catch (error) {
         console.error('[API] Error in agent-status endpoint:', error);
         res.status(500).json({
             success: false,
-            error: error.message,
-            note: 'Agent status endpoint failed - check logs for details'
+            error: error.message
         });
     }
 });
@@ -8339,3 +8334,5 @@ router.get('/reset-and-initialize', async (req, res) => {
 // ============================================
 
 module.exports = router;
+module.exports.initializePresenceCache = initializePresenceCache;
+module.exports.intermediaCache = intermediaCache;
