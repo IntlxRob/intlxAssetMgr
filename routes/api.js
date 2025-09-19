@@ -7417,7 +7417,7 @@ if (userId && presence) {
     
     try {
         // Use enhanced processing with real user lookup
-        await updatePresenceCacheWithRealUser(userId, presence);
+        updatePresenceCacheWithRealUser(userId, presence);
         processed = true;
         
     } catch (updateError) {
