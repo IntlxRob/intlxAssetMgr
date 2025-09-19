@@ -3038,11 +3038,21 @@ router.post('/notifications', (req, res) => {
         
         console.log(`[Notifications] Received webhook:`, JSON.stringify(req.body, null, 2));
         
+        // ✅ CORRECT event type check
         if (eventType === 'messaging.presence-control.changed' && payload) {
-            console.log(`[Notifications] Processing presence notification with ${Array.isArray(payload) ? payload.length : 1} items`);
+            console.log(`[Notifications] ✅ Processing presence notification`);
             
             // Handle payload (could be array or single object)
             const presenceUpdates = Array.isArray(payload) ? payload : [payload];
+            
+            // 🔧 CRITICAL FIX: Ensure cache exists and preserve existing users
+            if (!intermediaCache.agentStatuses) {
+                console.log('[Notifications] ⚠️ Cache missing - initializing empty cache');
+                intermediaCache.agentStatuses = new Map();
+            }
+            
+            const cacheBeforeSize = intermediaCache.agentStatuses.size;
+            console.log(`[Notifications] Cache size BEFORE processing: ${cacheBeforeSize}`);
             
             presenceUpdates.forEach(update => {
                 // Flexible field handling (userId or unifiedUserId, presenceState or presence)
@@ -3050,43 +3060,37 @@ router.post('/notifications', (req, res) => {
                 const presenceState = update.presenceState || update.presence || update.status;
                 
                 if (userId && presenceState) {
-                    console.log(`[Notifications] User ${userId} changed status to: ${presenceState} at ${whenRaised || 'unknown time'}`);
+                    console.log(`[Notifications] Processing user ${userId}: ${presenceState} at ${whenRaised || 'unknown time'}`);
                     
-                    // Update cache immediately
-                    updatePresenceCache(userId, presenceState);
+                    // 🔧 FIXED: Use safe individual user update that preserves other users
+                    updatePresenceCacheSafely(userId, presenceState);
                 } else {
-                    console.log(`[Notifications] Incomplete presence data - missing userId or presence:`, {
+                    console.log(`[Notifications] Incomplete presence data:`, {
                         available_fields: Object.keys(update),
                         userId_found: !!userId,
-                        presence_found: !!presenceState,
-                        raw_update: update
+                        presence_found: !!presenceState
                     });
                 }
             });
             
-            res.status(200).json({ 
-                received: true, 
-                processed: true,
-                eventType: eventType,
-                itemsProcessed: presenceUpdates.length
-            });
-            
+            const cacheAfterSize = intermediaCache.agentStatuses.size;
+            console.log(`[Notifications] Cache size AFTER processing: ${cacheAfterSize}`);
+            console.log(`[Notifications] ✅ Processing complete - ${presenceUpdates.length} updates processed`);
         } else {
-            console.log(`[Notifications] Ignored event type: ${eventType}`);
-            res.status(200).json({ 
-                received: true, 
-                processed: false, 
-                reason: `Unsupported event type: ${eventType}`
-            });
+            console.log(`[Notifications] Ignored event type: ${eventType || 'unknown'}`);
         }
+
+        // Always return success to prevent retries
+        res.status(200).json({
+            status: 'received',
+            processed: true,
+            eventType: eventType || 'unknown',
+            cacheSize: intermediaCache.agentStatuses ? intermediaCache.agentStatuses.size : 0
+        });
         
     } catch (error) {
-        console.error('[Notifications] Error processing webhook:', error);
-        res.status(200).json({ 
-            received: true, 
-            processed: false, 
-            error: 'Processing error' 
-        });
+        console.error('[Notifications] ❌ FATAL ERROR:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -7322,6 +7326,112 @@ router.get('/webhook/test', (req, res) => {
 });
 
 /**
+ * 🔧 FIX 3: Debug current presence API to fix "Offline" issue
+ * GET /api/debug-presence-api
+ */
+router.get('/debug-presence-api', async (req, res) => {
+    try {
+        console.log('[Debug] Testing presence API calls...');
+        
+        // Get a few users to test presence API
+        const zendeskUsers = await getZendeskUsersWithElevateIds();
+        if (!zendeskUsers || zendeskUsers.length === 0) {
+            return res.json({
+                success: false,
+                error: 'No users with Elevate IDs found',
+                solution: 'Run /api/setup/sync-elevate-ids first'
+            });
+        }
+        
+        const testUsers = zendeskUsers.slice(0, 3); // Test first 3 users
+        console.log(`[Debug] Testing presence for ${testUsers.length} users`);
+        
+        const messagingToken = await getIntermediaToken();
+        console.log('[Debug] ✅ Got messaging token');
+        
+        const results = [];
+        
+        for (const user of testUsers) {
+            try {
+                console.log(`[Debug] Testing presence for ${user.name} (${user.elevate_id})`);
+                
+                const presenceResponse = await fetch(`https://api.elevate.services/messaging/v1/presences/${user.elevate_id}`, {
+                    headers: {
+                        'Authorization': `Bearer ${messagingToken}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                const result = {
+                    user: user.name,
+                    elevate_id: user.elevate_id,
+                    api_status: presenceResponse.status,
+                    api_ok: presenceResponse.ok
+                };
+                
+                if (presenceResponse.ok) {
+                    const presenceData = await presenceResponse.json();
+                    result.presence_data = presenceData;
+                    result.raw_presence = presenceData.presence;
+                    result.mapped_status = mapMessagingStatus(presenceData.presence);
+                } else {
+                    result.error = await presenceResponse.text();
+                }
+                
+                results.push(result);
+                console.log(`[Debug] ${user.name}: ${result.api_ok ? result.raw_presence || 'no presence' : 'API ERROR'}`);
+                
+            } catch (error) {
+                results.push({
+                    user: user.name,
+                    elevate_id: user.elevate_id,
+                    error: error.message,
+                    failed: true
+                });
+            }
+        }
+        
+        const successCount = results.filter(r => r.api_ok).length;
+        const offlineCount = results.filter(r => r.raw_presence === 'offline').length;
+        const errorCount = results.filter(r => r.error || r.failed).length;
+        
+        res.json({
+            success: true,
+            message: 'Presence API debug results',
+            summary: {
+                total_tested: results.length,
+                successful_calls: successCount,
+                offline_responses: offlineCount,
+                api_errors: errorCount,
+                issue_detected: offlineCount === successCount && successCount > 0 ? 
+                    'All successful API calls return offline - this might be expected or indicate API limitations' :
+                    errorCount > 0 ? 'Some API calls are failing' : 'Mixed presence states detected'
+            },
+            test_results: results,
+            recommendations: errorCount > 0 ? [
+                'Check if messaging token has correct permissions',
+                'Verify user Elevate IDs are correct',
+                'Consider using different API endpoint'
+            ] : offlineCount === successCount ? [
+                'API is working but all users appear offline',
+                'This might be normal if users haven\'t set presence',
+                'Real-time webhooks should still work for status changes'
+            ] : [
+                'API is working correctly with mixed presence states',
+                'Auto-initialization should work properly'
+            ]
+        });
+        
+    } catch (error) {
+        console.error('[Debug] Error testing presence API:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Check webhook cache status and subscription state
  * GET /api/webhook/status
  */
@@ -7524,6 +7634,79 @@ function mapMessagingStatus(presenceState) {
         case 'disconnected':
         default:
             return 'Offline';
+    }
+}
+
+/**
+ * 🔧 FIX 2: Safe cache update that preserves existing users
+ */
+function updatePresenceCacheSafely(userId, presenceState) {
+    try {
+        // Ensure cache exists
+        if (!intermediaCache.agentStatuses) {
+            intermediaCache.agentStatuses = new Map();
+        }
+        
+        const mappedStatus = mapMessagingStatus(presenceState);
+        const existingAgent = intermediaCache.agentStatuses.get(userId);
+        
+        if (existingAgent) {
+            // ✅ UPDATE EXISTING USER - preserve all data, just update status
+            const updatedAgent = {
+                ...existingAgent,                    // Keep all existing data
+                status: mappedStatus,                // Update status
+                phoneStatus: mappedStatus,           // Update phone status  
+                presenceStatus: mappedStatus,        // Update presence status
+                lastActivity: new Date().toISOString(),
+                dataSource: 'webhook_realtime',     // Mark as real-time
+                rawPresenceData: { 
+                    presence: presenceState, 
+                    updated: new Date().toISOString(),
+                    source: 'webhook'
+                }
+            };
+            
+            // ✅ CRITICAL: Only update THIS user, don't touch other users
+            intermediaCache.agentStatuses.set(userId, updatedAgent);
+            console.log(`[Cache] ✅ Updated existing user ${existingAgent.name || userId}: ${presenceState} -> ${mappedStatus}`);
+            
+        } else {
+            // ✅ ADD NEW USER - but preserve existing users in cache
+            console.log(`[Cache] ⚠️ Unknown user ${userId} - adding with basic info`);
+            
+            const newUserRecord = {
+                id: userId,
+                name: `User ${userId}`,
+                email: `${userId}@unknown.com`,
+                status: mappedStatus,
+                phoneStatus: mappedStatus,
+                presenceStatus: mappedStatus,
+                extension: 'N/A',
+                phone: 'Unknown',
+                onCall: false,
+                lastActivity: new Date().toISOString(),
+                source: 'webhook_new_user',
+                dataSource: 'webhook_realtime',
+                company: 'Unknown',
+                rawPresenceData: { 
+                    presence: presenceState, 
+                    updated: new Date().toISOString(),
+                    source: 'webhook'
+                }
+            };
+            
+            // ✅ CRITICAL: Add new user WITHOUT affecting existing users
+            intermediaCache.agentStatuses.set(userId, newUserRecord);
+            console.log(`[Cache] ✅ Added new user ${userId} with status: ${mappedStatus}`);
+        }
+        
+        // Update timestamp
+        intermediaCache.lastStatusUpdate = Date.now();
+        
+        console.log(`[Cache] Current cache size: ${intermediaCache.agentStatuses.size}`);
+        
+    } catch (error) {
+        console.error('[Cache] ❌ Error in safe cache update:', error);
     }
 }
 
