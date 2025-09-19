@@ -7358,25 +7358,6 @@ function mapMessagingStatus(presenceState) {
     }
 }
 
-// REPLACE your existing webhook processing section with this enhanced version
-// Find the line where you process userId and presence, and replace with:
-
-// Process if we found data
-if (userId && presence) {
-    console.log('[Webhook] 🔄 Processing presence update with real user lookup...');
-    console.log('[Webhook] User ID:', userId);
-    console.log('[Webhook] Presence:', presence);
-    
-    try {
-        // Use enhanced processing with real user lookup
-        updatePresenceCacheWithRealUser(userId, presence);
-        processed = true;
-        
-    } catch (updateError) {
-        console.error('[Webhook] ❌ Error updating cache:', updateError);
-    }
-}
-
 // ============================================
 // END OF WEBHOOK ENDPOINTS
 // ============================================
