@@ -7710,6 +7710,75 @@ function updatePresenceCacheSafely(userId, presenceState) {
     }
 }
 
+/**
+ * 🔄 RESET AND INITIALIZE: Clear cache and auto-populate all users
+ * GET /api/reset-and-initialize
+ */
+router.get('/reset-and-initialize', async (req, res) => {
+    try {
+        console.log('[Reset] Clearing cache and initializing with all users...');
+        
+        // Step 1: Clear existing cache
+        if (intermediaCache.agentStatuses) {
+            const oldSize = intermediaCache.agentStatuses.size;
+            intermediaCache.agentStatuses.clear();
+            console.log(`[Reset] ✅ Cleared ${oldSize} cached users`);
+        } else {
+            intermediaCache.agentStatuses = new Map();
+            console.log('[Reset] ✅ Initialized new cache');
+        }
+        
+        // Step 2: Get current presence for ALL users
+        console.log('[Reset] 🔄 Fetching current presence for all users...');
+        const currentAgents = await fetchAgentStatuses();
+        console.log(`[Reset] ✅ Fetched ${currentAgents.length} agents with current presence`);
+        
+        // Step 3: Populate cache with all users
+        currentAgents.forEach(agent => {
+            const agentWithSource = {
+                ...agent,
+                dataSource: 'manual_initialization',
+                initializedAt: new Date().toISOString()
+            };
+            intermediaCache.agentStatuses.set(agent.id, agentWithSource);
+        });
+        
+        intermediaCache.lastStatusUpdate = Date.now();
+        
+        console.log(`[Reset] 🎉 Initialized cache with ${currentAgents.length} users`);
+        console.log('[Reset] Webhooks will now provide real-time updates for these users');
+        
+        res.json({
+            success: true,
+            message: '🎉 Cache reset and initialized with all users!',
+            stats: {
+                users_populated: currentAgents.length,
+                cache_size: intermediaCache.agentStatuses.size,
+                initialization_time: new Date().toISOString()
+            },
+            sample_users: currentAgents.slice(0, 3).map(u => ({
+                name: u.name,
+                status: u.status,
+                elevate_id: u.id
+            })),
+            next_steps: [
+                'All users should now appear in your UI',
+                'Webhooks will continue providing real-time updates',
+                'Check /api/agent-status to see all users'
+            ],
+            webhook_status: 'Active - will update users in real-time'
+        });
+        
+    } catch (error) {
+        console.error('[Reset] Error during reset/initialize:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            note: 'Reset failed - cache may be in inconsistent state'
+        });
+    }
+});
+
 // ============================================
 // END OF WEBHOOK ENDPOINTS
 // ============================================
