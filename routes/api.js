@@ -1573,6 +1573,94 @@ router.get('/debug-presence-failure', async (req, res) => {
 });
 
 /**
+ * 🧪 TEST: Debug what presence values you're actually receiving
+ * GET /api/debug-presence-values
+ */
+router.get('/debug-presence-values', async (req, res) => {
+    try {
+        console.log('[Debug] Checking what presence values are actually received...');
+        
+        // Get current cached data to see what presence states exist
+        const cachedUsers = intermediaCache.agentStatuses ? 
+            Array.from(intermediaCache.agentStatuses.values()) : [];
+            
+        // Extract unique presence values
+        const presenceValues = new Set();
+        const presenceSamples = [];
+        
+        cachedUsers.forEach(user => {
+            if (user.rawPresenceData?.presence) {
+                const rawPresence = user.rawPresenceData.presence;
+                presenceValues.add(rawPresence);
+                
+                presenceSamples.push({
+                    user: user.name,
+                    raw_presence: rawPresence,
+                    mapped_status: mapMessagingStatus(rawPresence),
+                    source: user.dataSource || 'unknown'
+                });
+            }
+        });
+        
+        // Get a few fresh API calls to see current values
+        const zendeskUsers = await getZendeskUsersWithElevateIds();
+        const testUsers = zendeskUsers.slice(0, 3);
+        const messagingToken = await getIntermediaToken();
+        
+        const livePresenceValues = [];
+        
+        for (const user of testUsers) {
+            try {
+                const response = await fetch(`https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${user.elevate_id}`, {
+                    headers: {
+                        'Authorization': `Bearer ${messagingToken}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.presence) {
+                        presenceValues.add(data.presence);
+                        
+                        livePresenceValues.push({
+                            user: user.name,
+                            raw_presence: data.presence,
+                            mapped_status: mapMessagingStatus(data.presence)
+                        });
+                    }
+                }
+            } catch (error) {
+                // Skip errors
+            }
+        }
+        
+        res.json({
+            success: true,
+            message: 'Presence values analysis',
+            summary: {
+                unique_presence_values: Array.from(presenceValues).sort(),
+                total_cached_users: cachedUsers.length,
+                users_with_presence_data: presenceSamples.length
+            },
+            cached_presence_samples: presenceSamples.slice(0, 10),
+            live_api_samples: livePresenceValues,
+            mapping_test: Array.from(presenceValues).map(value => ({
+                raw_value: value,
+                mapped_to: mapMessagingStatus(value)
+            })),
+            question: 'Do you see any presence values that should map to "On a Call"?'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Debug endpoint to check environment variables and compare with curl
  */
 router.get('/debug-env-vs-curl', async (req, res) => {
@@ -2376,93 +2464,7 @@ router.get('/debug-address-book-auth', async (req, res) => {
     }
 });
 
-**
- * 🧪 TEST: Debug what presence values you're actually receiving
- * GET /api/debug-presence-values
- */
-router.get('/debug-presence-values', async (req, res) => {
-    try {
-        console.log('[Debug] Checking what presence values are actually received...');
-        
-        // Get current cached data to see what presence states exist
-        const cachedUsers = intermediaCache.agentStatuses ? 
-            Array.from(intermediaCache.agentStatuses.values()) : [];
-            
-        // Extract unique presence values
-        const presenceValues = new Set();
-        const presenceSamples = [];
-        
-        cachedUsers.forEach(user => {
-            if (user.rawPresenceData?.presence) {
-                const rawPresence = user.rawPresenceData.presence;
-                presenceValues.add(rawPresence);
-                
-                presenceSamples.push({
-                    user: user.name,
-                    raw_presence: rawPresence,
-                    mapped_status: mapMessagingStatus(rawPresence),
-                    source: user.dataSource || 'unknown'
-                });
-            }
-        });
-        
-        // Get a few fresh API calls to see current values
-        const zendeskUsers = await getZendeskUsersWithElevateIds();
-        const testUsers = zendeskUsers.slice(0, 3);
-        const messagingToken = await getIntermediaToken();
-        
-        const livePresenceValues = [];
-        
-        for (const user of testUsers) {
-            try {
-                const response = await fetch(`https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${user.elevate_id}`, {
-                    headers: {
-                        'Authorization': `Bearer ${messagingToken}`,
-                        'Accept': 'application/json'
-                    }
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.presence) {
-                        presenceValues.add(data.presence);
-                        
-                        livePresenceValues.push({
-                            user: user.name,
-                            raw_presence: data.presence,
-                            mapped_status: mapMessagingStatus(data.presence)
-                        });
-                    }
-                }
-            } catch (error) {
-                // Skip errors
-            }
-        }
-        
-        res.json({
-            success: true,
-            message: 'Presence values analysis',
-            summary: {
-                unique_presence_values: Array.from(presenceValues).sort(),
-                total_cached_users: cachedUsers.length,
-                users_with_presence_data: presenceSamples.length
-            },
-            cached_presence_samples: presenceSamples.slice(0, 10),
-            live_api_samples: livePresenceValues,
-            mapping_test: Array.from(presenceValues).map(value => ({
-                raw_value: value,
-                mapped_to: mapMessagingStatus(value)
-            })),
-            question: 'Do you see any presence values that should map to "On a Call"?'
-        });
-        
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
+
 
 // TEMPORARY: Add this to test the cleanup, remove after verification
 router.get('/debug-function-count', (req, res) => {
