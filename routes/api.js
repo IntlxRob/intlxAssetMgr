@@ -577,12 +577,12 @@ let intermediaCache = {
 };
 
 /**
- * FINAL VERSION: Fetch agent statuses using Zendesk user elevate_id fields
- * THIS IS THE ONLY fetchAgentStatuses FUNCTION - DELETE ALL OTHERS
+ * 🔧 FIXED: fetchAgentStatuses with correct presence API endpoint
+ * REPLACE your existing fetchAgentStatuses function with this version
  */
 async function fetchAgentStatuses() {
     try {
-        console.log('[Agent Status] Fetching agent statuses using Zendesk user Elevate IDs');
+        console.log('[Agent Status] Fetching agent statuses using CORRECT presence API endpoint');
         
         // Step 1: Get Zendesk users with Elevate IDs
         const zendeskUsers = await getZendeskUsersWithElevateIds();
@@ -591,7 +591,7 @@ async function fetchAgentStatuses() {
             return [];
         }
         
-        console.log(`[Agent Status] Found ${zendeskUsers.length} users with Elevate IDs, fetching presence data...`);
+        console.log(`[Agent Status] Found ${zendeskUsers.length} users with Elevate IDs, fetching REAL presence data...`);
         
         // Step 2: Get messaging token for presence lookups
         const messagingToken = await getIntermediaToken();
@@ -608,10 +608,10 @@ async function fetchAgentStatuses() {
             
             const batchPromises = batch.map(async (user) => {
                 try {
-                    console.log(`[Agent Status] Getting presence for ${user.name}`);
+                    console.log(`[Agent Status] Getting REAL presence for ${user.name}`);
                     
-                    // Try the messaging presence endpoint
-                    const presenceResponse = await fetch(`https://api.elevate.services/messaging/v1/presences/${user.elevate_id}`, {
+                    // 🔧 FIXED: Using the CORRECT API endpoint from documentation
+                    const presenceResponse = await fetch(`https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${user.elevate_id}`, {
                         headers: {
                             'Authorization': `Bearer ${messagingToken}`,
                             'Accept': 'application/json'
@@ -619,16 +619,23 @@ async function fetchAgentStatuses() {
                     });
                     
                     let presenceData = null;
+                    let actualStatus = 'Offline'; // Default fallback
+                    
                     if (presenceResponse.ok) {
                         presenceData = await presenceResponse.json();
+                        
+                        // Extract presence field as documented
+                        if (presenceData && presenceData.presence) {
+                            actualStatus = mapMessagingStatus(presenceData.presence);
+                            console.log(`[Agent Status] ✅ ${user.name}: ${presenceData.presence} -> ${actualStatus}`);
+                        } else {
+                            console.log(`[Agent Status] ⚠️ ${user.name}: API success but no presence field - using Offline`);
+                        }
+                    } else {
+                        const errorText = await presenceResponse.text();
+                        console.log(`[Agent Status] ❌ ${user.name}: API failed (${presenceResponse.status}) - ${errorText}`);
+                        // Will use default 'Offline' status
                     }
-                    
-                    // Map the presence to our detailed states
-                    const mappedStatus = presenceData?.presence ? 
-                        mapMessagingStatus(presenceData.presence) : 
-                        'Offline';
-                    
-                    console.log(`[Agent Status] ✅ ${user.name}: ${presenceData?.presence || 'offline'}`);
                     
                     return {
                         id: user.elevate_id,
@@ -636,22 +643,26 @@ async function fetchAgentStatuses() {
                         email: user.email,
                         extension: 'N/A',
                         phone: 'Unknown',
-                        status: mappedStatus,
-                        phoneStatus: mappedStatus,
-                        presenceStatus: mappedStatus,
+                        status: actualStatus,                    // ✅ Now shows REAL status
+                        phoneStatus: actualStatus,               // ✅ Now shows REAL status
+                        presenceStatus: actualStatus,            // ✅ Now shows REAL status
                         onCall: false,
                         lastActivity: new Date().toISOString(),
-                        source: 'zendesk_elevate_id', // ← Key identifier
+                        source: 'zendesk_elevate_id',
                         company: 'Intlx Solutions',
-                        hasPhoneData: !!presenceData,
+                        hasPhoneData: false,
                         hasPresenceData: !!presenceData,
                         zendeskUserId: user.zendesk_user_id,
-                        rawPresenceData: presenceData || { presence: 'offline', updated: new Date().toISOString() }
+                        rawPresenceData: presenceData || { 
+                            presence: 'offline', 
+                            updated: new Date().toISOString(),
+                            note: presenceResponse.ok ? 'No presence field in response' : `API error: ${presenceResponse.status}`
+                        }
                     };
                 } catch (error) {
-                    console.log(`[Agent Status] ❌ ${user.name}: ${error.message}`);
+                    console.log(`[Agent Status] ❌ ${user.name}: Exception - ${error.message}`);
                     
-                    // Return offline status for failed lookups
+                    // Return offline status for errors (but log the actual error)
                     return {
                         id: user.elevate_id,
                         name: user.name,
@@ -668,7 +679,11 @@ async function fetchAgentStatuses() {
                         hasPhoneData: false,
                         hasPresenceData: false,
                         zendeskUserId: user.zendesk_user_id,
-                        rawPresenceData: { presence: 'offline', updated: new Date().toISOString(), error: error.message }
+                        rawPresenceData: { 
+                            presence: 'offline', 
+                            updated: new Date().toISOString(),
+                            error: error.message
+                        }
                     };
                 }
             });
@@ -683,14 +698,14 @@ async function fetchAgentStatuses() {
             }
         }
         
-        // Generate status summary with detailed states
+        // Generate status summary
         const statusSummary = agents.reduce((summary, agent) => {
             const status = agent.status || 'Unknown';
             summary[status] = (summary[status] || 0) + 1;
             return summary;
         }, {});
         
-        console.log(`[Agent Status] ✅ Successfully processed ${agents.length} agents from Zendesk Elevate IDs`);
+        console.log(`[Agent Status] 🎉 Successfully processed ${agents.length} agents with REAL presence data!`);
         console.log(`[Agent Status] Status summary:`, statusSummary);
         
         return agents;
