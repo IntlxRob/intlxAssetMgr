@@ -1403,6 +1403,161 @@ router.get('/compare-presence-methods', async (req, res) => {
 });
 
 /**
+ * 🔧 DEBUG: Find out exactly why presence API calls are failing
+ * GET /api/debug-presence-failure
+ */
+router.get('/debug-presence-failure', async (req, res) => {
+    try {
+        console.log('[Debug] Investigating presence API failures...');
+        
+        // Get one test user
+        const zendeskUsers = await getZendeskUsersWithElevateIds();
+        if (!zendeskUsers || zendeskUsers.length === 0) {
+            return res.json({
+                success: false,
+                error: 'No users with Elevate IDs found'
+            });
+        }
+        
+        const testUser = zendeskUsers[0]; // Test first user
+        console.log(`[Debug] Testing with user: ${testUser.name} (${testUser.elevate_id})`);
+        
+        // Step 1: Test token acquisition
+        let messagingToken;
+        try {
+            messagingToken = await getIntermediaToken();
+            console.log('[Debug] ✅ Token acquired successfully');
+        } catch (tokenError) {
+            return res.json({
+                success: false,
+                step: 'token_acquisition',
+                error: tokenError.message,
+                solution: 'Fix Intermedia token/credentials issue'
+            });
+        }
+        
+        // Step 2: Test the exact API call
+        const apiUrl = `https://api.elevate.services/messaging/v1/presences/${testUser.elevate_id}`;
+        console.log(`[Debug] Testing API call: ${apiUrl}`);
+        
+        try {
+            const presenceResponse = await fetch(apiUrl, {
+                headers: {
+                    'Authorization': `Bearer ${messagingToken}`,
+                    'Accept': 'application/json'
+                }
+            });
+            
+            console.log(`[Debug] API Response Status: ${presenceResponse.status}`);
+            console.log(`[Debug] API Response OK: ${presenceResponse.ok}`);
+            
+            const responseHeaders = {};
+            presenceResponse.headers.forEach((value, key) => {
+                responseHeaders[key] = value;
+            });
+            
+            let responseBody;
+            const contentType = presenceResponse.headers.get('content-type');
+            
+            if (contentType && contentType.includes('application/json')) {
+                responseBody = await presenceResponse.json();
+            } else {
+                responseBody = await presenceResponse.text();
+            }
+            
+            const result = {
+                success: true,
+                test_user: {
+                    name: testUser.name,
+                    elevate_id: testUser.elevate_id
+                },
+                api_call: {
+                    url: apiUrl,
+                    status_code: presenceResponse.status,
+                    status_ok: presenceResponse.ok,
+                    content_type: contentType
+                },
+                response: {
+                    headers: responseHeaders,
+                    body: responseBody
+                },
+                token_info: {
+                    token_length: messagingToken ? messagingToken.length : 0,
+                    token_preview: messagingToken ? messagingToken.substring(0, 20) + '...' : 'null'
+                }
+            };
+            
+            // Analyze the response
+            if (presenceResponse.ok) {
+                result.analysis = {
+                    status: 'API_WORKING',
+                    message: 'Presence API call succeeded',
+                    presence_data: responseBody.presence || 'no presence field found',
+                    next_step: 'Check why fetchAgentStatuses fails differently'
+                };
+            } else if (presenceResponse.status === 401) {
+                result.analysis = {
+                    status: 'AUTHENTICATION_FAILED',
+                    message: 'Token authentication failed',
+                    likely_cause: 'Token expired, invalid, or insufficient permissions',
+                    next_step: 'Check token scopes and expiration'
+                };
+            } else if (presenceResponse.status === 403) {
+                result.analysis = {
+                    status: 'PERMISSION_DENIED',
+                    message: 'Token lacks permission for presence API',
+                    likely_cause: 'Token needs messaging scope or presence permissions',
+                    next_step: 'Check token scopes include presence access'
+                };
+            } else if (presenceResponse.status === 404) {
+                result.analysis = {
+                    status: 'USER_NOT_FOUND',
+                    message: 'User/presence not found',
+                    likely_cause: 'Invalid Elevate ID or user not in messaging system',
+                    next_step: 'Verify Elevate IDs are correct'
+                };
+            } else {
+                result.analysis = {
+                    status: 'API_ERROR',
+                    message: `API returned ${presenceResponse.status}`,
+                    response_body: responseBody,
+                    next_step: 'Check API documentation or contact Intermedia'
+                };
+            }
+            
+            res.json(result);
+            
+        } catch (fetchError) {
+            res.json({
+                success: false,
+                step: 'api_call',
+                test_user: {
+                    name: testUser.name,
+                    elevate_id: testUser.elevate_id
+                },
+                api_url: apiUrl,
+                error: fetchError.message,
+                token_available: !!messagingToken,
+                analysis: {
+                    status: 'NETWORK_ERROR',
+                    message: 'Failed to make API call',
+                    likely_cause: 'Network issue, invalid URL, or CORS problem',
+                    next_step: 'Check network connectivity and API endpoint'
+                }
+            });
+        }
+        
+    } catch (error) {
+        console.error('[Debug] Error in presence failure debug:', error);
+        res.status(500).json({
+            success: false,
+            step: 'debug_setup',
+            error: error.message
+        });
+    }
+});
+
+/**
  * Debug endpoint to check environment variables and compare with curl
  */
 router.get('/debug-env-vs-curl', async (req, res) => {
