@@ -2,6 +2,7 @@ require('dotenv').config(); // ✅ Loads environment variables from .env
 
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const apiRoutes = require('./routes/api');
 const app = express();
 
@@ -9,9 +10,13 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
 
 // Mount all API routes on /api
 app.use('/api', apiRoutes);
+
+// AUTHENTICATION ROUTES
+require('./routes/auth')(app);
 
 // Root route for quick test
 app.get('/', (req, res) => {
