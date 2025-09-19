@@ -6957,6 +6957,102 @@ router.post('/webhook/renew-subscription', async (req, res) => {
 });
 
 /**
+ * 🔧 FIX WEBHOOK: Create correct subscription with right event type
+ * POST /api/webhook/create-correct-subscription
+ */
+router.post('/webhook/create-correct-subscription', async (req, res) => {
+    try {
+        console.log('[WEBHOOK FIX] Creating CORRECT webhook subscription...');
+        
+        // Step 1: Get notifications token (same way you do it elsewhere)
+        const tokenResponse = await fetch('https://login.serverdata.net/user/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: process.env.INTERMEDIA_CLIENT_ID,
+                client_secret: process.env.INTERMEDIA_CLIENT_SECRET,
+                scope: 'api.service.notifications'
+            })
+        });
+        
+        if (!tokenResponse.ok) {
+            const errorText = await tokenResponse.text();
+            return res.json({
+                success: false,
+                error: `Token failed: ${tokenResponse.status} - ${errorText}`
+            });
+        }
+        
+        const tokenData = await tokenResponse.json();
+        console.log('[WEBHOOK FIX] ✅ Token obtained');
+        
+        // Step 2: Delete your current broken subscription
+        const oldSubscriptionId = 'a8c919bf-d1e5-45ca-8ebd-074786e69ada';
+        try {
+            const deleteResponse = await fetch(`https://api.elevate.services/notifications/v2/accounts/_me/subscriptions/${oldSubscriptionId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
+            });
+            console.log(`[WEBHOOK FIX] Old subscription deleted: ${deleteResponse.status}`);
+        } catch (e) {
+            console.log('[WEBHOOK FIX] Old subscription already gone');
+        }
+        
+        // Step 3: Create NEW subscription with CORRECT settings
+        const subscriptionPayload = {
+            "events": ["messaging.presence-control.changed"], // ✅ CORRECT event type
+            "ttl": "24:00:00",
+            "delivery": {
+                "transport": "webhook",
+                "uri": "https://intlxassetmgr-proxy.onrender.com/api/notifications" // ✅ CORRECT endpoint
+            }
+        };
+        
+        console.log('[WEBHOOK FIX] Creating subscription:', subscriptionPayload);
+        
+        const subscriptionResponse = await fetch('https://api.elevate.services/notifications/v2/accounts/_me/subscriptions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${tokenData.access_token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(subscriptionPayload)
+        });
+        
+        if (subscriptionResponse.ok) {
+            const subscriptionData = await subscriptionResponse.json();
+            console.log('[WEBHOOK FIX] ✅ SUCCESS! New subscription created:', subscriptionData);
+            
+            res.json({
+                success: true,
+                message: '🎉 WEBHOOK FIXED! New subscription created with correct settings',
+                old_subscription: oldSubscriptionId + ' (deleted)',
+                new_subscription: subscriptionData.id,
+                webhook_url: 'https://intlxassetmgr-proxy.onrender.com/api/notifications',
+                event_type: 'messaging.presence-control.changed',
+                test_instruction: 'Now change your presence status in Elevate!'
+            });
+            
+        } else {
+            const errorText = await subscriptionResponse.text();
+            res.json({
+                success: false,
+                error: `Subscription failed: ${subscriptionResponse.status} - ${errorText}`,
+                debug: subscriptionPayload
+            });
+        }
+        
+    } catch (error) {
+        console.error('[WEBHOOK FIX] Error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Test the notifications token
  * GET /api/webhook/test-notifications-token
  */
