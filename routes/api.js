@@ -1939,8 +1939,10 @@ function mapMessagingStatus(presenceState) {
     // Normalize input (handle spaces, hyphens, and case variations)
     const normalizedState = presenceState.toLowerCase()
         .replace(/\s+/g, '')           // Remove spaces
-        .replace(/-/g, '')             // Remove hyphens
+        .replace(/-/g, '')             // Remove hyphens  
         .replace(/_/g, '');            // Remove underscores
+    
+    console.log(`[Mapping] Input: "${presenceState}" -> Normalized: "${normalizedState}"`);
     
     switch (normalizedState) {
         // Available states
@@ -1949,40 +1951,41 @@ function mapMessagingStatus(presenceState) {
         case 'active':
         case 'ready':
         case 'agentavailable':
+            console.log(`[Mapping] Mapped to: Available`);
             return 'Available';
             
-        // On Call / Phone states (distinct from just "Busy")
+        // 🔧 ON CALL / PHONE STATES (This is the critical fix!)
+        case 'onphone':      // ← This should catch your "onphone" value
         case 'onacall':
-        case 'onphone':
         case 'oncall':
         case 'incall':
         case 'calling':
         case 'phone':
+            console.log(`[Mapping] Mapped to: On a Call`);
             return 'On a Call';
             
         case 'agentoncall':
         case 'agentphone':
+            console.log(`[Mapping] Mapped to: Agent On Call`);
             return 'Agent On Call';
             
         // Busy states (meetings, occupied, etc.)
         case 'busy':
         case 'agentbusy':
         case 'occupied':
+            console.log(`[Mapping] Mapped to: Busy`);
             return 'Busy';
             
         case 'inmeeting':
         case 'meeting':
         case 'conference':
+            console.log(`[Mapping] Mapped to: In Meeting`);
             return 'In Meeting';
-            
-        case 'screensharing':
-        case 'scrsharing':
-        case 'presenting':
-            return 'Screen Sharing';
             
         case 'dnd':
         case 'donotdisturb':
         case 'unavailable':
+            console.log(`[Mapping] Mapped to: Do Not Disturb`);
             return 'Do Not Disturb';
             
         // Away states
@@ -1990,30 +1993,25 @@ function mapMessagingStatus(presenceState) {
         case 'idle':
         case 'temporarilyaway':
         case 'brb':
+            console.log(`[Mapping] Mapped to: Away`);
             return 'Away';
             
         case 'onbreak':
         case 'break':
         case 'lunch':
+            console.log(`[Mapping] Mapped to: On Break`);
             return 'On Break';
             
-        case 'outsick':
-        case 'sick':
-            return 'Out Sick';
-            
-        case 'vacation':
-        case 'vacationing':
-        case 'holiday':
-            return 'On Vacation';
-            
-        case 'offwork':
+        // Offline states
         case 'offline':
         case 'invisible':
         case 'disconnected':
+        case 'offwork':
+            console.log(`[Mapping] Mapped to: Offline`);
             return 'Offline';
             
         default:
-            console.log(`[Mapping] Unknown presence state: "${presenceState}" -> normalized: "${normalizedState}"`);
+            console.log(`[Mapping] UNKNOWN STATE: "${presenceState}" -> normalized: "${normalizedState}" -> Defaulting to original`);
             // Return capitalized version of original if unknown
             return presenceState.charAt(0).toUpperCase() + presenceState.slice(1).toLowerCase();
     }
