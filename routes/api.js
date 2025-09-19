@@ -7064,68 +7064,20 @@ router.post('/webhook/presence', async (req, res) => {
             }
             
             // Process if we found data
-            if (userId && presence) {
-                console.log('[Webhook] 🔄 Processing presence update...');
-                console.log('[Webhook] User ID:', userId);
-                console.log('[Webhook] Presence:', presence);
-                
-                try {
-                    // Map the presence to a readable status
-                    let mappedStatus = 'Offline';
-                    const state = presence.toLowerCase();
-                    
-                    switch (state) {
-                        case 'available':
-                        case 'online':
-                        case 'active':
-                            mappedStatus = 'Available';
-                            break;
-                        case 'busy':
-                        case 'oncall':
-                        case 'dnd':
-                            mappedStatus = 'Busy';
-                            break;
-                        case 'away':
-                        case 'idle':
-                            mappedStatus = 'Away';
-                            break;
-                        default:
-                            mappedStatus = 'Offline';
-                    }
-                    
-                    console.log('[Webhook] Mapped status:', presence, '→', mappedStatus);
-                    
-                    // Create/update the user in cache
-                    const userRecord = {
-                        id: userId,
-                        name: `User ${userId}`,
-                        email: `${userId}@example.com`,
-                        status: mappedStatus,
-                        phoneStatus: mappedStatus,
-                        presenceStatus: mappedStatus,
-                        lastActivity: new Date().toISOString(),
-                        rawPresenceData: { 
-                            presence: presence, 
-                            updated: new Date().toISOString(),
-                            source: 'webhook'
-                        }
-                    };
-                    
-                    console.log('[Webhook] Creating user record:', JSON.stringify(userRecord, null, 2));
-                    
-                    // Add to cache
-                    intermediaCache.agentStatuses.set(userId, userRecord);
-                    intermediaCache.lastStatusUpdate = Date.now();
-                    
-                    console.log('[Webhook] ✅ Added to cache. New size:', intermediaCache.agentStatuses.size);
-                    console.log('[Webhook] ✅ Updated lastStatusUpdate to:', new Date(intermediaCache.lastStatusUpdate).toISOString());
-                    
-                    processed = true;
-                    
-                } catch (updateError) {
-                    console.error('[Webhook] ❌ Error updating cache:', updateError);
-                }
-            } else {
+if (userId && presence) {
+    console.log('[Webhook] 🔄 Processing presence update with real user lookup...');
+    console.log('[Webhook] User ID:', userId);
+    console.log('[Webhook] Presence:', presence);
+    
+    try {
+        // Use enhanced processing with real user lookup
+        await updatePresenceCacheWithRealUser(userId, presence);
+        processed = true;
+        
+    } catch (updateError) {
+        console.error('[Webhook] ❌ Error updating cache:', updateError);
+    }
+} else {
                 console.log('[Webhook] ⚠️ No userId/presence found in webhook data');
                 console.log('[Webhook] Available data:', body);
             }
