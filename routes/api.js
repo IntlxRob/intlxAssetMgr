@@ -1647,6 +1647,56 @@ router.get('/debug-auto-initialize', async (req, res) => {
     }
 });
 
+/**
+ * 🧪 DEBUG: Test the mapping function directly
+ * GET /api/debug-mapping-onphone
+ */
+router.get('/debug-mapping-onphone', (req, res) => {
+    try {
+        console.log('[Debug] Testing mapMessagingStatus function with "onphone"...');
+        
+        // Test the current mapping function
+        const testValues = [
+            'onphone',
+            'oncall', 
+            'onacall',
+            'incall',
+            'available',
+            'busy',
+            'away',
+            'offline'
+        ];
+        
+        const mappingResults = testValues.map(value => ({
+            input: value,
+            output: mapMessagingStatus(value),
+            normalized: value.toLowerCase().replace(/\s+/g, '').replace(/-/g, '').replace(/_/g, ''),
+            expected_for_onphone: value === 'onphone' ? 'On a Call' : 'varies'
+        }));
+        
+        res.json({
+            success: true,
+            message: 'Mapping function test results',
+            critical_test: {
+                input: 'onphone',
+                actual_output: mapMessagingStatus('onphone'),
+                expected_output: 'On a Call',
+                is_correct: mapMessagingStatus('onphone') === 'On a Call'
+            },
+            all_test_results: mappingResults,
+            diagnosis: mapMessagingStatus('onphone') === 'On a Call' ? 
+                'Mapping function is correct - issue elsewhere' :
+                'Mapping function is BROKEN - needs to be fixed'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            note: 'mapMessagingStatus function might not exist or has syntax error'
+        });
+    }
+});
 
 /**
  * 🧪 TEST: Debug what presence values you're actually receiving
