@@ -388,6 +388,23 @@ async function refreshCompaniesCache() {
     }
 }
 
+/**
+ * Filter agents to only show known users from your organization
+ */
+function filterKnownUsers(agents) {
+    if (!agents || !Array.isArray(agents)) {
+        return [];
+    }
+    
+    return agents.filter(agent => {
+        return agent && 
+               !agent.name.startsWith('Unknown User') && 
+               !agent.name.includes('Unknown User') &&
+               agent.email && 
+               agent.email.includes('@intlxsolutions.com');
+    });
+}
+
 // Helper functions to extract metadata from event descriptions
 function extractEventType(description) {
     if (!description) return 'meeting';
@@ -600,7 +617,15 @@ async function initializePresenceCache() {
         }
         
         // Fetch fresh agent data
-        const agents = await fetchAgentStatuses();
+        const allAgents = await fetchAgentStatuses();
+
+// Filter out unknown users
+const agents = allAgents.filter(agent => {
+    return !agent.name.startsWith('Unknown User') && 
+           !agent.name.includes('Unknown User') &&
+           agent.email && 
+           agent.email.includes('@intlxsolutions.com');
+});
         
         // Populate cache
         agents.forEach(agent => {
@@ -2340,7 +2365,8 @@ async function initializeDirectPresenceSubscriptions() {
         const subscriptionId = await createDirectPresenceSubscription();
         
         // Get initial presence data
-        const initialAgents = await fetchAgentStatuses();
+        const allInitialAgents = await fetchAgentStatuses();
+        const initialAgents = filterKnownUsers(allInitialAgents);
         
         presenceSubscriptionState.isInitialized = true;
         console.log('[Presence] ✅ Direct presence subscription system fully initialized');
@@ -2353,7 +2379,8 @@ async function initializeDirectPresenceSubscriptions() {
         
         // Fallback to polling if subscriptions fail
         console.log('[Presence] Falling back to polling mode');
-        return await fetchAgentStatuses();
+        const allAgents = await fetchAgentStatuses();
+        return filterKnownUsers(allAgents);
     }
 }
 
@@ -2540,7 +2567,8 @@ async function initializePresenceSubscriptions() {
         const subscriptionId = await subscribeToAllUsersPresence(hubId);
         
         // Step 3: Get initial presence data
-        const initialAgents = await fetchAgentStatuses();
+        const allInitialAgents = await fetchAgentStatuses();
+        const initialAgents = filterKnownUsers(allInitialAgents);
         
         presenceSubscriptionState.isInitialized = true;
         console.log('[Presence] ✅ Real-time presence system fully initialized');
@@ -2553,7 +2581,8 @@ async function initializePresenceSubscriptions() {
         
         // Fallback to polling if subscriptions fail
         console.log('[Presence] Falling back to polling mode');
-        return await fetchAgentStatuses();
+        const allAgents = await fetchAgentStatuses();
+        return filterKnownUsers(allAgents);
     }
 }
 
@@ -3016,7 +3045,13 @@ router.get('/debug-agent-status-detailed', async (req, res) => {
         
         // If no webhook cache, fetch fresh data
         console.log('[API] No webhook cache available, fetching fresh presence data...');
-        const agents = await fetchAgentStatuses();
+const allAgents = await fetchAgentStatuses();
+const agents = allAgents.filter(agent => {
+    return !agent.name.startsWith('Unknown User') && 
+           !agent.name.includes('Unknown User') &&
+           agent.email && 
+           agent.email.includes('@intlxsolutions.com');
+});
         
         return res.json({
             success: true,
@@ -3346,10 +3381,18 @@ router.get('/agent-status', async (req, res) => {
         
         // Return cached data
         if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0) {
-            const agents = Array.from(intermediaCache.agentStatuses.values()).map(agent => ({
-                ...agent,
-                dataSource: agent.dataSource || 'cache'
-            }));
+            const agents = Array.from(intermediaCache.agentStatuses.values())
+    .filter(agent => {
+        // Filter out unknown users
+        return !agent.name.startsWith('Unknown User') && 
+               !agent.name.includes('Unknown User') &&
+               agent.email && 
+               agent.email.includes('@intlxsolutions.com');
+    })
+    .map(agent => ({
+        ...agent,
+        dataSource: agent.dataSource || 'cache'
+    }));
             
             return res.json({
                 success: true,
@@ -3365,7 +3408,8 @@ router.get('/agent-status', async (req, res) => {
         
         // Fallback to fresh fetch
         console.log('[API] No cache available, fetching fresh data...');
-        const agents = await fetchAgentStatuses();
+        const allAgents = await fetchAgentStatuses();
+        const agents = filterKnownUsers(allAgents);
         
         return res.json({
             success: true,
@@ -4367,7 +4411,8 @@ router.post('/agent-status/refresh', async (req, res) => {
         intermediaCache.agentStatuses.clear();
         intermediaCache.lastStatusUpdate = 0;
         
-        const agents = await fetchAgentStatuses();
+        const allAgents = await fetchAgentStatuses();
+        const agents = filterKnownUsers(allAgents);
         
         // Update cache
         const now = Date.now();
@@ -4448,7 +4493,8 @@ router.post('/agents-status-batch', async (req, res) => {
         console.log(`[API] Fetching status for ${emails.length} agents via batch endpoint`);
         
         // Get all current agents
-        const agents = await fetchAgentStatuses();
+        const allAgents = await fetchAgentStatuses();
+        const agents = filterKnownUsers(allAgents);
         
         // Filter by requested emails or return all if no specific emails match
         const requestedAgents = agents.filter(agent => 
@@ -8280,8 +8326,14 @@ router.get('/reset-and-initialize', async (req, res) => {
         
         // Step 2: Get current presence for ALL users
         console.log('[Reset] 🔄 Fetching current presence for all users...');
-        const currentAgents = await fetchAgentStatuses();
-        console.log(`[Reset] ✅ Fetched ${currentAgents.length} agents with current presence`);
+const allCurrentAgents = await fetchAgentStatuses();
+const currentAgents = allCurrentAgents.filter(agent => {
+    return !agent.name.startsWith('Unknown User') && 
+           !agent.name.includes('Unknown User') &&
+           agent.email && 
+           agent.email.includes('@intlxsolutions.com');
+});
+console.log(`[Reset] ✅ Fetched ${currentAgents.length} known agents (filtered from ${allCurrentAgents.length} total)`);
         
         // Step 3: Populate cache with all users
         currentAgents.forEach(agent => {
