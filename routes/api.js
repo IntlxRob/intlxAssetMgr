@@ -7275,6 +7275,156 @@ router.get('/webhook/initialize-state', (req, res) => {
     }
 });
 
+// Add this function to routes/api.js to map Elevate IDs to real user data
+
+/**
+ * Get real user details from Elevate ID by checking existing agent data
+ */
+async function getRealUserFromElevateId(elevateId) {
+    try {
+        // First check if we have this user in our existing agent cache
+        if (intermediaCache.agentStatuses) {
+            const existingUser = intermediaCache.agentStatuses.get(elevateId);
+            if (existingUser && existingUser.name !== `User ${elevateId}`) {
+                console.log(`[Webhook] Found existing user in cache: ${existingUser.name}`);
+                return existingUser;
+            }
+        }
+        
+        // If not in cache, fetch fresh agent data to find this user
+        console.log(`[Webhook] Looking up user details for Elevate ID: ${elevateId}`);
+        const allAgents = await fetchAgentStatuses();
+        
+        const matchingAgent = allAgents.find(agent => agent.id === elevateId);
+        if (matchingAgent) {
+            console.log(`[Webhook] ✅ Found real user: ${matchingAgent.name} (${matchingAgent.email})`);
+            return matchingAgent;
+        }
+        
+        console.log(`[Webhook] ⚠️ Could not find user details for Elevate ID: ${elevateId}`);
+        return null;
+        
+    } catch (error) {
+        console.error(`[Webhook] Error looking up user ${elevateId}:`, error.message);
+        return null;
+    }
+}
+
+/**
+ * Enhanced updatePresenceCache with real user lookup
+ */
+async function updatePresenceCacheWithRealUser(userId, presenceState) {
+    try {
+        if (!intermediaCache.agentStatuses) {
+            intermediaCache.agentStatuses = new Map();
+        }
+        
+        console.log(`[Webhook] Processing presence update: ${userId} -> ${presenceState}`);
+        
+        // Try to get real user details
+        const realUser = await getRealUserFromElevateId(userId);
+        const mappedStatus = mapMessagingStatus(presenceState);
+        
+        let userRecord;
+        
+        if (realUser) {
+            // Update existing real user with new presence
+            userRecord = {
+                ...realUser,
+                status: mappedStatus,
+                phoneStatus: mappedStatus,
+                presenceStatus: mappedStatus,
+                lastActivity: new Date().toISOString(),
+                rawPresenceData: { 
+                    presence: presenceState, 
+                    updated: new Date().toISOString(),
+                    source: 'webhook_realtime'
+                }
+            };
+            
+            console.log(`[Webhook] ✅ Updated real user: ${realUser.name} -> ${mappedStatus}`);
+            
+        } else {
+            // Create generic user record if we can't find real details
+            userRecord = {
+                id: userId,
+                name: `User ${userId}`,
+                email: `${userId}@example.com`,
+                status: mappedStatus,
+                phoneStatus: mappedStatus,
+                presenceStatus: mappedStatus,
+                lastActivity: new Date().toISOString(),
+                rawPresenceData: { 
+                    presence: presenceState, 
+                    updated: new Date().toISOString(),
+                    source: 'webhook'
+                }
+            };
+            
+            console.log(`[Webhook] ⚠️ Using generic user record for unknown ID: ${userId}`);
+        }
+        
+        intermediaCache.agentStatuses.set(userId, userRecord);
+        intermediaCache.lastStatusUpdate = Date.now();
+        
+        console.log(`[Webhook] Cache updated. Size: ${intermediaCache.agentStatuses.size}`);
+        
+    } catch (error) {
+        console.error('[Webhook] Error updating presence cache:', error);
+    }
+}
+
+/**
+ * Map presence states to readable status
+ */
+function mapMessagingStatus(presenceState) {
+    if (!presenceState) return 'Offline';
+    
+    const state = presenceState.toLowerCase();
+    
+    switch (state) {
+        case 'available':
+        case 'online':
+        case 'active':
+            return 'Available';
+        case 'busy':
+        case 'oncall':
+        case 'on-call':
+        case 'dnd':
+        case 'do-not-disturb':
+            return 'Busy';
+        case 'away':
+        case 'idle':
+        case 'temporarily-away':
+        case 'temporarilyaway':
+            return 'Away';
+        case 'offline':
+        case 'invisible':
+        case 'disconnected':
+        default:
+            return 'Offline';
+    }
+}
+
+// REPLACE your existing webhook processing section with this enhanced version
+// Find the line where you process userId and presence, and replace with:
+
+// Process if we found data
+if (userId && presence) {
+    console.log('[Webhook] 🔄 Processing presence update with real user lookup...');
+    console.log('[Webhook] User ID:', userId);
+    console.log('[Webhook] Presence:', presence);
+    
+    try {
+        // Use enhanced processing with real user lookup
+        await updatePresenceCacheWithRealUser(userId, presence);
+        processed = true;
+        
+    } catch (updateError) {
+        console.error('[Webhook] ❌ Error updating cache:', updateError);
+    }
+}
+
 // ============================================
 // END OF WEBHOOK ENDPOINTS
 // ============================================
