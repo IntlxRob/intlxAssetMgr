@@ -2704,19 +2704,98 @@ function mapMessagingStatus(presenceState) {
 // ============================================
 
 /**
- * UPDATED: Agent status endpoint with subscription support
- * GET /api/agent-status
+ * 🚀 SEAMLESS AUTO-INITIALIZE: Enhanced agent status endpoint
+ * REPLACE your existing router.get('/agent-status') with this version
  */
 router.get('/agent-status', async (req, res) => {
     try {
-        console.log('[API] Agent status requested');
+        console.log('[API] Agent status requested (auto-initialize enabled)');
         
-        // PRIORITY 1: Check if we have webhook cache data (regardless of subscription state)
+        // PRIORITY 1: Check if we have webhook cache data
         if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0) {
-            console.log('[API] ✅ Using webhook cache data');
+            console.log('[API] ✅ Using existing webhook cache data');
             console.log('[API] Cache size:', intermediaCache.agentStatuses.size);
             
-            const agents = Array.from(intermediaCache.agentStatuses.values());
+            const agents = Array.from(intermediaCache.agentStatuses.values()).map(agent => ({
+                ...agent,
+                dataSource: agent.dataSource || 'webhook_cache'
+            }));
+            
+            return res.json({
+                success: true,
+                agents: agents,
+                cached: true,
+                source: 'hybrid_cache',
+                cache_size: intermediaCache.agentStatuses.size,
+                lastUpdated: intermediaCache.lastStatusUpdate ? 
+                    new Date(intermediaCache.lastStatusUpdate).toISOString() : null,
+                realtimeAgents: agents.filter(a => a.dataSource === 'webhook_realtime').length,
+                totalAgents: agents.length,
+                note: 'Using cached data with real-time webhook updates'
+            });
+        }
+        
+        // PRIORITY 2: Auto-initialize cache if webhooks are active but no data yet
+        if (presenceSubscriptionState && presenceSubscriptionState.subscriptionId) {
+            console.log('[API] 🔄 Webhooks active but no cache data - auto-initializing...');
+            
+            try {
+                // Get current presence data for ALL users
+                console.log('[API] Fetching current presence data for all users...');
+                const currentAgents = await fetchAgentStatuses();
+                console.log(`[API] ✅ Fetched current data for ${currentAgents.length} agents`);
+                
+                // Initialize cache
+                if (!intermediaCache.agentStatuses) {
+                    intermediaCache.agentStatuses = new Map();
+                }
+                
+                // Populate cache with current data
+                currentAgents.forEach(agent => {
+                    const agentWithSource = {
+                        ...agent,
+                        dataSource: 'auto_initialized',
+                        initializedAt: new Date().toISOString()
+                    };
+                    intermediaCache.agentStatuses.set(agent.id, agentWithSource);
+                });
+                
+                intermediaCache.lastStatusUpdate = Date.now();
+                
+                console.log(`[API] 🎉 Auto-initialized cache with ${currentAgents.length} agents`);
+                console.log(`[API] Webhook subscription ${presenceSubscriptionState.subscriptionId} will now update these users in real-time`);
+                
+                return res.json({
+                    success: true,
+                    agents: currentAgents.map(agent => ({ 
+                        ...agent, 
+                        dataSource: 'auto_initialized' 
+                    })),
+                    cached: true,
+                    source: 'auto_initialized',
+                    cache_size: currentAgents.length,
+                    lastUpdated: new Date().toISOString(),
+                    message: '🎉 Cache auto-initialized! Users now visible with current presence. Webhooks will provide real-time updates.',
+                    webhook_subscription: presenceSubscriptionState.subscriptionId,
+                    realtimeAgents: 0,
+                    totalAgents: currentAgents.length
+                });
+                
+            } catch (initError) {
+                console.error('[API] ❌ Auto-initialization failed:', initError);
+                console.log('[API] Falling back to regular API polling');
+                // Fall through to regular API polling
+            }
+        }
+        
+        // PRIORITY 3: Check if webhooks exist but subscription state is missing
+        if (intermediaCache.agentStatuses && intermediaCache.agentStatuses.size > 0 && !presenceSubscriptionState?.subscriptionId) {
+            console.log('[API] ⚠️ Found webhook cache but missing subscription state');
+            
+            const agents = Array.from(intermediaCache.agentStatuses.values()).map(agent => ({
+                ...agent,
+                dataSource: agent.dataSource || 'webhook_cache'
+            }));
             
             return res.json({
                 success: true,
@@ -2726,40 +2805,34 @@ router.get('/agent-status', async (req, res) => {
                 cache_size: intermediaCache.agentStatuses.size,
                 lastUpdated: intermediaCache.lastStatusUpdate ? 
                     new Date(intermediaCache.lastStatusUpdate).toISOString() : null,
-                subscription_note: presenceSubscriptionState?.isInitialized ? 
-                    'Subscription state OK' : 'Using cache despite missing subscription state'
+                realtimeAgents: agents.filter(a => a.dataSource === 'webhook_realtime').length,
+                totalAgents: agents.length,
+                note: 'Using webhook cache despite missing subscription state'
             });
         }
         
-        // PRIORITY 2: Check if we have valid webhook subscription but no cache data yet
-        if (presenceSubscriptionState?.isInitialized && presenceSubscriptionState?.subscriptionId) {
-            console.log('[API] ⚠️ Webhook subscription active but no cache data yet');
-            console.log('[API] Subscription ID:', presenceSubscriptionState.subscriptionId);
-            console.log('[API] Falling back to API polling while waiting for webhook data...');
-        } else {
-            console.log('[API] ⚠️ No webhook subscription state found');
-            console.log('[API] Falling back to API polling...');
-        }
-        
-        // FALLBACK: Use API polling
-        console.log('[API] Fetching fresh presence data via API polling...');
+        // FALLBACK: Regular API polling (no webhooks or initialization failed)
+        console.log('[API] No webhooks or cache - using API polling fallback...');
         const agents = await fetchAgentStatuses();
         
         return res.json({
             success: true,
-            agents: agents,
+            agents: agents.map(agent => ({ ...agent, dataSource: 'api_polling' })),
             cached: false,
             source: 'api_polling',
             cache_size: 0,
             lastUpdated: new Date().toISOString(),
-            note: 'Using API polling - webhook cache not available'
+            realtimeAgents: 0,
+            totalAgents: agents.length,
+            note: 'Using API polling - no webhook cache available. Consider running webhook setup.'
         });
         
     } catch (error) {
-        console.error('[API] Error getting agent status:', error);
+        console.error('[API] Error in agent-status endpoint:', error);
         res.status(500).json({
             success: false,
-            error: error.message
+            error: error.message,
+            note: 'Agent status endpoint failed - check logs for details'
         });
     }
 });
