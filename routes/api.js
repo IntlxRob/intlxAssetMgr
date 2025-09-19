@@ -6989,7 +6989,7 @@ router.get('/webhook/test-notifications-token', async (req, res) => {
  * POST /api/webhook/presence
  * Also handles webhook verification during subscription creation
  */
-router.post('/webhook/presence', (req, res) => {
+router.post('/webhook/presence', async (req, res) => {
     try {
         console.log('[Webhook] ===== WEBHOOK RECEIVED =====');
         console.log('[Webhook] Method:', req.method);
