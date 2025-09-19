@@ -3253,80 +3253,6 @@ function processMessagingPresenceData(data, endpoint) {
 }
 
 // ============================================
-// SINGLE DETAILED PRESENCE MAPPING FUNCTION
-// ============================================
-
-/**
- * MASTER: Map Intermedia presence states to human-readable formats
- * This is the ONLY mapping function - replace all others with this
- */
-function mapMessagingStatus(presenceState) {
-    if (!presenceState) return 'Offline';
-    
-    // Normalize input (handle spaces and case variations)
-    const normalizedState = presenceState.toLowerCase().replace(/\s+/g, '');
-    
-    switch (normalizedState) {
-        // Available states
-        case 'online':
-            return 'Online';
-        case 'agentavailable':
-        case 'available':
-        case 'ready':
-        case 'active':
-            return 'Available';
-            
-        // Busy states
-        case 'busy':
-            return 'Busy';
-        case 'agentbusy':
-            return 'Agent Busy';
-        case 'onphone':
-            return 'On Phone';
-        case 'inmeeting':
-        case 'in_meeting':
-        case 'meeting':
-            return 'In Meeting';
-        case 'scrsharing':
-            return 'Screen Sharing';
-        case 'agentoncall':
-            return 'Agent On Call';
-        case 'occupied':
-            return 'Occupied';
-            
-        // Away states
-        case 'away':
-            return 'Away';
-        case 'onbreak':
-            return 'On Break';
-        case 'dnd':
-        case 'donotdisturb':
-            return 'Do Not Disturb';
-        case 'outsick':
-            return 'Out Sick';
-        case 'vacationing':
-            return 'On Vacation';
-        case 'offwork':
-            return 'Off Work';
-        case 'idle':
-            return 'Idle';
-        case 'absent':
-        case 'temporarilyaway':
-            return 'Temporarily Away';
-            
-        // Offline
-        case 'offline':
-        case 'invisible':
-        case 'disconnected':
-            return 'Offline';
-            
-        default:
-            console.log(`[Mapping] Unknown presence state: "${presenceState}"`);
-            return presenceState; // Return original if unknown
-    }
-}
-
-// ============================================
 // UPDATE PRESENCE CACHE WITH DEBUG LOGGING
 // ============================================
 
@@ -8229,38 +8155,6 @@ async function updatePresenceCacheWithRealUser(userId, presenceState) {
         
     } catch (error) {
         console.error('[Webhook] Error updating presence cache:', error);
-    }
-}
-
-/**
- * Map presence states to readable status
- */
-function mapMessagingStatus(presenceState) {
-    if (!presenceState) return 'Offline';
-    
-    const state = presenceState.toLowerCase();
-    
-    switch (state) {
-        case 'available':
-        case 'online':
-        case 'active':
-            return 'Available';
-        case 'busy':
-        case 'oncall':
-        case 'on-call':
-        case 'dnd':
-        case 'do-not-disturb':
-            return 'Busy';
-        case 'away':
-        case 'idle':
-        case 'temporarily-away':
-        case 'temporarilyaway':
-            return 'Away';
-        case 'offline':
-        case 'invisible':
-        case 'disconnected':
-        default:
-            return 'Offline';
     }
 }
 
