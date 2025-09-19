@@ -16,7 +16,7 @@ app.use(cookieParser());
 app.use('/api', apiRoutes);
 
 // AUTHENTICATION ROUTES
-require('./routes/auth')(app);
+// require('./routes/auth')(app);
 
 // Root route for quick test
 app.get('/', (req, res) => {
