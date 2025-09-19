@@ -1270,6 +1270,139 @@ router.get('/debug-presence-endpoints', async (req, res) => {
 });
 
 /**
+ * 🔍 COMPARE: Debug vs fetchAgentStatuses to find discrepancy  
+ * GET /api/compare-presence-methods
+ */
+router.get('/compare-presence-methods', async (req, res) => {
+    try {
+        console.log('[Compare] Testing both methods side by side...');
+        
+        // Method 1: Direct API calls (like debug)
+        const zendeskUsers = await getZendeskUsersWithElevateIds();
+        const testUsers = zendeskUsers.slice(0, 3); // Test 3 users
+        const messagingToken = await getIntermediaToken();
+        
+        console.log('[Compare] Testing direct API calls...');
+        const directResults = [];
+        
+        for (const user of testUsers) {
+            try {
+                const presenceResponse = await fetch(`https://api.elevate.services/messaging/v1/presences/${user.elevate_id}`, {
+                    headers: {
+                        'Authorization': `Bearer ${messagingToken}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (presenceResponse.ok) {
+                    const presenceData = await presenceResponse.json();
+                    directResults.push({
+                        user: user.name,
+                        id: user.elevate_id,
+                        method: 'direct_api',
+                        raw_presence: presenceData.presence,
+                        mapped_status: mapMessagingStatus(presenceData.presence),
+                        success: true
+                    });
+                } else {
+                    directResults.push({
+                        user: user.name,
+                        id: user.elevate_id,
+                        method: 'direct_api',
+                        success: false,
+                        error: await presenceResponse.text()
+                    });
+                }
+            } catch (error) {
+                directResults.push({
+                    user: user.name,
+                    id: user.elevate_id,
+                    method: 'direct_api',
+                    success: false,
+                    error: error.message
+                });
+            }
+        }
+        
+        // Method 2: Using fetchAgentStatuses (current method)
+        console.log('[Compare] Testing fetchAgentStatuses...');
+        const fetchResults = await fetchAgentStatuses();
+        
+        // Filter to same test users for comparison
+        const filteredFetchResults = fetchResults
+            .filter(agent => testUsers.some(u => u.elevate_id === agent.id))
+            .map(agent => ({
+                user: agent.name,
+                id: agent.id,
+                method: 'fetchAgentStatuses',
+                mapped_status: agent.status,
+                success: true,
+                has_presence_data: !!agent.rawPresenceData
+            }));
+        
+        // Compare results
+        const comparison = testUsers.map(user => {
+            const directResult = directResults.find(r => r.id === user.elevate_id);
+            const fetchResult = filteredFetchResults.find(r => r.id === user.elevate_id);
+            
+            return {
+                user: user.name,
+                elevate_id: user.elevate_id,
+                direct_api: {
+                    success: directResult?.success,
+                    raw_presence: directResult?.raw_presence,
+                    mapped_status: directResult?.mapped_status
+                },
+                fetchAgentStatuses: {
+                    success: fetchResult?.success,
+                    mapped_status: fetchResult?.mapped_status,
+                    has_presence_data: fetchResult?.has_presence_data
+                },
+                match: directResult?.mapped_status === fetchResult?.mapped_status,
+                discrepancy: directResult?.mapped_status !== fetchResult?.mapped_status ? {
+                    direct_shows: directResult?.mapped_status,
+                    fetch_shows: fetchResult?.mapped_status,
+                    issue: 'Methods return different results'
+                } : null
+            };
+        });
+        
+        const discrepancies = comparison.filter(c => !c.match);
+        
+        res.json({
+            success: true,
+            message: 'Comparison of presence detection methods',
+            summary: {
+                users_tested: testUsers.length,
+                methods_match: discrepancies.length === 0,
+                discrepancies_found: discrepancies.length
+            },
+            detailed_comparison: comparison,
+            analysis: discrepancies.length === 0 ? 
+                'Both methods return identical results - issue might be timing or user state' :
+                'Methods return different results - fetchAgentStatuses has a processing issue',
+            discrepancies: discrepancies.length > 0 ? discrepancies : undefined,
+            recommendations: discrepancies.length > 0 ? [
+                'Fix fetchAgentStatuses to match direct API behavior',
+                'Check for error handling differences',
+                'Verify token usage is identical'
+            ] : [
+                'Methods are consistent - users may genuinely be offline initially',
+                'Real-time webhooks working correctly shows system is healthy',
+                'Consider if this is expected behavior'
+            ]
+        });
+        
+    } catch (error) {
+        console.error('[Compare] Error in comparison:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Debug endpoint to check environment variables and compare with curl
  */
 router.get('/debug-env-vs-curl', async (req, res) => {
