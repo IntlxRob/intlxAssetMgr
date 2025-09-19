@@ -1772,43 +1772,153 @@ async function getZendeskUsersWithElevateIds() {
 function mapMessagingStatus(presenceState) {
     if (!presenceState) return 'Offline';
     
-    // Normalize input (handle spaces and case variations)
-    const normalizedState = presenceState.toLowerCase().replace(/\s+/g, '');
+    // Normalize input (handle spaces, hyphens, and case variations)
+    const normalizedState = presenceState.toLowerCase()
+        .replace(/\s+/g, '')           // Remove spaces
+        .replace(/-/g, '')             // Remove hyphens
+        .replace(/_/g, '');            // Remove underscores
     
     switch (normalizedState) {
+        // Available states
+        case 'available':
         case 'online':
-            return 'Online';
+        case 'active':
+        case 'ready':
         case 'agentavailable':
             return 'Available';
-        case 'busy':
-            return 'Busy';
-        case 'agentbusy':
-            return 'Agent Busy';
+            
+        // On Call / Phone states (distinct from just "Busy")
+        case 'onacall':
         case 'onphone':
-            return 'On Phone';
-        case 'inmeeting':
-            return 'In Meeting';
-        case 'scrsharing':
-            return 'Screen Sharing';
+        case 'oncall':
+        case 'incall':
+        case 'calling':
+        case 'phone':
+            return 'On a Call';
+            
         case 'agentoncall':
+        case 'agentphone':
             return 'Agent On Call';
-        case 'away':
-            return 'Away';
-        case 'onbreak':
-            return 'On Break';
+            
+        // Busy states (meetings, occupied, etc.)
+        case 'busy':
+        case 'agentbusy':
+        case 'occupied':
+            return 'Busy';
+            
+        case 'inmeeting':
+        case 'meeting':
+        case 'conference':
+            return 'In Meeting';
+            
+        case 'screensharing':
+        case 'scrsharing':
+        case 'presenting':
+            return 'Screen Sharing';
+            
         case 'dnd':
+        case 'donotdisturb':
+        case 'unavailable':
             return 'Do Not Disturb';
+            
+        // Away states
+        case 'away':
+        case 'idle':
+        case 'temporarilyaway':
+        case 'brb':
+            return 'Away';
+            
+        case 'onbreak':
+        case 'break':
+        case 'lunch':
+            return 'On Break';
+            
         case 'outsick':
+        case 'sick':
             return 'Out Sick';
+            
+        case 'vacation':
         case 'vacationing':
+        case 'holiday':
             return 'On Vacation';
+            
         case 'offwork':
-            return 'Off Work';
         case 'offline':
+        case 'invisible':
+        case 'disconnected':
             return 'Offline';
+            
         default:
-            console.log(`[Mapping] Unknown presence state: "${presenceState}"`);
-            return presenceState; // Return original if unknown
+            console.log(`[Mapping] Unknown presence state: "${presenceState}" -> normalized: "${normalizedState}"`);
+            // Return capitalized version of original if unknown
+            return presenceState.charAt(0).toUpperCase() + presenceState.slice(1).toLowerCase();
+    }
+}
+
+/**
+ * 🎨 ENHANCED: Get status colors for UI (including "On a Call")
+ * ADD this function for better UI styling
+ */
+function getStatusColorInfo(status) {
+    const normalizedStatus = status?.toLowerCase() || '';
+    
+    switch (normalizedStatus) {
+        case 'available':
+        case 'online':
+        case 'active':
+            return { 
+                bg: '#E8F5E8', 
+                color: '#2E7D0F', 
+                icon: '●', 
+                label: status 
+            };
+            
+        case 'on a call':
+        case 'agent on call':
+            return { 
+                bg: '#E8F0FF', 
+                color: '#1B5FBF', 
+                icon: '📞', 
+                label: status 
+            };
+            
+        case 'busy':
+        case 'do not disturb':
+            return { 
+                bg: '#FBEAEA', 
+                color: '#CC3340', 
+                icon: '●', 
+                label: status 
+            };
+            
+        case 'in meeting':
+        case 'screen sharing':
+            return { 
+                bg: '#FFF4E6', 
+                color: '#B54708', 
+                icon: '🎥', 
+                label: status 
+            };
+            
+        case 'away':
+        case 'on break':
+        case 'out sick':
+        case 'on vacation':
+            return { 
+                bg: '#FFF4CC', 
+                color: '#B54708', 
+                icon: '●', 
+                label: status 
+            };
+            
+        case 'offline':
+        default:
+            return { 
+                bg: '#F8F9FA', 
+                color: '#68737D', 
+                icon: '○', 
+                label: status || 'Offline' 
+            };
     }
 }
 
@@ -2256,6 +2366,94 @@ router.get('/debug-address-book-auth', async (req, res) => {
             tokenPreview: global.addressBookToken ? global.addressBookToken.substring(0, 20) + '...' : null,
             message: isValid ? 'Address book token is valid' : 'Address book token is invalid or expired',
             suggestion: isValid ? 'Token is working' : 'Re-authenticate via /api/auth/serverdata/login'
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+**
+ * 🧪 TEST: Debug what presence values you're actually receiving
+ * GET /api/debug-presence-values
+ */
+router.get('/debug-presence-values', async (req, res) => {
+    try {
+        console.log('[Debug] Checking what presence values are actually received...');
+        
+        // Get current cached data to see what presence states exist
+        const cachedUsers = intermediaCache.agentStatuses ? 
+            Array.from(intermediaCache.agentStatuses.values()) : [];
+            
+        // Extract unique presence values
+        const presenceValues = new Set();
+        const presenceSamples = [];
+        
+        cachedUsers.forEach(user => {
+            if (user.rawPresenceData?.presence) {
+                const rawPresence = user.rawPresenceData.presence;
+                presenceValues.add(rawPresence);
+                
+                presenceSamples.push({
+                    user: user.name,
+                    raw_presence: rawPresence,
+                    mapped_status: mapMessagingStatus(rawPresence),
+                    source: user.dataSource || 'unknown'
+                });
+            }
+        });
+        
+        // Get a few fresh API calls to see current values
+        const zendeskUsers = await getZendeskUsersWithElevateIds();
+        const testUsers = zendeskUsers.slice(0, 3);
+        const messagingToken = await getIntermediaToken();
+        
+        const livePresenceValues = [];
+        
+        for (const user of testUsers) {
+            try {
+                const response = await fetch(`https://api.elevate.services/messaging/v1/presence/accounts/_me/users/${user.elevate_id}`, {
+                    headers: {
+                        'Authorization': `Bearer ${messagingToken}`,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.presence) {
+                        presenceValues.add(data.presence);
+                        
+                        livePresenceValues.push({
+                            user: user.name,
+                            raw_presence: data.presence,
+                            mapped_status: mapMessagingStatus(data.presence)
+                        });
+                    }
+                }
+            } catch (error) {
+                // Skip errors
+            }
+        }
+        
+        res.json({
+            success: true,
+            message: 'Presence values analysis',
+            summary: {
+                unique_presence_values: Array.from(presenceValues).sort(),
+                total_cached_users: cachedUsers.length,
+                users_with_presence_data: presenceSamples.length
+            },
+            cached_presence_samples: presenceSamples.slice(0, 10),
+            live_api_samples: livePresenceValues,
+            mapping_test: Array.from(presenceValues).map(value => ({
+                raw_value: value,
+                mapped_to: mapMessagingStatus(value)
+            })),
+            question: 'Do you see any presence values that should map to "On a Call"?'
         });
         
     } catch (error) {
