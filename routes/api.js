@@ -1573,6 +1573,82 @@ router.get('/debug-presence-failure', async (req, res) => {
 });
 
 /**
+ * 🔧 ENHANCED: Auto-initialize check endpoint
+ * GET /api/debug-auto-initialize
+ */
+router.get('/debug-auto-initialize', async (req, res) => {
+    try {
+        console.log('[Debug] Checking auto-initialize status...');
+        
+        const cacheSize = intermediaCache.agentStatuses ? intermediaCache.agentStatuses.size : 0;
+        const cachedUsers = cacheSize > 0 ? Array.from(intermediaCache.agentStatuses.values()) : [];
+        
+        // Check what types of users we have
+        const userSources = {};
+        const sampleUsers = [];
+        
+        cachedUsers.forEach(user => {
+            const source = user.dataSource || user.source || 'unknown';
+            userSources[source] = (userSources[source] || 0) + 1;
+            
+            if (sampleUsers.length < 5) {
+                sampleUsers.push({
+                    name: user.name,
+                    id: user.id,
+                    status: user.status,
+                    source: source,
+                    has_real_name: !user.name.startsWith('User ') && !user.name.startsWith('Unknown User')
+                });
+            }
+        });
+        
+        const analysis = {
+            cache_size: cacheSize,
+            user_sources: userSources,
+            issues_detected: [],
+            recommendations: []
+        };
+        
+        // Analyze issues
+        if (cacheSize === 0) {
+            analysis.issues_detected.push('No users in cache');
+            analysis.recommendations.push('Run /api/reset-and-initialize');
+        }
+        
+        if (userSources.webhook_realtime && !userSources.auto_initialized) {
+            analysis.issues_detected.push('Only webhook users, no initial population');
+            analysis.recommendations.push('Auto-initialize did not run - run /api/reset-and-initialize');
+        }
+        
+        const genericUsers = cachedUsers.filter(u => 
+            u.name.startsWith('User ') || u.name.startsWith('Unknown User')
+        ).length;
+        
+        if (genericUsers > 0) {
+            analysis.issues_detected.push(`${genericUsers} users have generic names (User ID instead of real names)`);
+            analysis.recommendations.push('Webhook processing needs to lookup real user data');
+        }
+        
+        res.json({
+            success: true,
+            message: 'Auto-initialize debug analysis',
+            analysis: analysis,
+            sample_users: sampleUsers,
+            next_steps: analysis.recommendations.length > 0 ? 
+                analysis.recommendations : 
+                ['System appears healthy - all users have real names and proper initialization']
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+
+/**
  * 🧪 TEST: Debug what presence values you're actually receiving
  * GET /api/debug-presence-values
  */
@@ -8140,10 +8216,7 @@ function mapMessagingStatus(presenceState) {
     }
 }
 
-/**
- * 🔧 FIX 2: Safe cache update that preserves existing users
- */
-function updatePresenceCacheSafely(userId, presenceState) {
+async function updatePresenceCacheSafely(userId, presenceState) {
     try {
         // Ensure cache exists
         if (!intermediaCache.agentStatuses) {
@@ -8156,7 +8229,7 @@ function updatePresenceCacheSafely(userId, presenceState) {
         if (existingAgent) {
             // ✅ UPDATE EXISTING USER - preserve all data, just update status
             const updatedAgent = {
-                ...existingAgent,                    // Keep all existing data
+                ...existingAgent,                    // Keep ALL existing data (name, email, etc.)
                 status: mappedStatus,                // Update status
                 phoneStatus: mappedStatus,           // Update phone status  
                 presenceStatus: mappedStatus,        // Update presence status
@@ -8174,12 +8247,49 @@ function updatePresenceCacheSafely(userId, presenceState) {
             console.log(`[Cache] ✅ Updated existing user ${existingAgent.name || userId}: ${presenceState} -> ${mappedStatus}`);
             
         } else {
-            // ✅ ADD NEW USER - but preserve existing users in cache
-            console.log(`[Cache] ⚠️ Unknown user ${userId} - adding with basic info`);
+            // ✅ NEW USER - Try to find real user details before adding generic user
+            console.log(`[Cache] 🔍 Unknown user ${userId} - looking up real details...`);
             
-            const newUserRecord = {
+            let realUserData = null;
+            
+            try {
+                // Try to find real user details from Zendesk users
+                const zendeskUsers = await getZendeskUsersWithElevateIds();
+                const matchingUser = zendeskUsers.find(user => user.elevate_id === userId);
+                
+                if (matchingUser) {
+                    console.log(`[Cache] ✅ Found real user data for ${matchingUser.name}`);
+                    realUserData = matchingUser;
+                }
+            } catch (lookupError) {
+                console.log(`[Cache] ⚠️ User lookup failed: ${lookupError.message}`);
+            }
+            
+            // Create user record with real data if found, or generic data as fallback
+            const newUserRecord = realUserData ? {
                 id: userId,
-                name: `User ${userId}`,
+                name: realUserData.name,                     // ✅ Real name
+                email: realUserData.email,                   // ✅ Real email
+                status: mappedStatus,
+                phoneStatus: mappedStatus,
+                presenceStatus: mappedStatus,
+                extension: 'N/A',
+                phone: 'Unknown',
+                onCall: false,
+                lastActivity: new Date().toISOString(),
+                source: 'zendesk_elevate_id',
+                dataSource: 'webhook_realtime',
+                company: 'Intlx Solutions',
+                zendeskUserId: realUserData.zendesk_user_id,
+                rawPresenceData: { 
+                    presence: presenceState, 
+                    updated: new Date().toISOString(),
+                    source: 'webhook'
+                }
+            } : {
+                // Fallback if user lookup fails
+                id: userId,
+                name: `Unknown User (${userId.substring(0, 8)})`,  // ✅ Shorter, cleaner fallback
                 email: `${userId}@unknown.com`,
                 status: mappedStatus,
                 phoneStatus: mappedStatus,
@@ -8200,7 +8310,7 @@ function updatePresenceCacheSafely(userId, presenceState) {
             
             // ✅ CRITICAL: Add new user WITHOUT affecting existing users
             intermediaCache.agentStatuses.set(userId, newUserRecord);
-            console.log(`[Cache] ✅ Added new user ${userId} with status: ${mappedStatus}`);
+            console.log(`[Cache] ✅ Added ${realUserData ? 'real' : 'generic'} user: ${newUserRecord.name} with status: ${mappedStatus}`);
         }
         
         // Update timestamp
