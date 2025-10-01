@@ -5,6 +5,7 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const apiRoutes = require('./routes/api');
 const app = express();
+const metrics = require('./routes/metrics');
 
 const PORT = process.env.PORT || 3000;
 
@@ -12,6 +13,7 @@ app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
 app.use('/api', apiRoutes);
+app.use('/hooks/metrics', metrics);
 
 app.get('/', (req, res) => {
   res.send('Backend API is running');

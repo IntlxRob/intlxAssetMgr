@@ -323,6 +323,23 @@ async function testConnection() {
   }
 }
 
+// Used for Ticket Metrics Functions
+async function getTicketMetrics(ticketId) {
+  const res = await zendeskApi.get(`/tickets/${ticketId}/metrics`);
+  return res.data.ticket_metric;
+}
+
+async function updateTicketCustomFields(ticketId, fields, addTag) {
+  const body = {
+    ticket: {
+      custom_fields: fields,
+      ...(addTag ? { additional_tags: [addTag] } : {})
+    }
+  };
+  const res = await zendeskApi.put(`/tickets/${ticketId}`, body);
+  return res.data.ticket;
+}
+
 module.exports = {
   // Connection test
   testConnection,
@@ -349,4 +366,8 @@ module.exports = {
 
   // tickets
   createTicket,
+
+  // ticket metrics
+  getTicketMetrics,
+  updateTicketCustomFields
 };
