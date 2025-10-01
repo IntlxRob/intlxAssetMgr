@@ -14,8 +14,8 @@ const SHARED =
   process.env.METRICS_SHARED_SECRET;
 
 // Your FRT field IDs (env overrides allowed)
-const DEFAULT_BUS = Number(process.env.ZENDESK_FRT_BUSINESS_FIELD_ID || 35337631924119);
-const DEFAULT_CAL = Number(process.env.ZENDESK_FRT_CALENDAR_FIELD_ID || 35337645628695);
+const DEFAULT_BUS = Number(process.env.ZENDESK_FRT_BUSINESS_FIELD_ID || 35345034828183); // Business
+const DEFAULT_CAL = Number(process.env.ZENDESK_FRT_CALENDAR_FIELD_ID || 35345064770327); // Calendar
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const toBool = v => v === true || v === 'true' || v === 'True' || v === 'TRUE' || v === 1 || v === '1';
@@ -74,12 +74,18 @@ router.post('/copy', async (req, res) => {
       return res.status(202).json({ status: 'metrics-not-ready' });
     }
 
-    // 2) Build the custom_fields array from the map
+    // 2) Build the custom_fields array from the map (send numbers for numeric fields)
+    const toNumber = (v) => (typeof v === 'number' ? v : Number(v));
+
     const custom_fields = [];
     for (const [metricPath, fieldId] of Object.entries(map)) {
-      const val = getByPath(metric, metricPath);
-      if (val != null) custom_fields.push({ id: Number(fieldId), value: String(val) });
-    }
+  const v = getByPath(metric, metricPath);
+  const num = toNumber(v);
+  if (!Number.isNaN(num)) {
+    custom_fields.push({ id: Number(fieldId), value: num }); // numeric value
+  }
+    }   
+
     if (!custom_fields.length) {
       return res.status(202).json({ status: 'no-mapped-values' });
     }
