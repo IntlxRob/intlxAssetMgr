@@ -7,49 +7,87 @@ const {
   updateTicketCustomFields
 } = require('../services/zendesk');
 
-// Use an existing secret if you have one; otherwise add METRICS_SHARED_SECRET
+// Reuse any existing secret var; fall back to METRICS_SHARED_SECRET
 const SHARED =
-  process.env.METRICS_SHARED_SECRET ||
   process.env.ZENDESK_WEBHOOK_SECRET ||
-  process.env.FRT_SHARED_SECRET;
+  process.env.FRT_SHARED_SECRET ||
+  process.env.METRICS_SHARED_SECRET;
 
-const FIELD_BUS = 35337631924119; // First Reply Time (Business)
-const FIELD_CAL = 35337645628695; // First Reply Time (Calendar)
+// Your FRT field IDs (env overrides allowed)
+const DEFAULT_BUS = Number(process.env.ZENDESK_FRT_BUSINESS_FIELD_ID || 35337631924119);
+const DEFAULT_CAL = Number(process.env.ZENDESK_FRT_CALENDAR_FIELD_ID || 35337645628695);
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const toBool = v => v === true || v === 'true' || v === 'True' || v === 'TRUE' || v === 1 || v === '1';
+const getByPath = (o, p) => p.split('.').reduce((a, k) => (a && a[k] !== undefined ? a[k] : undefined), o);
+
+// --- quick debug endpoints so the route never "hangs" ---
+router.get('/ping', (_req, res) => res.status(200).send('pong'));
+router.post('/echo', (req, res) => res.status(200).json({ ok: true, headers: req.headers, body: req.body }));
 
 // POST /hooks/metrics/copy
 router.post('/copy', async (req, res) => {
   try {
-    // (keep your shared-secret check)
+    // Shared-secret header check (keeps bots out)
+    if (SHARED && req.headers['x-zd-shared-secret'] !== SHARED) {
+      return res.status(401).json({ error: 'bad-shared-secret' });
+    }
 
     const {
       ticket_id,
       is_public,
       require_public_comment = true,
       map = {
-        'reply_time_in_minutes.business': process.env.ZENDESK_FRT_BUSINESS_FIELD_ID || 35337631924119,
-        'reply_time_in_minutes.calendar': process.env.ZENDESK_FRT_CALENDAR_FIELD_ID || 35337645628695
+        'reply_time_in_minutes.business': DEFAULT_BUS,
+        'reply_time_in_minutes.calendar': DEFAULT_CAL
       },
-      add_tag = '',
-      retry_attempts = 3,
+      add_tag = '',                    // empty string = no tag
+      retry_attempts = 3,              // metrics can lag briefly
       retry_delay_ms = 800
     } = req.body || {};
 
-    // 👇 NEW: coerce to boolean
-    const toBool = v =>
-      v === true || v === 'true' || v === 'True' || v === 'TRUE' || v === 1 || v === '1';
+    if (!ticket_id) {
+      return res.status(400).json({ error: 'missing ticket_id' });
+    }
 
+    // Enforce public comment if requested (Zendesk placeholders send strings)
     const isPublicBool = toBool(is_public);
-
-    if (!ticket_id) return res.status(400).json({ error: 'missing ticket_id' });
-
-    // Only act on public comments if required
     if (require_public_comment && !isPublicBool) {
       return res.status(202).json({ status: 'ignored', reason: 'not-public' });
     }
 
-    // ...rest of your logic (fetch metrics with brief retries, build fields, update ticket)...
+    // 1) Fetch metrics with short retries
+    let metric = null;
+    for (let i = 0; i < Number(retry_attempts); i++) {
+      try {
+        const m = await getTicketMetrics(ticket_id); // should return ticket_metric or null
+        if (m && Object.keys(map).some(p => getByPath(m, p) != null)) {
+          metric = m;
+          break;
+        }
+      } catch (e) {
+        // swallow and retry; GET may 404 if bad ID or momentary lag
+      }
+      await sleep(Number(retry_delay_ms) * (i + 1));
+    }
+    if (!metric) {
+      return res.status(202).json({ status: 'metrics-not-ready' });
+    }
+
+    // 2) Build the custom_fields array from the map
+    const custom_fields = [];
+    for (const [metricPath, fieldId] of Object.entries(map)) {
+      const val = getByPath(metric, metricPath);
+      if (val != null) custom_fields.push({ id: Number(fieldId), value: String(val) });
+    }
+    if (!custom_fields.length) {
+      return res.status(202).json({ status: 'no-mapped-values' });
+    }
+
+    // 3) Update the ticket (only adds a tag if add_tag is a non-empty string)
+    await updateTicketCustomFields(ticket_id, custom_fields, add_tag || undefined);
+
+    return res.status(200).json({ status: 'ok', ticket_id: Number(ticket_id), written: custom_fields });
   } catch (e) {
     return res.status(500).json({ error: String(e) });
   }
