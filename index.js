@@ -14,6 +14,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.use('/api', apiRoutes);
 app.use('/hooks/metrics', metrics);
+app.use('/admin/metrics', require('./routes/metricsBackfill'));
 
 app.get('/', (req, res) => {
   res.send('Backend API is running');
