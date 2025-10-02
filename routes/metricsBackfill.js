@@ -29,8 +29,9 @@ const ADMIN_KEY = process.env.METRICS_BACKFILL_KEY; // set this to any long stri
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function fetchTicketIdsByCreatedRange(start, end, afterCursor, extraQuery) {
-  // created range is inclusive/exclusive: >= start and < end
+  // Build the search query: created range + optional extra filters
   const q = `created>=${start} created<${end}${extraQuery ? ' ' + extraQuery : ''}`;
+
   let url = `${ZD_BASE}/api/v2/search/export?filter[type]=ticket&query=${encodeURIComponent(q)}`;
   if (afterCursor) url += `&page[after]=${encodeURIComponent(afterCursor)}`;
 
@@ -102,7 +103,8 @@ router.post('/backfill', async (req, res) => {
       dry_run = false,
       copy_frt = true,
       copy_fullres = true,
-      only_solved_for_fullres = true
+      only_solved_for_fullres = true,
+      status_filter
     } = req.body || {};
 
     if (!start || !end) {
@@ -110,6 +112,12 @@ router.post('/backfill', async (req, res) => {
     }
     if (!copy_frt && !copy_fullres) {
       return res.status(400).json({ error: 'at least one of copy_frt or copy_fullres must be true' });
+
+      const extraParts = [];
+    if (status_filter) extraParts.push(status_filter);            // e.g., "status<closed"
+    if (copy_fullres && only_solved_for_fullres) extraParts.push('status:solved');
+    const extraQuery = extraParts.join(' ');
+
     }
 
     // Add an extra query constraint if we're pulling Full Resolution Time and you want solved tickets only
@@ -180,15 +188,17 @@ router.post('/backfill', async (req, res) => {
           });
           if (r.status === 200) {
             wroteAny = true;
-          } else if (r.status === 202) {
-            // metrics-not-ready or no-mapped-values
-            // treat as skip (harmless; can rerun later)
+            } else if (r.status === 202) {
             skipped++;
             results.push({ id, status: r.data?.status || '202' });
-          } else {
+            } else if (r.status === 422) {
+            // cannot update closed/archived ticket
+            skipped++;
+            results.push({ id, status: 'closed-or-immutable', code: 422 });
+            } else {
             errors++;
             results.push({ id, status: 'error', code: r.status, body: r.data });
-          }
+            }
         }
         if (wroteAny) { success++; results.push({ id, status: 'ok' }); }
       } catch (e) {
