@@ -4,6 +4,8 @@ const axios = require('axios');
 
 const router = express.Router();
 
+router.get('/ping', (_req, res) => res.status(200).send('admin-metrics-ok'));
+
 // ---- Zendesk creds (reuse your existing env) ----
 const SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const EMAIL     = process.env.ZENDESK_EMAIL;
