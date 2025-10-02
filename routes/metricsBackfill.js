@@ -51,20 +51,27 @@ async function fetchTicketIdsByCreatedRange(start, end, afterCursor, extraQuery)
 
 // gentle concurrency helper
 function pLimit(n) {
-  const q = [];
   let active = 0;
-  const run = (fn) => new Promise((resolve, reject) => {
-    const exec = () => {
-      if (active < n && q.length) {
-        active++;
-        const f = q.shift();
-        f().then(resolve, reject).finally(() => { active--; exec(); });
-      }
-    };
-    q.push(fn);
-    exec();
-  });
-  return (fn) => run(fn);
+  const queue = [];
+
+  const next = () => {
+    if (active >= n || queue.length === 0) return;
+    active++;
+    const { fn, resolve, reject } = queue.shift();
+    Promise.resolve()
+      .then(fn)
+      .then((v) => resolve(v), reject)
+      .finally(() => {
+        active--;
+        next();       // start the next job
+      });
+  };
+
+  return (fn) =>
+    new Promise((resolve, reject) => {
+      queue.push({ fn, resolve, reject });
+      next();
+    });
 }
 
 // POST /admin/metrics/backfill
