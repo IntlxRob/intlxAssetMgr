@@ -5796,10 +5796,13 @@ router.post('/zendesk/create-ticket', async (req, res) => {
         const duration = Date.now() - startTime;
         console.log(`[Zendesk:${requestId}] Ticket ${ticket.id} created in ${duration}ms`);
 
+        // ✅ FIXED: Return proper support portal URL instead of API endpoint
+        const supportPortalUrl = `https://intlxsolutions.zendesk.com/hc/en-us/requests/${ticket.id}`;
+
         res.json({
             success: true,
             ticketId: ticket.id,
-            ticketUrl: ticket.url || `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/${ticket.id}`,
+            ticketUrl: supportPortalUrl, // ✅ Changed from ticket.url
             message: 'Ticket created successfully'
         });
 
