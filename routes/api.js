@@ -5737,7 +5737,7 @@ router.post('/zendesk/create-ticket', async (req, res) => {
     console.log(`[Zendesk:${requestId}] New ticket request from ${req.ip}`);
     
     try {
-        const { name, email, subject, description, priority, tags, customFields } = req.body;
+        const { name, email, subject, description, priority, tags, customFields, attachments } = req.body;
 
         // Validation
         if (!name || !email || !subject || !description) {
@@ -5752,7 +5752,7 @@ router.post('/zendesk/create-ticket', async (req, res) => {
             return res.status(400).json({ error: 'Invalid email format' });
         }
 
-        // Create Zendesk ticket using your existing service
+        // Create Zendesk ticket
         const ticketData = {
             subject: subject,
             description: description,
@@ -5762,7 +5762,7 @@ router.post('/zendesk/create-ticket', async (req, res) => {
                 name: name,
                 email: email
             },
-            tags: [...(tags || []), 'intlx360']  // ✅ Changed to just 'intlx360'
+            tags: [...(tags || []), 'intlx360']
         };
 
         // Add custom fields if provided
@@ -5773,10 +5773,22 @@ router.post('/zendesk/create-ticket', async (req, res) => {
                     value: value 
                 })
             );
-            console.log(`[Zendesk:${requestId}] Custom fields:`, ticketData.custom_fields);
         }
 
-        console.log(`[Zendesk:${requestId}] Creating ticket with data:`, JSON.stringify(ticketData, null, 2));
+        // Add comment with attachments if provided
+        if (attachments && attachments.length > 0) {
+            ticketData.comment = {
+                body: description,
+                uploads: attachments.map(att => ({
+                    filename: att.filename,
+                    content: att.content,
+                    content_type: att.contentType
+                }))
+            };
+            console.log(`[Zendesk:${requestId}] Including ${attachments.length} attachment(s)`);
+        }
+
+        console.log(`[Zendesk:${requestId}] Creating ticket...`);
 
         // Use your existing zendeskService
         const ticket = await zendeskService.createTicket(ticketData);
