@@ -5762,7 +5762,7 @@ router.post('/zendesk/create-ticket', async (req, res) => {
                 name: name,
                 email: email
             },
-            tags: [...(tags || []), '3rd-party-app', 'api-created']
+            tags: [...(tags || []), 'intlx360']
         };
 
         // Add custom fields if provided
