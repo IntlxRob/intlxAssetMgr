@@ -5762,15 +5762,21 @@ router.post('/zendesk/create-ticket', async (req, res) => {
                 name: name,
                 email: email
             },
-            tags: [...(tags || []), 'intlx360']
+            tags: [...(tags || []), 'intlx360']  // ✅ Changed to just 'intlx360'
         };
 
         // Add custom fields if provided
         if (customFields && Object.keys(customFields).length > 0) {
             ticketData.custom_fields = Object.entries(customFields).map(
-                ([id, value]) => ({ id: parseInt(id), value })
+                ([id, value]) => ({ 
+                    id: id,
+                    value: value 
+                })
             );
+            console.log(`[Zendesk:${requestId}] Custom fields:`, ticketData.custom_fields);
         }
+
+        console.log(`[Zendesk:${requestId}] Creating ticket with data:`, JSON.stringify(ticketData, null, 2));
 
         // Use your existing zendeskService
         const ticket = await zendeskService.createTicket(ticketData);
