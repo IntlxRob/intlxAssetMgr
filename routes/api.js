@@ -5722,10 +5722,6 @@ ${assets.map(asset => `
     }
 });
 
-// ============================================
-// 3RD PARTY KNOWI ZENDESK TICKET CREATION
-// ============================================
-
 /**
  * Create Zendesk ticket from 3rd party application
  * POST /api/zendesk/create-ticket
@@ -5773,6 +5769,7 @@ router.post('/zendesk/create-ticket', async (req, res) => {
                     value: value 
                 })
             );
+            console.log(`[Zendesk:${requestId}] Custom fields:`, ticketData.custom_fields);
         }
 
         // Add comment with attachments if provided
@@ -5796,13 +5793,13 @@ router.post('/zendesk/create-ticket', async (req, res) => {
         const duration = Date.now() - startTime;
         console.log(`[Zendesk:${requestId}] Ticket ${ticket.id} created in ${duration}ms`);
 
-        // ✅ FIXED: Return proper support portal URL instead of API endpoint
-        const supportPortalUrl = `https://intlxsolutions.zendesk.com/hc/en-us/requests/${ticket.id}`;
+        // ✅ Return proper support portal URL for viewing all requests
+        const supportPortalUrl = 'https://intlxsolutions.zendesk.com/hc/en-us/requests';
 
         res.json({
             success: true,
             ticketId: ticket.id,
-            ticketUrl: supportPortalUrl, // ✅ Changed from ticket.url
+            ticketUrl: supportPortalUrl,
             message: 'Ticket created successfully'
         });
 
