@@ -5722,6 +5722,96 @@ ${assets.map(asset => `
     }
 });
 
+// ============================================
+// 3RD PARTY KNOWI ZENDESK TICKET CREATION
+// ============================================
+
+/**
+ * Create Zendesk ticket from 3rd party application
+ * POST /api/zendesk/create-ticket
+ */
+router.post('/zendesk/create-ticket', async (req, res) => {
+    const requestId = Math.random().toString(36).substring(7);
+    const startTime = Date.now();
+    
+    console.log(`[Zendesk:${requestId}] New ticket request from ${req.ip}`);
+    
+    try {
+        const { name, email, subject, description, priority, tags, customFields } = req.body;
+
+        // Validation
+        if (!name || !email || !subject || !description) {
+            return res.status(400).json({ 
+                error: 'Missing required fields',
+                required: ['name', 'email', 'subject', 'description']
+            });
+        }
+
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+
+        // Create Zendesk ticket using your existing service
+        const ticketData = {
+            subject: subject,
+            description: description,
+            type: 'question',
+            priority: priority || 'normal',
+            requester: {
+                name: name,
+                email: email
+            },
+            tags: [...(tags || []), '3rd-party-app', 'api-created']
+        };
+
+        // Add custom fields if provided
+        if (customFields && Object.keys(customFields).length > 0) {
+            ticketData.custom_fields = Object.entries(customFields).map(
+                ([id, value]) => ({ id: parseInt(id), value })
+            );
+        }
+
+        // Use your existing zendeskService
+        const ticket = await zendeskService.createTicket(ticketData);
+        
+        const duration = Date.now() - startTime;
+        console.log(`[Zendesk:${requestId}] Ticket ${ticket.id} created in ${duration}ms`);
+
+        res.json({
+            success: true,
+            ticketId: ticket.id,
+            ticketUrl: ticket.url || `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/${ticket.id}`,
+            message: 'Ticket created successfully'
+        });
+
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        console.error(`[Zendesk:${requestId}] Error after ${duration}ms:`, error.response?.data || error.message);
+        
+        res.status(error.response?.status || 500).json({
+            error: 'Failed to create ticket',
+            details: error.response?.data?.error || error.message
+        });
+    }
+});
+
+/**
+ * Health check for Zendesk integration
+ * GET /api/zendesk/health
+ */
+router.get('/zendesk/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        service: 'zendesk-integration',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// ============================================
+// END OF KNOWI 3RD PARTY ZENDESK ENDPOINTS
+// ============================================
+
 /**
  * Endpoint to get all asset records associated with a given user_id.
  * Used by React app.
