@@ -6091,38 +6091,122 @@ router.get('/it-portal-assets', async (req, res) => {
             }
             
         } else {
-            // Single company search (existing logic)
-            console.log(`[API] Using single company search for "${orgName}"`);
-            
-            const knownMappings = {
-                'keep me home, llc': 3632,
-                'keep me home,llc': 3632,
-                'intlx solutions, llc': 3492,
-                'starling physicians mso, llc': 4133,
-            };
+    // Single company search (existing logic)
+    console.log(`[API] Using single company search for "${orgName}"`);
+    
+    const knownMappings = {
+        'keep me home, llc': 3632,
+        'keep me home,llc': 3632,
+        'intlx solutions, llc': 3492,
+        'starling physicians mso, llc': 4133,
+    };
 
-            if (knownMappings[lowerOrgName]) {
-                matchingCompanies.push({
-                    id: knownMappings[lowerOrgName],
-                    name: orgName
-                });
-            } else {
-                // Search in cache for single company
-                if (companiesCache.companies.length === 0) {
-                    await refreshCompaniesCache();
-                }
-                
-                if (companiesCache.companies.length > 0) {
-                    console.log(`[API] Searching in cache (${companiesCache.companies.length} companies)`);
-                    const cacheResult = searchCompaniesInCache(orgName);
-                    
-                    if (cacheResult) {
-                        matchingCompanies.push(cacheResult.company);
-                        console.log(`[API] Cache match found: "${cacheResult.company.name}" (ID: ${cacheResult.company.id})`);
-                    }
-                }
+    if (knownMappings[lowerOrgName]) {
+        matchingCompanies.push({
+            id: knownMappings[lowerOrgName],
+            name: orgName
+        });
+    } else {
+        // Search in cache for single company
+        if (companiesCache.companies.length === 0) {
+            await refreshCompaniesCache();
+        }
+        
+        if (companiesCache.companies.length > 0) {
+            console.log(`[API] Searching in cache (${companiesCache.companies.length} companies)`);
+            const cacheResult = searchCompaniesInCache(orgName);
+            
+            if (cacheResult) {
+                matchingCompanies.push(cacheResult.company);
+                console.log(`[API] Cache match found: "${cacheResult.company.name}" (ID: ${cacheResult.company.id})`);
             }
         }
+        
+        // 🆕 NEW: If not found in cache, try direct API search
+        if (matchingCompanies.length === 0) {
+            console.log(`[API] Company not in cache, trying direct API search for "${orgName}"`);
+            
+            try {
+                // Use first 10 chars of org name for search
+                const searchTerm = orgName.substring(0, 10);
+                const directSearchResponse = await fetch(
+                    `https://www.siportal.net/api/2.0/companies/?nameStartsWith=${encodeURIComponent(searchTerm)}`,
+                    {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': process.env.SIPORTAL_API_KEY,
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
+                
+                if (directSearchResponse.ok) {
+                    const directData = await directSearchResponse.json();
+                    const directCompanies = directData.data?.results || [];
+                    
+                    console.log(`[API] Direct search found ${directCompanies.length} companies starting with "${searchTerm}"`);
+                    
+                    if (directCompanies.length > 0) {
+                        // Try exact match first
+                        const exactMatch = directCompanies.find(c => 
+                            normalizeCompanyName(c.name) === normalizeCompanyName(orgName)
+                        );
+                        
+                        if (exactMatch) {
+                            matchingCompanies.push(exactMatch);
+                            console.log(`[API] ✅ Direct search EXACT match: "${exactMatch.name}" (ID: ${exactMatch.id})`);
+                        } else {
+                            // Use fuzzy matching on direct search results
+                            const variations = generateNameVariations(orgName);
+                            let bestMatch = null;
+                            let bestScore = 0;
+                            
+                            for (const company of directCompanies) {
+                                const companyNorm = normalizeCompanyName(company.name);
+                                
+                                for (const variation of variations) {
+                                    let score = 0;
+                                    
+                                    // Exact normalized match
+                                    if (companyNorm === variation) {
+                                        bestMatch = company;
+                                        bestScore = 100;
+                                        break;
+                                    }
+                                    
+                                    // Substring match
+                                    if (companyNorm.includes(variation) || variation.includes(companyNorm)) {
+                                        score = 85;
+                                    }
+                                    
+                                    if (score > bestScore) {
+                                        bestMatch = company;
+                                        bestScore = score;
+                                    }
+                                }
+                                
+                                if (bestScore === 100) break;
+                            }
+                            
+                            if (bestMatch && bestScore >= 70) {
+                                matchingCompanies.push(bestMatch);
+                                console.log(`[API] ✅ Direct search FUZZY match: "${bestMatch.name}" (ID: ${bestMatch.id}, score: ${bestScore})`);
+                            } else {
+                                console.log(`[API] ❌ Direct search found companies but no good match (best score: ${bestScore})`);
+                            }
+                        }
+                    } else {
+                        console.log(`[API] ❌ Direct search returned no companies for "${searchTerm}"`);
+                    }
+                } else {
+                    console.log(`[API] ❌ Direct search API failed: ${directSearchResponse.status}`);
+                }
+            } catch (directSearchError) {
+                console.error(`[API] Direct search error:`, directSearchError.message);
+            }
+        }
+    }
+}
 
         if (matchingCompanies.length === 0) {
             console.log(`[API] No matching companies found for "${orgName}"`);
