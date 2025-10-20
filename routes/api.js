@@ -6224,26 +6224,64 @@ router.get('/it-portal-assets', async (req, res) => {
         const companiesWithAssets = [];
         
         const devicePromises = matchingCompanies.map(async (company) => {
-            console.log(`[API] Fetching devices for company ${company.id} (${company.name})`);
-            
-            try {
-                const devicesResponse = await fetch(`https://www.siportal.net/api/2.0/devices?companyId=${company.id}`, {
+    console.log(`[API] Fetching devices for company ${company.id} (${company.name})`);
+    
+    try {
+        // 🆕 ADD PAGINATION HERE
+        let allDevices = [];
+        let offset = 0;
+        const limit = 20;
+        let hasMore = true;
+
+        while (hasMore && offset < 500) { // Safety limit: 500 devices max
+            const devicesResponse = await fetch(
+                `https://www.siportal.net/api/2.0/devices?companyId=${company.id}&offset=${offset}&limit=${limit}`,
+                {
                     method: 'GET',
                     headers: {
                         'Authorization': process.env.SIPORTAL_API_KEY,
                         'Content-Type': 'application/json'
                     }
-                });
+                }
+            );
 
-                if (!devicesResponse.ok) {
+            if (!devicesResponse.ok) {
+                if (offset === 0) {
+                    // Only throw error on first page
                     console.log(`[API] Failed to fetch devices for company ${company.id}: ${devicesResponse.status}`);
                     return { company, devices: [] };
                 }
+                // If error on subsequent pages, just stop pagination
+                break;
+            }
 
-                const siPortalData = await devicesResponse.json();
-                const devices = siPortalData.data?.results || [];
+            const siPortalData = await devicesResponse.json();
+            const devices = siPortalData.data?.results || [];
+            
+            console.log(`[API] Page ${Math.floor(offset/limit) + 1}: Found ${devices.length} devices for ${company.name} (offset: ${offset})`);
+            
+            if (devices.length > 0) {
+                // Check for duplicates before adding
+                const existingIds = new Set(allDevices.map(d => d.id));
+                const newDevices = devices.filter(d => !existingIds.has(d.id));
                 
-                console.log(`[API] Found ${devices.length} devices for ${company.name}`);
+                if (newDevices.length > 0) {
+                    allDevices.push(...newDevices);
+                    hasMore = devices.length === limit; // Continue if we got a full page
+                    offset += limit;
+                } else {
+                    // All devices were duplicates, stop
+                    hasMore = false;
+                }
+            } else {
+                // Empty page, stop pagination
+                hasMore = false;
+            }
+        }
+        
+        console.log(`[API] ✅ Total devices for ${company.name}: ${allDevices.length}`);
+        
+        const devices = allDevices; // Use allDevices instead of single fetch
                 
                 // Update company name from device data if available
                 if (devices.length > 0 && devices[0].company?.name) {
