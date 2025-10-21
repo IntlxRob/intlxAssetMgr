@@ -12,6 +12,9 @@ const MATTERMOST_URL = process.env.MATTERMOST_URL; // e.g., 'https://mattermost.
 const MATTERMOST_TOKEN = process.env.MATTERMOST_TOKEN; // Personal Access Token or Bot Token
 
 
+// In-memory cache for custom statuses
+const customStatusCache = new Map(); // userId -> { text, emoji, timestamp }
+
 // Initialize OAuth2 client for Google Calendar
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -3863,18 +3866,24 @@ router.put('/mattermost-custom-status', async (req, res) => {
 
         console.log(`[Mattermost] ✅ Custom status updated successfully for user ${userId}`);
 
+        // Cache the custom status
+        const customStatusData = {
+            text: text,
+            emoji: emoji || 'speech_balloon',
+            duration: duration || null,
+            timestamp: Date.now()
+        };
+        customStatusCache.set(userId, customStatusData);
+        console.log(`[Mattermost] Cached custom status for user ${userId}:`, customStatusData);
+
         res.json({
             success: true,
             userId,
-            custom_status: {
-                text: text,
-                emoji: emoji || 'speech_balloon',
-                duration: duration || null
-            },
+            custom_status: customStatusData,
             message: 'Custom status updated successfully'
         });
 
-    } catch (error) {
+        } catch (error) {
         console.error('[Mattermost] Error updating custom status:', error.message);
         res.status(500).json({ 
             error: 'Failed to update custom status',
