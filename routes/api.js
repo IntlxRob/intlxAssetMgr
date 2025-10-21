@@ -3803,6 +3803,43 @@ router.put('/mattermost-custom-status', async (req, res) => {
 });
 
 /**
+ * Check Mattermost server info
+ * GET /api/mattermost-info
+ */
+router.get('/mattermost-info', async (req, res) => {
+    try {
+        if (!MATTERMOST_URL || !MATTERMOST_TOKEN) {
+            return res.status(500).json({ 
+                error: 'Mattermost not configured'
+            });
+        }
+
+        // Get server version
+        const response = await fetch(`${MATTERMOST_URL}/api/v4/system/ping`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`
+            }
+        });
+
+        const pingResult = await response.text();
+        
+        res.json({
+            mattermost_url: MATTERMOST_URL,
+            ping: pingResult,
+            token_present: !!MATTERMOST_TOKEN
+        });
+
+    } catch (error) {
+        console.error('[Mattermost] Error checking server:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to check Mattermost server',
+            details: error.message 
+        });
+    }
+});
+
+/**
  * Updated: Bulk sync Elevate IDs using Zendesk's create_or_update_many endpoint
  */
 router.post('/setup/sync-elevate-ids', async (req, res) => {
