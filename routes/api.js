@@ -3790,7 +3790,7 @@ router.put('/mattermost-status', async (req, res) => {
  */
 router.put('/mattermost-custom-status', async (req, res) => {
     try {
-        const { userId, text, emoji } = req.body;
+        const { userId, text, emoji, duration } = req.body;
 
         if (!userId || !text) {
             return res.status(400).json({ 
@@ -3806,7 +3806,25 @@ router.put('/mattermost-custom-status', async (req, res) => {
             });
         }
 
-        console.log(`[Mattermost] Setting custom status for user ${userId}: ${text}`);
+        console.log(`[Mattermost] Setting custom status for user ${userId}: "${text}"`);
+
+        // Prepare the custom status payload
+        const customStatusPayload = {
+            emoji: emoji || 'speech_balloon',
+            text: text.substring(0, 100) // Enforce 100 char limit
+        };
+
+        // Add duration if specified (valid values: thirty_minutes, one_hour, four_hours, today, this_week, date_and_time)
+        if (duration) {
+            customStatusPayload.duration = duration;
+            
+            // If using date_and_time, set expires_at to 24 hours from now
+            if (duration === 'date_and_time') {
+                customStatusPayload.expires_at = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+            }
+        }
+
+        console.log('[Mattermost] Custom status payload:', JSON.stringify(customStatusPayload, null, 2));
 
         // Set custom status in Mattermost
         const response = await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status/custom`, {
@@ -3815,12 +3833,7 @@ router.put('/mattermost-custom-status', async (req, res) => {
                 'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                emoji: emoji || 'speech_balloon',
-                text: text,
-                duration: 'date_and_time', // Status stays until manually cleared
-                expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
-            })
+            body: JSON.stringify(customStatusPayload)
         });
 
         if (!response.ok) {
@@ -3829,15 +3842,26 @@ router.put('/mattermost-custom-status', async (req, res) => {
             throw new Error(`Mattermost API returned ${response.status}: ${errorText}`);
         }
 
-        const result = await response.json();
-        console.log(`[Mattermost] Custom status updated successfully for user ${userId}`);
+        // Response may be empty or JSON
+        let result = {};
+        const responseText = await response.text();
+        if (responseText) {
+            try {
+                result = JSON.parse(responseText);
+            } catch (e) {
+                console.log('[Mattermost] Empty or non-JSON response (OK)');
+            }
+        }
+
+        console.log(`[Mattermost] ✅ Custom status updated successfully for user ${userId}`);
 
         res.json({
             success: true,
             userId,
             custom_status: {
                 text: text,
-                emoji: emoji || 'speech_balloon'
+                emoji: emoji || 'speech_balloon',
+                duration: duration || null
             },
             message: 'Custom status updated successfully'
         });
@@ -3846,6 +3870,63 @@ router.put('/mattermost-custom-status', async (req, res) => {
         console.error('[Mattermost] Error updating custom status:', error.message);
         res.status(500).json({ 
             error: 'Failed to update custom status',
+            details: error.message 
+        });
+    }
+});
+
+/**
+ * Delete/Clear Mattermost custom status
+ * DELETE /api/mattermost-custom-status
+ */
+router.delete('/mattermost-custom-status', async (req, res) => {
+    try {
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ 
+                error: 'Missing required fields',
+                details: 'userId is required'
+            });
+        }
+
+        if (!MATTERMOST_URL || !MATTERMOST_TOKEN) {
+            return res.status(500).json({ 
+                error: 'Mattermost not configured',
+                details: 'MATTERMOST_URL and MATTERMOST_TOKEN must be set'
+            });
+        }
+
+        console.log(`[Mattermost] Clearing custom status for user ${userId}`);
+
+        // Delete custom status in Mattermost - NO BODY NEEDED
+        const response = await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status/custom`, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`
+                // No Content-Type needed for DELETE with no body
+            }
+        });
+
+        // DELETE can return 200 or 204 (no content)
+        if (!response.ok && response.status !== 204) {
+            const errorText = await response.text();
+            console.error('[Mattermost] Custom status clear failed:', errorText);
+            throw new Error(`Mattermost API returned ${response.status}: ${errorText}`);
+        }
+
+        console.log(`[Mattermost] ✅ Custom status cleared successfully for user ${userId}`);
+
+        res.json({
+            success: true,
+            userId,
+            message: 'Custom status cleared successfully'
+        });
+
+    } catch (error) {
+        console.error('[Mattermost] Error clearing custom status:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to clear custom status',
             details: error.message 
         });
     }
