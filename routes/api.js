@@ -3633,22 +3633,23 @@ router.get('/agent-status-enhanced', async (req, res) => {
         });
 
         // Add Mattermost-only users (not in Intermedia)
+        const intermediaEmails = new Set(intermediaStatuses.map(a => a.email?.toLowerCase()));
         const mattermostOnlyUsers = mattermostStatuses
-        .filter(mm => mm.email && !intermediaEmails.has(mm.email.toLowerCase()))
-        .map(mm => ({
-            id: mm.id,
-            name: mm.name,
-            email: mm.email,
-            status: mapMattermostStatus(mm.status),
-            mattermost_status: mapMattermostStatus(mm.status),
-            mattermost_raw: mm.status,
-            mattermost_user_id: mm.id,
-            custom_status: mm.custom_status,
-            lastActivity: mm.last_activity_at,
-            has_mattermost: true,
-            source: 'mattermost_only',
-            combined_status: mapMattermostStatus(mm.status)
-        }));
+            .filter(mm => mm.email && !intermediaEmails.has(mm.email.toLowerCase()))
+            .map(mm => ({
+                id: mm.id,
+                name: mm.name,
+                email: mm.email,
+                status: mapMattermostStatus(mm.status),
+                mattermost_status: mapMattermostStatus(mm.status),
+                mattermost_raw: mm.status,
+                mattermost_user_id: mm.id,  
+                custom_status: mm.custom_status || null, 
+                lastActivity: mm.last_activity_at,
+                has_mattermost: true,
+                source: 'mattermost_only',
+                combined_status: mapMattermostStatus(mm.status)
+            }));
 
         const allStatuses = [...mergedStatuses, ...mattermostOnlyUsers];
 
