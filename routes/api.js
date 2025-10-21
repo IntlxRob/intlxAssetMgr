@@ -8,6 +8,10 @@ const googleSheetsService = require('../services/googleSheets');
 const { google } = require('googleapis');
 const calendar = google.calendar('v3');
 
+const MATTERMOST_URL = process.env.MATTERMOST_URL; // e.g., 'https://mattermost.yourcompany.com'
+const MATTERMOST_TOKEN = process.env.MATTERMOST_TOKEN; // Personal Access Token or Bot Token
+
+
 // Initialize OAuth2 client for Google Calendar
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -2161,6 +2165,130 @@ function mapMessagingStatus(presenceState) {
     }
 }
 
+/** MATTERMOST INTEGRATION START */
+
+/**
+ * Fetch Mattermost user statuses
+ */
+async function fetchMattermostStatuses() {
+    try {
+        if (!MATTERMOST_URL || !MATTERMOST_TOKEN) {
+            console.log('[Mattermost] Configuration missing, skipping');
+            return [];
+        }
+
+        console.log('[Mattermost] Fetching user statuses...');
+        
+        // Get all users
+        const usersResponse = await fetch(`${MATTERMOST_URL}/api/v4/users?per_page=200`, {
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!usersResponse.ok) {
+            throw new Error(`Mattermost users API failed: ${usersResponse.status}`);
+        }
+
+        const users = await usersResponse.json();
+        console.log(`[Mattermost] Found ${users.length} users`);
+
+        // Get user IDs for status lookup
+        const userIds = users.map(u => u.id);
+        
+        // Fetch statuses for all users
+        const statusesResponse = await fetch(`${MATTERMOST_URL}/api/v4/users/status/ids`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(userIds)
+        });
+
+        if (!statusesResponse.ok) {
+            throw new Error(`Mattermost statuses API failed: ${statusesResponse.status}`);
+        }
+
+        const statuses = await statusesResponse.json();
+        
+        // Combine user info with status
+        const combinedData = users.map(user => {
+            const status = statuses.find(s => s.user_id === user.id);
+            return {
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                first_name: user.first_name,
+                last_name: user.last_name,
+                name: `${user.first_name} ${user.last_name}`.trim() || user.username,
+                status: status?.status || 'offline', // online, away, dnd, offline
+                last_activity_at: status?.last_activity_at || user.last_activity_at,
+                manual: status?.manual || false, // true if user manually set status
+                source: 'mattermost'
+            };
+        });
+
+        console.log(`[Mattermost] Successfully fetched ${combinedData.length} user statuses`);
+        return combinedData;
+
+    } catch (error) {
+        console.error('[Mattermost] Error fetching statuses:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Map Mattermost status to unified format
+ */
+function mapMattermostStatus(mmStatus) {
+    switch (mmStatus?.toLowerCase()) {
+        case 'online':
+            return 'Available';
+        case 'away':
+            return 'Away';
+        case 'dnd':
+            return 'Do Not Disturb';
+        case 'offline':
+            return 'Offline';
+        default:
+            return 'Unknown';
+    }
+}
+
+/**
+ * Helper to determine combined status from multiple sources
+ */
+function determineCombinedStatus(intermediaStatus, mattermostStatus, intermediaActivity, mattermostActivity) {
+    // If either shows online/available, prefer that
+    if (intermediaStatus?.toLowerCase() === 'available' || mattermostStatus === 'online') {
+        return 'Available';
+    }
+
+    // If Mattermost shows DND, prioritize that
+    if (mattermostStatus === 'dnd') {
+        return 'Do Not Disturb';
+    }
+
+    // If either shows away, use that
+    if (intermediaStatus?.toLowerCase() === 'away' || mattermostStatus === 'away') {
+        return 'Away';
+    }
+
+    // Compare activity timestamps to determine most recent status
+    const intermediaTime = intermediaActivity ? new Date(intermediaActivity).getTime() : 0;
+    const mattermostTime = mattermostActivity ? new Date(mattermostActivity).getTime() : 0;
+
+    if (mattermostTime > intermediaTime) {
+        return mapMattermostStatus(mattermostStatus);
+    }
+
+    return intermediaStatus || 'Offline';
+}
+
+/** MATTERMOST INTEGRATION END */
+
 /**
  * 🎨 ENHANCED: Get status colors for UI (including "On a Call")
  * ADD this function for better UI styling
@@ -3425,6 +3553,89 @@ router.get('/agent-status', async (req, res) => {
         res.status(500).json({
             success: false,
             error: error.message
+        });
+    }
+});
+
+/**
+ * Enhanced agent status with Mattermost integration
+ * GET /api/agent-status-enhanced
+ */
+router.get('/agent-status-enhanced', async (req, res) => {
+    try {
+        console.log('[Agent Status Enhanced] Fetching from all sources...');
+
+        // Fetch from all sources in parallel
+        const [intermediaStatuses, mattermostStatuses] = await Promise.all([
+            fetchAgentStatuses(), // Your existing Intermedia function
+            fetchMattermostStatuses()
+        ]);
+
+        console.log(`[Agent Status Enhanced] Got ${intermediaStatuses.length} Intermedia, ${mattermostStatuses.length} Mattermost`);
+
+        // Merge statuses by email
+        const mergedStatuses = intermediaStatuses.map(agent => {
+            // Find matching Mattermost user by email
+            const mmUser = mattermostStatuses.find(mm => 
+                mm.email?.toLowerCase() === agent.email?.toLowerCase()
+            );
+
+            if (mmUser) {
+                return {
+                    ...agent,
+                    mattermost_status: mapMattermostStatus(mmUser.status),
+                    mattermost_raw: mmUser.status,
+                    mattermost_last_activity: mmUser.last_activity_at,
+                    mattermost_manual: mmUser.manual,
+                    has_mattermost: true,
+                    // Use Mattermost status if more recent or if Intermedia shows offline
+                    combined_status: determineCombinedStatus(agent.status, mmUser.status, agent.lastActivity, mmUser.last_activity_at)
+                };
+            }
+
+            return {
+                ...agent,
+                has_mattermost: false,
+                combined_status: agent.status
+            };
+        });
+
+        // Add Mattermost-only users (not in Intermedia)
+        const intermediaEmails = new Set(intermediaStatuses.map(a => a.email?.toLowerCase()));
+        const mattermostOnlyUsers = mattermostStatuses
+            .filter(mm => mm.email && !intermediaEmails.has(mm.email.toLowerCase()))
+            .map(mm => ({
+                id: mm.id,
+                name: mm.name,
+                email: mm.email,
+                status: mapMattermostStatus(mm.status),
+                mattermost_status: mapMattermostStatus(mm.status),
+                mattermost_raw: mm.status,
+                lastActivity: mm.last_activity_at,
+                has_mattermost: true,
+                source: 'mattermost_only',
+                combined_status: mapMattermostStatus(mm.status)
+            }));
+
+        const allStatuses = [...mergedStatuses, ...mattermostOnlyUsers];
+
+        res.json({
+            agents: allStatuses,
+            total: allStatuses.length,
+            with_mattermost: allStatuses.filter(a => a.has_mattermost).length,
+            sources: {
+                intermedia: intermediaStatuses.length,
+                mattermost: mattermostStatuses.length,
+                mattermost_only: mattermostOnlyUsers.length
+            },
+            lastUpdated: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('[Agent Status Enhanced] Error:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to fetch enhanced agent status',
+            details: error.message 
         });
     }
 });
