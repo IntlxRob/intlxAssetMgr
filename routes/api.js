@@ -3692,16 +3692,19 @@ router.put('/mattermost-status', async (req, res) => {
         }
 
         // Update Mattermost status
-        const response = await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status`, {
+        const updateUrl = `${MATTERMOST_URL}/api/v4/users/${userId}/status`;
+        console.log(`[Mattermost] PUT URL: ${updateUrl}`);
+        console.log(`[Mattermost] Token present:`, MATTERMOST_TOKEN ? 'Yes' : 'No');
+        
+        const response = await fetch(updateUrl, {
             method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                user_id: userId,
                 status: status.toLowerCase(),
-                manual: manual !== false // Default to manual if not specified
+                manual: manual !== false
             })
         });
 
