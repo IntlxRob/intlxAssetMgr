@@ -3588,7 +3588,7 @@ router.get('/agent-status-enhanced', async (req, res) => {
                     mattermost_last_activity: mmUser.last_activity_at,
                     mattermost_manual: mmUser.manual,
                     has_mattermost: true,
-                    // Use Mattermost status if more recent or if Intermedia shows offline
+                    mattermost_user_id: mmUser.id,
                     combined_status: determineCombinedStatus(agent.status, mmUser.status, agent.lastActivity, mmUser.last_activity_at)
                 };
             }
