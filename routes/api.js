@@ -3620,6 +3620,7 @@ router.get('/agent-status-enhanced', async (req, res) => {
                     mattermost_manual: mmUser.manual,
                     has_mattermost: true,
                     mattermost_user_id: mmUser.id,
+                    custom_status: mmUser.custom_status, // ADD THIS LINE
                     combined_status: determineCombinedStatus(agent.status, mmUser.status, agent.lastActivity, mmUser.last_activity_at)
                 };
             }
