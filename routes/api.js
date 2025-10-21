@@ -2213,25 +2213,56 @@ async function fetchMattermostStatuses() {
 
         const statuses = await statusesResponse.json();
         
-        // Combine user info with status
-        const combinedData = users.map(user => {
-            const status = statuses.find(s => s.user_id === user.id);
-            return {
-                id: user.id,
-                username: user.username,
-                email: user.email,
-                first_name: user.first_name,
-                last_name: user.last_name,
-                name: `${user.first_name} ${user.last_name}`.trim() || user.username,
-                status: status?.status || 'offline', // online, away, dnd, offline
-                last_activity_at: status?.last_activity_at || user.last_activity_at,
-                manual: status?.manual || false, // true if user manually set status
-                source: 'mattermost'
-            };
+        // Fetch custom statuses for all users
+console.log('[Mattermost] Fetching custom statuses...');
+const customStatusPromises = users.map(async (user) => {
+    try {
+        const customStatusResponse = await fetch(`${MATTERMOST_URL}/api/v4/users/${user.id}/status/custom`, {
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                'Content-Type': 'application/json'
+            }
         });
 
-        console.log(`[Mattermost] Successfully fetched ${combinedData.length} user statuses`);
-        return combinedData;
+        if (customStatusResponse.ok) {
+            const customStatus = await customStatusResponse.json();
+            return {
+                user_id: user.id,
+                custom_status: customStatus
+            };
+        }
+        return { user_id: user.id, custom_status: null };
+    } catch (error) {
+        console.error(`[Mattermost] Error fetching custom status for user ${user.id}:`, error.message);
+        return { user_id: user.id, custom_status: null };
+    }
+});
+
+const customStatuses = await Promise.all(customStatusPromises);
+console.log(`[Mattermost] Fetched custom statuses for ${customStatuses.length} users`);
+
+// Combine user info with status and custom status
+const combinedData = users.map(user => {
+    const status = statuses.find(s => s.user_id === user.id);
+    const customStatusData = customStatuses.find(cs => cs.user_id === user.id);
+    
+    return {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        name: `${user.first_name} ${user.last_name}`.trim() || user.username,
+        status: status?.status || 'offline', // online, away, dnd, offline
+        last_activity_at: status?.last_activity_at || user.last_activity_at,
+        manual: status?.manual || false, // true if user manually set status
+        custom_status: customStatusData?.custom_status || null, // Add custom status here
+        source: 'mattermost'
+    };
+});
+
+console.log(`[Mattermost] Successfully fetched ${combinedData.length} user statuses with custom statuses`);
+return combinedData;
 
     } catch (error) {
         console.error('[Mattermost] Error fetching statuses:', error.message);
@@ -3814,6 +3845,62 @@ router.put('/mattermost-custom-status', async (req, res) => {
         console.error('[Mattermost] Error updating custom status:', error.message);
         res.status(500).json({ 
             error: 'Failed to update custom status',
+            details: error.message 
+        });
+    }
+});
+
+/**
+ * Delete/Clear Mattermost custom status
+ * DELETE /api/mattermost-custom-status
+ */
+router.delete('/mattermost-custom-status', async (req, res) => {
+    try {
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ 
+                error: 'Missing required fields',
+                details: 'userId is required'
+            });
+        }
+
+        if (!MATTERMOST_URL || !MATTERMOST_TOKEN) {
+            return res.status(500).json({ 
+                error: 'Mattermost not configured',
+                details: 'MATTERMOST_URL and MATTERMOST_TOKEN must be set'
+            });
+        }
+
+        console.log(`[Mattermost] Clearing custom status for user ${userId}`);
+
+        // Delete custom status in Mattermost
+        const response = await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status/custom`, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok && response.status !== 200) {
+            const errorText = await response.text();
+            console.error('[Mattermost] Custom status clear failed:', errorText);
+            throw new Error(`Mattermost API returned ${response.status}: ${errorText}`);
+        }
+
+        console.log(`[Mattermost] Custom status cleared successfully for user ${userId}`);
+
+        res.json({
+            success: true,
+            userId,
+            message: 'Custom status cleared successfully'
+        });
+
+    } catch (error) {
+        console.error('[Mattermost] Error clearing custom status:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to clear custom status',
             details: error.message 
         });
     }
