@@ -3646,7 +3646,7 @@ router.get('/agent-status-enhanced', async (req, res) => {
  */
 router.put('/mattermost-status', async (req, res) => {
     try {
-        const { userId, status, manual } = req.body;
+        const { userId, status, manual, clearCustom } = req.body;
 
         if (!userId || !status) {
             return res.status(400).json({ 
@@ -3672,6 +3672,24 @@ router.put('/mattermost-status', async (req, res) => {
         }
 
         console.log(`[Mattermost] Updating status for user ${userId} to ${status}`);
+
+        // Clear custom status if requested
+        if (clearCustom) {
+            try {
+                console.log('[Mattermost] Clearing custom status...');
+                await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status/custom`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                console.log('[Mattermost] Custom status cleared successfully');
+            } catch (err) {
+                console.error('[Mattermost] Error clearing custom status:', err.message);
+                // Continue even if custom status clear fails
+            }
+        }
 
         // Update Mattermost status
         const response = await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status`, {
@@ -3701,6 +3719,7 @@ router.put('/mattermost-status', async (req, res) => {
             userId,
             status: result.status,
             manual: result.manual,
+            customCleared: clearCustom || false,
             message: 'Status updated successfully'
         });
 
@@ -3708,6 +3727,73 @@ router.put('/mattermost-status', async (req, res) => {
         console.error('[Mattermost] Error updating status:', error.message);
         res.status(500).json({ 
             error: 'Failed to update Mattermost status',
+            details: error.message 
+        });
+    }
+});
+
+/**
+ * Update Mattermost custom status with text
+ * PUT /api/mattermost-custom-status
+ */
+router.put('/mattermost-custom-status', async (req, res) => {
+    try {
+        const { userId, text, emoji } = req.body;
+
+        if (!userId || !text) {
+            return res.status(400).json({ 
+                error: 'Missing required fields',
+                details: 'userId and text are required'
+            });
+        }
+
+        if (!MATTERMOST_URL || !MATTERMOST_TOKEN) {
+            return res.status(500).json({ 
+                error: 'Mattermost not configured',
+                details: 'MATTERMOST_URL and MATTERMOST_TOKEN must be set'
+            });
+        }
+
+        console.log(`[Mattermost] Setting custom status for user ${userId}: ${text}`);
+
+        // Set custom status in Mattermost
+        const response = await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status/custom`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                emoji: emoji || 'speech_balloon',
+                text: text,
+                duration: 'date_and_time', // Status stays until manually cleared
+                expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('[Mattermost] Custom status update failed:', errorText);
+            throw new Error(`Mattermost API returned ${response.status}: ${errorText}`);
+        }
+
+        const result = await response.json();
+        console.log(`[Mattermost] Custom status updated successfully for user ${userId}`);
+
+        res.json({
+            success: true,
+            userId,
+            custom_status: {
+                text: text,
+                emoji: emoji || 'speech_balloon'
+            },
+            message: 'Custom status updated successfully'
+        });
+
+    } catch (error) {
+        console.error('[Mattermost] Error updating custom status:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to update custom status',
             details: error.message 
         });
     }
