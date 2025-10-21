@@ -2226,11 +2226,13 @@ const customStatusPromises = users.map(async (user) => {
 
         if (customStatusResponse.ok) {
             const customStatus = await customStatusResponse.json();
+            console.log(`[DEBUG Custom Status] User ${user.username}: `, customStatus);
             return {
                 user_id: user.id,
                 custom_status: customStatus
             };
         }
+        console.log(`[DEBUG Custom Status] User ${user.username}: response not ok (${customStatusResponse.status})`);
         return { user_id: user.id, custom_status: null };
     } catch (error) {
         console.error(`[Mattermost] Error fetching custom status for user ${user.id}:`, error.message);
