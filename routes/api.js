@@ -3687,14 +3687,24 @@ router.put('/mattermost-status', async (req, res) => {
                 console.log('[Mattermost] Custom status cleared successfully');
             } catch (err) {
                 console.error('[Mattermost] Error clearing custom status:', err.message);
-                // Continue even if custom status clear fails
             }
         }
 
-        // Update Mattermost status
+        // Update Mattermost status with detailed logging
         const updateUrl = `${MATTERMOST_URL}/api/v4/users/${userId}/status`;
-        console.log(`[Mattermost] PUT URL: ${updateUrl}`);
-        console.log(`[Mattermost] Token present:`, MATTERMOST_TOKEN ? 'Yes' : 'No');
+        
+        const requestBody = {
+            user_id: userId,
+            status: status.toLowerCase(),
+            manual: manual !== false,
+            last_activity_at: Date.now()
+        };
+        
+        console.log(`[Mattermost] ========== STATUS UPDATE REQUEST ==========`);
+        console.log(`[Mattermost] URL: ${updateUrl}`);
+        console.log(`[Mattermost] Method: PUT`);
+        console.log(`[Mattermost] Body:`, JSON.stringify(requestBody, null, 2));
+        console.log(`[Mattermost] Token: ${MATTERMOST_TOKEN.substring(0, 10)}...`);
         
         const response = await fetch(updateUrl, {
             method: 'PUT',
@@ -3702,32 +3712,39 @@ router.put('/mattermost-status', async (req, res) => {
                 'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                status: status.toLowerCase(),
-                manual: manual !== false
-            })
+            body: JSON.stringify(requestBody)
         });
 
+        const responseText = await response.text();
+        console.log(`[Mattermost] ========== STATUS UPDATE RESPONSE ==========`);
+        console.log(`[Mattermost] Status Code: ${response.status}`);
+        console.log(`[Mattermost] Response Body: ${responseText}`);
+        console.log(`[Mattermost] ==========================================`);
+
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error('[Mattermost] Status update failed:', errorText);
-            throw new Error(`Mattermost API returned ${response.status}: ${errorText}`);
+            throw new Error(`Mattermost API returned ${response.status}: ${responseText}`);
         }
 
-        const result = await response.json();
-        console.log(`[Mattermost] Status updated successfully for user ${userId}`);
+        let result;
+        try {
+            result = JSON.parse(responseText);
+        } catch (e) {
+            result = { status: status.toLowerCase() };
+        }
+
+        console.log(`[Mattermost] ✅ Status updated successfully for user ${userId}`);
 
         res.json({
             success: true,
             userId,
-            status: result.status,
-            manual: result.manual,
+            status: result.status || status.toLowerCase(),
+            manual: result.manual || true,
             customCleared: clearCustom || false,
             message: 'Status updated successfully'
         });
 
     } catch (error) {
-        console.error('[Mattermost] Error updating status:', error.message);
+        console.error('[Mattermost] ❌ Error updating status:', error.message);
         res.status(500).json({ 
             error: 'Failed to update Mattermost status',
             details: error.message 
