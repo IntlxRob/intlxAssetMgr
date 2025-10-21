@@ -3641,6 +3641,79 @@ router.get('/agent-status-enhanced', async (req, res) => {
 });
 
 /**
+ * Update Mattermost user status
+ * PUT /api/mattermost-status
+ */
+router.put('/mattermost-status', async (req, res) => {
+    try {
+        const { userId, status, manual } = req.body;
+
+        if (!userId || !status) {
+            return res.status(400).json({ 
+                error: 'Missing required fields',
+                details: 'userId and status are required'
+            });
+        }
+
+        if (!MATTERMOST_URL || !MATTERMOST_TOKEN) {
+            return res.status(500).json({ 
+                error: 'Mattermost not configured',
+                details: 'MATTERMOST_URL and MATTERMOST_TOKEN must be set'
+            });
+        }
+
+        // Valid statuses: online, away, dnd, offline
+        const validStatuses = ['online', 'away', 'dnd', 'offline'];
+        if (!validStatuses.includes(status.toLowerCase())) {
+            return res.status(400).json({ 
+                error: 'Invalid status',
+                details: `Status must be one of: ${validStatuses.join(', ')}`
+            });
+        }
+
+        console.log(`[Mattermost] Updating status for user ${userId} to ${status}`);
+
+        // Update Mattermost status
+        const response = await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                user_id: userId,
+                status: status.toLowerCase(),
+                manual: manual !== false // Default to manual if not specified
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('[Mattermost] Status update failed:', errorText);
+            throw new Error(`Mattermost API returned ${response.status}: ${errorText}`);
+        }
+
+        const result = await response.json();
+        console.log(`[Mattermost] Status updated successfully for user ${userId}`);
+
+        res.json({
+            success: true,
+            userId,
+            status: result.status,
+            manual: result.manual,
+            message: 'Status updated successfully'
+        });
+
+    } catch (error) {
+        console.error('[Mattermost] Error updating status:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to update Mattermost status',
+            details: error.message 
+        });
+    }
+});
+
+/**
  * Updated: Bulk sync Elevate IDs using Zendesk's create_or_update_many endpoint
  */
 router.post('/setup/sync-elevate-ids', async (req, res) => {
