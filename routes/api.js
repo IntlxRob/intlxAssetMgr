@@ -3912,11 +3912,16 @@ router.delete('/mattermost-custom-status', async (req, res) => {
 
         console.log(`[Mattermost] ✅ Custom status cleared successfully for user ${userId}`);
 
-        res.json({
-            success: true,
-            userId,
-            message: 'Custom status cleared successfully'
-        });
+// Remove from cache
+customStatusCache.delete(userId);
+console.log(`[Mattermost] 🗑️ Removed cached custom status for user ${userId}`);
+console.log(`[Mattermost] Cache now has ${customStatusCache.size} entries`);
+
+res.json({
+    success: true,
+    userId,
+    message: 'Custom status cleared successfully'
+});
 
     } catch (error) {
         console.error('[Mattermost] Error clearing custom status:', error.message);
