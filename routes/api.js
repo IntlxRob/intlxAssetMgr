@@ -2216,55 +2216,33 @@ async function fetchMattermostStatuses() {
 
         const statuses = await statusesResponse.json();
         
-        // Fetch custom statuses for all users
-console.log('[Mattermost] Fetching custom statuses...');
-const customStatusPromises = users.map(async (user) => {
-    try {
-        const customStatusResponse = await fetch(`${MATTERMOST_URL}/api/v4/users/${user.id}/status/custom`, {
-            headers: {
-                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
-                'Content-Type': 'application/json'
-            }
-        });
+        // Use cached custom statuses instead of fetching from Mattermost
+        console.log('[Mattermost] Using cached custom statuses...');
+        const customStatuses = users.map(user => ({
+            user_id: user.id,
+            custom_status: customStatusCache.get(user.id) || null
+        }));
+        console.log(`[Mattermost] Found ${Array.from(customStatusCache.keys()).length} cached custom statuses`);
 
-        if (customStatusResponse.ok) {
-            const customStatus = await customStatusResponse.json();
-            console.log(`[DEBUG Custom Status] User ${user.username}: `, customStatus);
+        // Combine user info with status and custom status
+        const combinedData = users.map(user => {
+            const status = statuses.find(s => s.user_id === user.id);
+            const customStatusData = customStatuses.find(cs => cs.user_id === user.id);
+            
             return {
-                user_id: user.id,
-                custom_status: customStatus
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                first_name: user.first_name,
+                last_name: user.last_name,
+                name: `${user.first_name} ${user.last_name}`.trim() || user.username,
+                status: status?.status || 'offline', // online, away, dnd, offline
+                last_activity_at: status?.last_activity_at || user.last_activity_at,
+                manual: status?.manual || false, // true if user manually set status
+                custom_status: customStatusData?.custom_status || null, // Add custom status here
+                source: 'mattermost'
             };
-        }
-        console.log(`[DEBUG Custom Status] User ${user.username}: response not ok (${customStatusResponse.status})`);
-        return { user_id: user.id, custom_status: null };
-    } catch (error) {
-        console.error(`[Mattermost] Error fetching custom status for user ${user.id}:`, error.message);
-        return { user_id: user.id, custom_status: null };
-    }
-});
-
-const customStatuses = await Promise.all(customStatusPromises);
-console.log(`[Mattermost] Fetched custom statuses for ${customStatuses.length} users`);
-
-// Combine user info with status and custom status
-const combinedData = users.map(user => {
-    const status = statuses.find(s => s.user_id === user.id);
-    const customStatusData = customStatuses.find(cs => cs.user_id === user.id);
-    
-    return {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        name: `${user.first_name} ${user.last_name}`.trim() || user.username,
-        status: status?.status || 'offline', // online, away, dnd, offline
-        last_activity_at: status?.last_activity_at || user.last_activity_at,
-        manual: status?.manual || false, // true if user manually set status
-        custom_status: customStatusData?.custom_status || null, // Add custom status here
-        source: 'mattermost'
-    };
-});
+        });
 
 console.log(`[Mattermost] Successfully fetched ${combinedData.length} user statuses with custom statuses`);
 return combinedData;
