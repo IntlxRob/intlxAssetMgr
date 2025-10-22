@@ -3931,25 +3931,44 @@ router.delete('/mattermost-custom-status', async (req, res) => {
 
         console.log(`[Mattermost] ✅ Custom status cleared successfully for user ${userId}`);
 
-// Remove from cache
-customStatusCache.delete(userId);
-console.log(`[Mattermost] 🗑️ Removed cached custom status for user ${userId}`);
-console.log(`[Mattermost] Cache now has ${customStatusCache.size} entries`);
+        // Remove from cache
+        customStatusCache.delete(userId);
+        console.log(`[Mattermost] 🗑️ Removed cached custom status for user ${userId}`);
+        console.log(`[Mattermost] Cache now has ${customStatusCache.size} entries`);
 
-res.json({
-    success: true,
-    userId,
-    message: 'Custom status cleared successfully'
-});
+        // Set status back to online when clearing
+        try {
+            console.log('[Mattermost] Setting status back to online...');
+            await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status`, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    user_id: userId,
+                    status: 'online'
+                })
+            });
+            console.log('[Mattermost] Status set back to online');
+        } catch (err) {
+            console.error('[Mattermost] Failed to set status back to online:', err.message);
+        }
 
-    } catch (error) {
-        console.error('[Mattermost] Error clearing custom status:', error.message);
-        res.status(500).json({ 
-            error: 'Failed to clear custom status',
-            details: error.message 
+        res.json({
+            success: true,
+            userId,
+            message: 'Custom status cleared successfully'
         });
-    }
-});
+
+            } catch (error) {
+                console.error('[Mattermost] Error clearing custom status:', error.message);
+                res.status(500).json({ 
+                    error: 'Failed to clear custom status',
+                    details: error.message 
+                });
+            }
+        });
 
 /**
  * Delete/Clear Mattermost custom status
