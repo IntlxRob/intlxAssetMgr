@@ -2194,8 +2194,19 @@ async function fetchMattermostStatuses() {
             throw new Error(`Mattermost users API failed: ${usersResponse.status}`);
         }
 
-        const users = await usersResponse.json();
-        console.log(`[Mattermost] Found ${users.length} users`);
+        const allUsers = await usersResponse.json();
+
+        // Filter out system/bot accounts
+        const excludedAccounts = ['zoom', 'system', 'system-bot', 'playbooks', 'production polling server', 'prod-polling', 'feedbackbot', 'jumpcloud', 'jumpcloud alerts', 'calls'];
+        const users = allUsers.filter(user => {
+            const nameLower = (user.first_name + ' ' + user.last_name).toLowerCase();
+            const usernameLower = (user.username || '').toLowerCase();
+            return !excludedAccounts.some(excluded => 
+                nameLower.includes(excluded) || usernameLower.includes(excluded)
+            );
+        });
+
+        console.log(`[Mattermost] Found ${users.length} users (filtered from ${allUsers.length})`);
 
         // Get user IDs for status lookup
         const userIds = users.map(u => u.id);
