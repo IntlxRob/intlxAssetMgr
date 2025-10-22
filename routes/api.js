@@ -3779,7 +3779,7 @@ router.put('/mattermost-status', async (req, res) => {
  */
 router.put('/mattermost-custom-status', async (req, res) => {
     try {
-        const { userId, text, emoji, duration } = req.body;
+        const { userId, text, emoji, duration, setStatusToDnd } = req.body;
 
         if (!userId || !text) {
             return res.status(400).json({ 
@@ -3869,6 +3869,30 @@ router.put('/mattermost-custom-status', async (req, res) => {
         });
     }
 });
+
+const result = await response.json();
+console.log(`[Mattermost] Custom status updated successfully for user ${userId}`);
+
+// If user wants to show as busy, update their status to DND
+if (setStatusToDnd) {
+    try {
+        console.log('[Mattermost] Setting status to DND...');
+        await fetch(`${MATTERMOST_URL}/api/v4/users/${userId}/status`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${MATTERMOST_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                user_id: userId,
+                status: 'dnd'
+            })
+        });
+        console.log('[Mattermost] Status set to DND');
+    } catch (err) {
+        console.error('[Mattermost] Failed to set DND status:', err.message);
+    }
+}
 
 /**
  * Delete/Clear Mattermost custom status
