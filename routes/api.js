@@ -9305,9 +9305,11 @@ router.get('/pagerduty-oncall', async (req, res) => {
         const events = ical.parseICS(icsData);
         const now = new Date();
         
-        // Find the current oncall event
         let currentOncall = null;
+        let upcomingOncall = null;
+        let upcomingEvents = [];
         
+        // Find current and upcoming oncall events
         for (const event of Object.values(events)) {
             if (event.type === 'VEVENT') {
                 const start = new Date(event.start);
@@ -9319,17 +9321,42 @@ router.get('/pagerduty-oncall', async (req, res) => {
                         name: event.summary,
                         start: start.toISOString(),
                         end: end.toISOString(),
-                        description: event.description || ''
+                        description: event.description || '',
+                        status: 'current'
                     };
-                    break;
+                }
+                // Collect upcoming events
+                else if (start > now) {
+                    upcomingEvents.push({
+                        name: event.summary,
+                        start: start.toISOString(),
+                        end: end.toISOString(),
+                        description: event.description || '',
+                        status: 'upcoming',
+                        startTime: start.getTime()
+                    });
                 }
             }
         }
         
+        // Sort upcoming events by start time and get the next one
+        if (upcomingEvents.length > 0) {
+            upcomingEvents.sort((a, b) => a.startTime - b.startTime);
+            upcomingOncall = upcomingEvents[0];
+            delete upcomingOncall.startTime; // Remove helper field
+        }
+        
+        // Return current oncall, or next upcoming if no one is current
+        const oncallToShow = currentOncall || upcomingOncall;
+        
         console.log('[PagerDuty] Current oncall:', currentOncall);
+        console.log('[PagerDuty] Next upcoming:', upcomingOncall);
+        console.log('[PagerDuty] Showing:', oncallToShow);
         
         res.json({
-            oncall: currentOncall,
+            oncall: oncallToShow,
+            current: currentOncall,
+            upcoming: upcomingOncall,
             updated_at: new Date().toISOString()
         });
         
