@@ -10,7 +10,8 @@ const calendar = google.calendar('v3');
 
 const MATTERMOST_URL = process.env.MATTERMOST_URL; // e.g., 'https://mattermost.yourcompany.com'
 const MATTERMOST_TOKEN = process.env.MATTERMOST_TOKEN; // Personal Access Token or Bot Token
-
+const https = require('https'); // PagerDuty OnCall Calendar Webcal
+const ical = require('ical'); // PagerDuty OnCall Calendar Webcal
 
 // In-memory cache for custom statuses
 const customStatusCache = new Map(); // userId -> { text, emoji, timestamp }
@@ -9263,6 +9264,86 @@ console.log(`[Reset] ✅ Fetched ${currentAgents.length} known agents (filtered 
 
 // ============================================
 // END OF WEBHOOK ENDPOINTS
+// ============================================
+
+// ============================================
+// PAGERDUTY ONCALL ENDPOINT
+// ============================================
+
+/**
+ * Get current PagerDuty oncall agent from Webcal feed
+ * GET /api/pagerduty-oncall
+ */
+router.get('/pagerduty-oncall', async (req, res) => {
+    try {
+        // Get the webcal URL from environment variable
+        const webcalUrl = process.env.PAGERDUTY_WEBCAL_URL;
+        
+        if (!webcalUrl) {
+            return res.status(400).json({ 
+                error: 'PagerDuty Webcal URL not configured',
+                note: 'Set PAGERDUTY_WEBCAL_URL in environment variables'
+            });
+        }
+        
+        // Convert webcal:// to https://
+        const httpsUrl = webcalUrl.replace('webcal://', 'https://');
+        
+        console.log('[PagerDuty] Fetching oncall schedule from:', httpsUrl);
+        
+        // Fetch the iCalendar feed
+        const icsData = await new Promise((resolve, reject) => {
+            https.get(httpsUrl, (response) => {
+                let data = '';
+                response.on('data', chunk => data += chunk);
+                response.on('end', () => resolve(data));
+                response.on('error', reject);
+            }).on('error', reject);
+        });
+        
+        // Parse the iCalendar data
+        const events = ical.parseICS(icsData);
+        const now = new Date();
+        
+        // Find the current oncall event
+        let currentOncall = null;
+        
+        for (const event of Object.values(events)) {
+            if (event.type === 'VEVENT') {
+                const start = new Date(event.start);
+                const end = new Date(event.end);
+                
+                // Check if event is currently active
+                if (start <= now && now <= end) {
+                    currentOncall = {
+                        name: event.summary,
+                        start: start.toISOString(),
+                        end: end.toISOString(),
+                        description: event.description || ''
+                    };
+                    break;
+                }
+            }
+        }
+        
+        console.log('[PagerDuty] Current oncall:', currentOncall);
+        
+        res.json({
+            oncall: currentOncall,
+            updated_at: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('[PagerDuty] Error fetching oncall:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch oncall schedule',
+            details: error.message 
+        });
+    }
+});
+
+// ============================================
+// END OF PAGERDUTY ONCALL ENDPOINT
 // ============================================
 
 module.exports = router;
