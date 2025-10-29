@@ -167,7 +167,7 @@ async function syncTickets() {
         try {
           await pool.query(`
             INSERT INTO tickets (
-              id, subject, description, status, priority, ticket_type,
+              id, subject, description, status, priority, type,
               created_at, updated_at, requester_id, assignee_id,
               organization_id, group_id, tags, custom_fields
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
