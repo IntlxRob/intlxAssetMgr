@@ -84,7 +84,7 @@ async function makeZendeskRequest(url, retryCount = 0) {
 async function getSyncStatus(resourceType) {
   try {
     const result = await pool.query(
-      'SELECT * FROM sync_status WHERE resource_type = $1',
+      'SELECT * FROM sync_status WHERE entity_type = $1',  
       [resourceType]
     );
     return result.rows[0] || null;
@@ -97,15 +97,15 @@ async function getSyncStatus(resourceType) {
 async function updateSyncStatus(resourceType, status, error = null, recordsSynced = 0) {
   try {
     await pool.query(`
-      INSERT INTO sync_status (resource_type, last_sync, status, error_message, records_synced, last_updated_at)
+      INSERT INTO sync_status (entity_type, last_sync_at, status, error_message, records_synced, updated_at)  
       VALUES ($1, NOW(), $2, $3, $4, NOW())
-      ON CONFLICT (resource_type)
+      ON CONFLICT (entity_type) 
       DO UPDATE SET
-        last_sync = NOW(),
+        last_sync_at = NOW(), 
         status = $2,
         error_message = $3,
         records_synced = EXCLUDED.records_synced + $4,
-        last_updated_at = NOW()
+        updated_at = NOW()  
     `, [resourceType, status, error, recordsSynced]);
   } catch (err) {
     console.error(`Error updating sync status for ${resourceType}:`, err.message);
