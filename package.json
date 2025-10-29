@@ -23,7 +23,8 @@
     "ical": "^0.8.0",
     "pg": "^8.16.3",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "redis": "^4.6.13"
   },
   "devDependencies": {
     "@babel/core": "^7.28.0",
