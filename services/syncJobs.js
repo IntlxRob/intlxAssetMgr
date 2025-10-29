@@ -7,7 +7,7 @@
 // ============================================
 
 const axios = require('axios');
-const { pool } = require('../config/database');
+const db = require('../db'); // Use existing db.js
 
 // ============================================
 // CONFIGURATION
@@ -231,8 +231,10 @@ async function syncOrganizations() {
       return { success: true, count: 0 };
     }
     
-    // Upsert into database
+    // Upsert into database using existing db.js
+    const pool = db.getPool();
     const client = await pool.connect();
+    
     try {
       for (const org of organizations) {
         await client.query(`
@@ -283,8 +285,10 @@ async function syncAgents() {
     // Filter for agents only
     const agents = users.filter(u => u.role === 'agent' || u.role === 'admin');
     
-    // Upsert into database
+    // Upsert into database using existing db.js
+    const pool = db.getPool();
     const client = await pool.connect();
+    
     try {
       for (const agent of agents) {
         await client.query(`
@@ -334,8 +338,10 @@ async function syncGroups() {
       return { success: true, count: 0 };
     }
     
-    // Upsert into database
+    // Upsert into database using existing db.js
+    const pool = db.getPool();
     const client = await pool.connect();
+    
     try {
       for (const group of groups) {
         await client.query(`
@@ -371,6 +377,7 @@ async function syncGroups() {
 async function syncTickets() {
   console.log('🔄 Starting tickets incremental sync...');
   
+  const pool = db.getPool();
   const client = await pool.connect();
   
   try {
