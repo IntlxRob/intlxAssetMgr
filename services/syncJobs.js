@@ -176,7 +176,7 @@ async function syncTickets() {
               description = EXCLUDED.description,
               status = EXCLUDED.status,
               priority = EXCLUDED.priority,
-              ticket_type = EXCLUDED.ticket_type,
+              type = EXCLUDED.type,
               updated_at = EXCLUDED.updated_at,
               assignee_id = EXCLUDED.assignee_id,
               group_id = EXCLUDED.group_id,
