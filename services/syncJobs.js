@@ -1,577 +1,502 @@
-// services/syncJobs.js - Background Sync Service
+// ============================================
+// 🚀 OPTIMIZED SYNC JOBS FOR ZENDESK
+// ============================================
+// This version handles Zendesk's strict rate limits:
+// - Incremental API: 10 requests/minute
+// - Regular API: 700 requests/minute
+// ============================================
+
 const axios = require('axios');
-const { query } = require('../db');
-const { clearCache } = require('../middleware/cache');
+const { pool } = require('../config/database');
 
-// ============================================================================
+// ============================================
 // CONFIGURATION
-// ============================================================================
+// ============================================
+const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
+const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
+const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
 
-const ZENDESK_CONFIG = {
-    subdomain: process.env.ZENDESK_SUBDOMAIN,
-    email: process.env.ZENDESK_EMAIL,
-    token: process.env.ZENDESK_API_TOKEN,
-    baseURL: `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`
-};
+// Rate limit settings for INCREMENTAL API
+const INCREMENTAL_DELAY_MS = 7000; // 7 seconds between incremental calls (safer than 6)
+const INCREMENTAL_MAX_RETRIES = 5;
+const INCREMENTAL_BACKOFF_BASE = 10000; // Start with 10 second backoff
 
-// Sync intervals (in milliseconds)
-const SYNC_INTERVALS = {
-    tickets: 5 * 60 * 1000,      // 5 minutes
-    organizations: 60 * 60 * 1000, // 1 hour
-    agents: 60 * 60 * 1000,       // 1 hour
-    groups: 60 * 60 * 1000        // 1 hour
-};
+// Rate limit settings for REGULAR API
+const REGULAR_DELAY_MS = 200; // 200ms between regular calls
+const REGULAR_MAX_RETRIES = 3;
 
-// ============================================================================
-// ZENDESK API CLIENT
-// ============================================================================
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
 
 /**
- * Make authenticated request to Zendesk API
+ * Sleep for specified milliseconds
  */
-async function zendeskRequest(endpoint, params = {}) {
-    const auth = Buffer.from(`${ZENDESK_CONFIG.email}/token:${ZENDESK_CONFIG.token}`).toString('base64');
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Calculate exponential backoff delay
+ */
+function getBackoffDelay(attempt, baseDelay = INCREMENTAL_BACKOFF_BASE) {
+  return baseDelay * Math.pow(2, attempt);
+}
+
+/**
+ * Parse rate limit headers from Zendesk response
+ */
+function parseRateLimitHeaders(headers) {
+  const remaining = parseInt(headers['x-rate-limit-remaining'] || 700);
+  const limit = parseInt(headers['x-rate-limit'] || 700);
+  
+  // Parse incremental export limits if present
+  const incrementalHeader = headers['zendesk-rate-limit-incremental-exports'];
+  let incrementalRemaining = 10;
+  let incrementalResets = 1;
+  
+  if (incrementalHeader) {
+    const match = incrementalHeader.match(/remaining=(-?\d+)/);
+    const resetMatch = incrementalHeader.match(/resets=(\d+)/);
+    if (match) incrementalRemaining = parseInt(match[1]);
+    if (resetMatch) incrementalResets = parseInt(resetMatch[1]);
+  }
+  
+  return {
+    remaining,
+    limit,
+    incrementalRemaining,
+    incrementalResets,
+    percentage: (remaining / limit) * 100
+  };
+}
+
+/**
+ * Make a request to Zendesk API with rate limiting and retries
+ */
+async function zendeskRequest(url, isIncremental = false, attempt = 0) {
+  const auth = Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_API_TOKEN}`).toString('base64');
+  
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      timeout: 30000
+    });
+    
+    // Log rate limit status
+    const rateLimits = parseRateLimitHeaders(response.headers);
+    if (isIncremental) {
+      console.log(`[Rate Limit] Incremental API: ${rateLimits.incrementalRemaining} remaining, resets in ${rateLimits.incrementalResets}s`);
+    }
+    
+    return response.data;
+    
+  } catch (error) {
+    if (error.response?.status === 429) {
+      const maxRetries = isIncremental ? INCREMENTAL_MAX_RETRIES : REGULAR_MAX_RETRIES;
+      
+      if (attempt >= maxRetries) {
+        console.error(`❌ Max retries (${maxRetries}) reached for ${url}`);
+        throw error;
+      }
+      
+      // Get retry-after header or use exponential backoff
+      const retryAfter = parseInt(error.response.headers['retry-after'] || 0);
+      const backoffDelay = getBackoffDelay(attempt);
+      const waitTime = retryAfter ? retryAfter * 1000 : backoffDelay;
+      
+      console.log(`⏳ Rate limited (429). Waiting ${Math.round(waitTime/1000)}s before retry ${attempt + 1}/${maxRetries}...`);
+      await sleep(waitTime);
+      
+      return zendeskRequest(url, isIncremental, attempt + 1);
+    }
+    
+    console.error(`❌ Zendesk API error (${url}):`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Fetch all pages from Zendesk API with proper rate limiting
+ */
+async function zendeskFetchAll(endpoint, isIncremental = false) {
+  const results = [];
+  let nextPage = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/${endpoint}`;
+  let pageCount = 0;
+  
+  while (nextPage) {
+    pageCount++;
+    console.log(`📄 Fetching page ${pageCount} from ${endpoint}...`);
+    
+    const data = await zendeskRequest(nextPage, isIncremental);
+    
+    // Determine which field contains the results
+    const resultKey = Object.keys(data).find(key => 
+      Array.isArray(data[key]) && !['next_page', 'previous_page', 'count'].includes(key)
+    );
+    
+    if (resultKey && data[resultKey]) {
+      results.push(...data[resultKey]);
+      console.log(`✅ Retrieved ${data[resultKey].length} items (Total: ${results.length})`);
+    }
+    
+    nextPage = data.next_page || null;
+    
+    // Apply appropriate delay before next request
+    if (nextPage) {
+      const delay = isIncremental ? INCREMENTAL_DELAY_MS : REGULAR_DELAY_MS;
+      console.log(`⏱️  Waiting ${delay}ms before next request...`);
+      await sleep(delay);
+    }
+  }
+  
+  return results;
+}
+
+/**
+ * Fetch all pages from Zendesk incremental API with aggressive rate limiting
+ */
+async function zendeskFetchIncremental(endpoint, startTime) {
+  const results = [];
+  let url = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/${endpoint}?start_time=${startTime}`;
+  let pageCount = 0;
+  let endOfStream = false;
+  
+  while (url && !endOfStream) {
+    pageCount++;
+    console.log(`📄 Fetching incremental page ${pageCount}...`);
     
     try {
-        const response = await axios.get(`${ZENDESK_CONFIG.baseURL}${endpoint}`, {
-            headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/json'
-            },
-            params: params
-        });
-        return response.data;
+      const data = await zendeskRequest(url, true); // Mark as incremental
+      
+      // Determine result key
+      const resultKey = Object.keys(data).find(key => 
+        Array.isArray(data[key]) && !['next_page', 'previous_page', 'count'].includes(key)
+      );
+      
+      if (resultKey && data[resultKey]) {
+        const newItems = data[resultKey];
+        results.push(...newItems);
+        console.log(`✅ Retrieved ${newItems.length} items (Total: ${results.length})`);
+      }
+      
+      // Check for end of stream
+      endOfStream = data.end_of_stream || false;
+      
+      if (endOfStream) {
+        console.log('🏁 Reached end of incremental stream');
+        break;
+      }
+      
+      // Get next page
+      url = data.next_page || null;
+      
+      // CRITICAL: Wait 7 seconds between incremental API calls
+      if (url && !endOfStream) {
+        console.log(`⏳ Waiting ${INCREMENTAL_DELAY_MS}ms (rate limit protection)...`);
+        await sleep(INCREMENTAL_DELAY_MS);
+      }
+      
     } catch (error) {
-        console.error(`❌ Zendesk API error (${endpoint}):`, error.message);
-        throw error;
+      if (error.response?.status === 429) {
+        console.log('⚠️  Still rate limited after retries. Saving progress and exiting...');
+        break;
+      }
+      throw error;
     }
+  }
+  
+  return results;
 }
+
+// ============================================
+// SYNC FUNCTIONS
+// ============================================
 
 /**
- * Fetch all pages of results from Zendesk
+ * Sync Organizations from Zendesk
  */
-async function zendeskFetchAll(endpoint, params = {}) {
-    const results = [];
-    let nextPage = endpoint;
-    let pageCount = 0;
-
-    while (nextPage && pageCount < 100) { // Safety limit
-        const data = await zendeskRequest(nextPage.replace(ZENDESK_CONFIG.baseURL, ''), params);
-        
-        // Handle different response formats
-        const items = data.tickets || data.organizations || data.users || data.groups || [];
-        results.push(...items);
-
-        nextPage = data.next_page;
-        pageCount++;
-
-        // Rate limiting
-        if (nextPage) {
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
-    }
-
-    return results;
-}
-
-// ============================================================================
-// SYNC STATUS TRACKING
-// ============================================================================
-
-/**
- * Record sync start
- */
-async function recordSyncStart(entityType) {
-    await query(`
-        INSERT INTO sync_status (entity_type, last_sync_at, status)
-        VALUES ($1, NOW(), 'in_progress')
-    `, [entityType]);
-}
-
-/**
- * Record sync completion
- */
-async function recordSyncComplete(entityType, recordsSynced, startTime) {
-    const duration = Math.floor((Date.now() - startTime) / 1000);
-    
-    await query(`
-        UPDATE sync_status
-        SET status = 'success',
-            records_synced = $1,
-            duration_seconds = $2,
-            error_message = NULL
-        WHERE entity_type = $3
-        AND status = 'in_progress'
-    `, [recordsSynced, duration, entityType]);
-}
-
-/**
- * Record sync failure
- */
-async function recordSyncFailure(entityType, error) {
-    await query(`
-        UPDATE sync_status
-        SET status = 'failed',
-            error_message = $1
-        WHERE entity_type = $2
-        AND status = 'in_progress'
-    `, [error.message, entityType]);
-}
-
-/**
- * Get last sync time for entity type
- */
-async function getLastSyncTime(entityType) {
-    const result = await query(`
-        SELECT last_sync_at
-        FROM sync_status
-        WHERE entity_type = $1
-        AND status = 'success'
-        ORDER BY last_sync_at DESC
-        LIMIT 1
-    `, [entityType]);
-
-    return result.rows[0]?.last_sync_at || null;
-}
-
-// ============================================================================
-// ORGANIZATIONS SYNC
-// ============================================================================
-
 async function syncOrganizations() {
-    const startTime = Date.now();
-    console.log('🔄 Starting organizations sync...');
-
-    try {
-        await recordSyncStart('organizations');
-
-        // Fetch all organizations from Zendesk
-        const organizations = await zendeskFetchAll('/organizations.json');
-        console.log(`📥 Fetched ${organizations.length} organizations`);
-
-        let synced = 0;
-
-        for (const org of organizations) {
-            await query(`
-                INSERT INTO organizations (
-                    id, name, created_at, updated_at, 
-                    details, shared_tickets, shared_comments
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    updated_at = EXCLUDED.updated_at,
-                    details = EXCLUDED.details,
-                    shared_tickets = EXCLUDED.shared_tickets,
-                    shared_comments = EXCLUDED.shared_comments
-            `, [
-                org.id,
-                org.name,
-                org.created_at,
-                org.updated_at,
-                org.details,
-                org.shared_tickets,
-                org.shared_comments
-            ]);
-            synced++;
-        }
-
-        await recordSyncComplete('organizations', synced, startTime);
-        console.log(`✅ Organizations sync complete: ${synced} records`);
-        
-        return { success: true, synced };
-    } catch (error) {
-        console.error('❌ Organizations sync failed:', error);
-        await recordSyncFailure('organizations', error);
-        throw error;
+  console.log('🔄 Starting organizations sync...');
+  
+  try {
+    const organizations = await zendeskFetchAll('organizations.json');
+    
+    if (organizations.length === 0) {
+      console.log('ℹ️  No organizations to sync');
+      return { success: true, count: 0 };
     }
-}
-
-// ============================================================================
-// AGENTS (USERS) SYNC
-// ============================================================================
-
-async function syncAgents() {
-    const startTime = Date.now();
-    console.log('🔄 Starting agents sync...');
-
+    
+    // Upsert into database
+    const client = await pool.connect();
     try {
-        await recordSyncStart('agents');
-
-        // Fetch all agents (users with agent or admin role)
-        const users = await zendeskFetchAll('/users.json', { role: ['agent', 'admin'] });
-        console.log(`📥 Fetched ${users.length} agents`);
-
-        let synced = 0;
-
-        for (const user of users) {
-            await query(`
-                INSERT INTO agents (
-                    id, name, email, role, created_at, 
-                    updated_at, time_zone, locale, active
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    email = EXCLUDED.email,
-                    role = EXCLUDED.role,
-                    updated_at = EXCLUDED.updated_at,
-                    time_zone = EXCLUDED.time_zone,
-                    locale = EXCLUDED.locale,
-                    active = EXCLUDED.active
-            `, [
-                user.id,
-                user.name,
-                user.email,
-                user.role,
-                user.created_at,
-                user.updated_at,
-                user.time_zone,
-                user.locale,
-                user.active
-            ]);
-            synced++;
-        }
-
-        await recordSyncComplete('agents', synced, startTime);
-        console.log(`✅ Agents sync complete: ${synced} records`);
-        
-        return { success: true, synced };
-    } catch (error) {
-        console.error('❌ Agents sync failed:', error);
-        await recordSyncFailure('agents', error);
-        throw error;
-    }
-}
-
-// ============================================================================
-// GROUPS SYNC
-// ============================================================================
-
-async function syncGroups() {
-    const startTime = Date.now();
-    console.log('🔄 Starting groups sync...');
-
-    try {
-        await recordSyncStart('groups');
-
-        // Fetch all groups
-        const groups = await zendeskFetchAll('/groups.json');
-        console.log(`📥 Fetched ${groups.length} groups`);
-
-        let synced = 0;
-
-        for (const group of groups) {
-            await query(`
-                INSERT INTO groups (
-                    id, name, created_at, updated_at, deleted
-                )
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    updated_at = EXCLUDED.updated_at,
-                    deleted = EXCLUDED.deleted
-            `, [
-                group.id,
-                group.name,
-                group.created_at,
-                group.updated_at,
-                group.deleted || false
-            ]);
-            synced++;
-        }
-
-        await recordSyncComplete('groups', synced, startTime);
-        console.log(`✅ Groups sync complete: ${synced} records`);
-        
-        return { success: true, synced };
-    } catch (error) {
-        console.error('❌ Groups sync failed:', error);
-        await recordSyncFailure('groups', error);
-        throw error;
-    }
-}
-
-// ============================================================================
-// TICKETS SYNC (INCREMENTAL)
-// ============================================================================
-
-/**
- * Extract custom field value by ID
- */
-function getCustomFieldValue(ticket, fieldId) {
-    const field = ticket.custom_fields?.find(f => f.id === fieldId);
-    return field?.value || null;
-}
-
-async function syncTickets(fullSync = false) {
-    const startTime = Date.now();
-    console.log(`🔄 Starting tickets ${fullSync ? 'FULL' : 'incremental'} sync...`);
-
-    try {
-        await recordSyncStart('tickets');
-
-        let tickets;
-        
-        if (fullSync) {
-            // Full sync - fetch all tickets (last 30 days to avoid overwhelming)
-            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-            tickets = await zendeskFetchAll('/incremental/tickets.json', {
-                start_time: Math.floor(new Date(thirtyDaysAgo).getTime() / 1000)
-            });
-        } else {
-            // Incremental sync - only updated tickets
-            const lastSync = await getLastSyncTime('tickets');
-            const startTime = lastSync 
-                ? Math.floor(new Date(lastSync).getTime() / 1000) - 300 // 5 min overlap
-                : Math.floor(Date.now() / 1000) - 3600; // Last hour if no previous sync
-
-            tickets = await zendeskFetchAll('/incremental/tickets.json', {
-                start_time: startTime
-            });
-        }
-
-        console.log(`📥 Fetched ${tickets.length} tickets`);
-
-        let synced = 0;
-
-        for (const ticket of tickets) {
-            // Extract custom fields (adjust field IDs based on your Zendesk setup)
-            const severity = getCustomFieldValue(ticket, 360013426117); // Example field ID
-            const requestType = getCustomFieldValue(ticket, 360013426137); // Example field ID
-
-            await query(`
-                INSERT INTO tickets (
-                    id, organization_id, organization_name, subject, description,
-                    status, priority, severity, request_type,
-                    assignee_id, assignee_name, requester_id, requester_name,
-                    group_id, group_name,
-                    created_at, updated_at, solved_at, closed_at, due_at,
-                    tags, custom_fields, is_billable, billable_time_minutes
-                )
-                VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 
-                    $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
-                )
-                ON CONFLICT (id) DO UPDATE SET
-                    organization_id = EXCLUDED.organization_id,
-                    organization_name = EXCLUDED.organization_name,
-                    subject = EXCLUDED.subject,
-                    description = EXCLUDED.description,
-                    status = EXCLUDED.status,
-                    priority = EXCLUDED.priority,
-                    severity = EXCLUDED.severity,
-                    request_type = EXCLUDED.request_type,
-                    assignee_id = EXCLUDED.assignee_id,
-                    assignee_name = EXCLUDED.assignee_name,
-                    group_id = EXCLUDED.group_id,
-                    group_name = EXCLUDED.group_name,
-                    updated_at = EXCLUDED.updated_at,
-                    solved_at = EXCLUDED.solved_at,
-                    closed_at = EXCLUDED.closed_at,
-                    tags = EXCLUDED.tags,
-                    custom_fields = EXCLUDED.custom_fields,
-                    synced_at = CURRENT_TIMESTAMP
-            `, [
-                ticket.id,
-                ticket.organization_id,
-                ticket.organization_id ? `Org-${ticket.organization_id}` : null, // Fetch org name separately if needed
-                ticket.subject,
-                ticket.description,
-                ticket.status,
-                ticket.priority,
-                severity,
-                requestType,
-                ticket.assignee_id,
-                null, // Fetch assignee name from agents table if needed
-                ticket.requester_id,
-                null, // Fetch requester name separately if needed
-                ticket.group_id,
-                null, // Fetch group name from groups table if needed
-                ticket.created_at,
-                ticket.updated_at,
-                ticket.solved_at || null,
-                ticket.closed_at || null,
-                ticket.due_at || null,
-                ticket.tags || [],
-                JSON.stringify(ticket.custom_fields || {}),
-                false, // Calculate billable status based on your logic
-                0 // Calculate billable time from time_entries if needed
-            ]);
-            synced++;
-
-            // Sync ticket metrics (SLA data)
-            await syncTicketMetrics(ticket.id);
-        }
-
-        await recordSyncComplete('tickets', synced, startTime);
-        console.log(`✅ Tickets sync complete: ${synced} records`);
-
-        // Clear cache after sync
-        await clearCache('analytics:*');
-        
-        return { success: true, synced };
-    } catch (error) {
-        console.error('❌ Tickets sync failed:', error);
-        await recordSyncFailure('tickets', error);
-        throw error;
-    }
-}
-
-// ============================================================================
-// TICKET METRICS SYNC
-// ============================================================================
-
-async function syncTicketMetrics(ticketId) {
-    try {
-        const data = await zendeskRequest(`/tickets/${ticketId}/metrics.json`);
-        const metrics = data.ticket_metric;
-
-        if (!metrics) return;
-
-        await query(`
-            INSERT INTO ticket_metrics (
-                ticket_id,
-                reply_time_minutes,
-                first_reply_time_minutes,
-                full_resolution_time_minutes,
-                agent_wait_time_minutes,
-                requester_wait_time_minutes,
-                on_hold_time_minutes,
-                sla_first_reply_compliant,
-                sla_resolution_compliant,
-                reopens,
-                replies,
-                assignee_updated_at,
-                requester_updated_at,
-                status_updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            ON CONFLICT (ticket_id) DO UPDATE SET
-                reply_time_minutes = EXCLUDED.reply_time_minutes,
-                first_reply_time_minutes = EXCLUDED.first_reply_time_minutes,
-                full_resolution_time_minutes = EXCLUDED.full_resolution_time_minutes,
-                agent_wait_time_minutes = EXCLUDED.agent_wait_time_minutes,
-                requester_wait_time_minutes = EXCLUDED.requester_wait_time_minutes,
-                on_hold_time_minutes = EXCLUDED.on_hold_time_minutes,
-                sla_first_reply_compliant = EXCLUDED.sla_first_reply_compliant,
-                sla_resolution_compliant = EXCLUDED.sla_resolution_compliant,
-                reopens = EXCLUDED.reopens,
-                replies = EXCLUDED.replies,
-                assignee_updated_at = EXCLUDED.assignee_updated_at,
-                requester_updated_at = EXCLUDED.requester_updated_at,
-                status_updated_at = EXCLUDED.status_updated_at,
-                updated_at = CURRENT_TIMESTAMP
+      for (const org of organizations) {
+        await client.query(`
+          INSERT INTO organizations (id, name, created_at, updated_at, details, tags)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            updated_at = EXCLUDED.updated_at,
+            details = EXCLUDED.details,
+            tags = EXCLUDED.tags
         `, [
-            ticketId,
-            metrics.reply_time_in_minutes?.calendar || null,
-            metrics.first_resolution_time_in_minutes?.calendar || null,
-            metrics.full_resolution_time_in_minutes?.calendar || null,
-            metrics.agent_wait_time_in_minutes?.calendar || null,
-            metrics.requester_wait_time_in_minutes?.calendar || null,
-            metrics.on_hold_time_in_minutes?.calendar || null,
-            metrics.sla_breach?.first_reply_time ? false : true,
-            metrics.sla_breach?.resolution_time ? false : true,
-            metrics.reopens || 0,
-            metrics.replies || 0,
-            metrics.assignee_updated_at,
-            metrics.requester_updated_at,
-            metrics.status_updated_at
+          org.id,
+          org.name,
+          org.created_at,
+          org.updated_at,
+          JSON.stringify(org),
+          org.tags || []
         ]);
-    } catch (error) {
-        // Metrics might not exist for all tickets - that's ok
-        console.warn(`⚠️  Could not sync metrics for ticket ${ticketId}`);
+      }
+      
+      console.log(`✅ Organizations sync complete: ${organizations.length} records`);
+      return { success: true, count: organizations.length };
+      
+    } finally {
+      client.release();
     }
-}
-
-// ============================================================================
-// SCHEDULER
-// ============================================================================
-
-let syncIntervals = {};
-
-/**
- * Schedule all sync jobs
- */
-function scheduleSync() {
-    console.log('📅 Scheduling sync jobs...');
-
-    // Initial sync on startup (with delays to avoid rate limits)
-    setTimeout(() => syncOrganizations().catch(console.error), 5000);
-    setTimeout(() => syncAgents().catch(console.error), 10000);
-    setTimeout(() => syncGroups().catch(console.error), 15000);
-    setTimeout(() => syncTickets(false).catch(console.error), 20000);
-
-    // Schedule recurring syncs
-    syncIntervals.organizations = setInterval(
-        () => syncOrganizations().catch(console.error),
-        SYNC_INTERVALS.organizations
-    );
-
-    syncIntervals.agents = setInterval(
-        () => syncAgents().catch(console.error),
-        SYNC_INTERVALS.agents
-    );
-
-    syncIntervals.groups = setInterval(
-        () => syncGroups().catch(console.error),
-        SYNC_INTERVALS.groups
-    );
-
-    syncIntervals.tickets = setInterval(
-        () => syncTickets(false).catch(console.error),
-        SYNC_INTERVALS.tickets
-    );
-
-    console.log('✅ Sync jobs scheduled');
+    
+  } catch (error) {
+    console.error('❌ Organizations sync failed:', error.message);
+    return { success: false, error: error.message };
+  }
 }
 
 /**
- * Stop all sync jobs
+ * Sync Agents (Users) from Zendesk
  */
-function stopSync() {
-    console.log('🛑 Stopping sync jobs...');
-    Object.values(syncIntervals).forEach(interval => clearInterval(interval));
-    syncIntervals = {};
-}
-
-// ============================================================================
-// MANUAL SYNC TRIGGERS
-// ============================================================================
-
-/**
- * Trigger manual sync for specific entity type
- */
-async function triggerSync(entityType, options = {}) {
-    console.log(`🔧 Manual sync triggered: ${entityType}`);
-
-    switch (entityType) {
-        case 'organizations':
-            return await syncOrganizations();
-        case 'agents':
-            return await syncAgents();
-        case 'groups':
-            return await syncGroups();
-        case 'tickets':
-            return await syncTickets(options.fullSync || false);
-        case 'all':
-            const results = {};
-            results.organizations = await syncOrganizations();
-            results.agents = await syncAgents();
-            results.groups = await syncGroups();
-            results.tickets = await syncTickets(options.fullSync || false);
-            return results;
-        default:
-            throw new Error(`Unknown entity type: ${entityType}`);
+async function syncAgents() {
+  console.log('🔄 Starting agents sync...');
+  
+  try {
+    const users = await zendeskFetchAll('users.json');
+    
+    if (users.length === 0) {
+      console.log('ℹ️  No agents to sync');
+      return { success: true, count: 0 };
     }
+    
+    // Filter for agents only
+    const agents = users.filter(u => u.role === 'agent' || u.role === 'admin');
+    
+    // Upsert into database
+    const client = await pool.connect();
+    try {
+      for (const agent of agents) {
+        await client.query(`
+          INSERT INTO agents (id, name, email, role, created_at, updated_at, custom_fields)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            email = EXCLUDED.email,
+            role = EXCLUDED.role,
+            updated_at = EXCLUDED.updated_at,
+            custom_fields = EXCLUDED.custom_fields
+        `, [
+          agent.id,
+          agent.name,
+          agent.email,
+          agent.role,
+          agent.created_at,
+          agent.updated_at,
+          agent.user_fields || {}
+        ]);
+      }
+      
+      console.log(`✅ Agents sync complete: ${agents.length} records`);
+      return { success: true, count: agents.length };
+      
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('❌ Agents sync failed:', error.message);
+    return { success: false, error: error.message };
+  }
 }
+
+/**
+ * Sync Groups from Zendesk
+ */
+async function syncGroups() {
+  console.log('🔄 Starting groups sync...');
+  
+  try {
+    const groups = await zendeskFetchAll('groups.json');
+    
+    if (groups.length === 0) {
+      console.log('ℹ️  No groups to sync');
+      return { success: true, count: 0 };
+    }
+    
+    // Upsert into database
+    const client = await pool.connect();
+    try {
+      for (const group of groups) {
+        await client.query(`
+          INSERT INTO groups (id, name, created_at, updated_at)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            updated_at = EXCLUDED.updated_at
+        `, [
+          group.id,
+          group.name,
+          group.created_at,
+          group.updated_at
+        ]);
+      }
+      
+      console.log(`✅ Groups sync complete: ${groups.length} records`);
+      return { success: true, count: groups.length };
+      
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('❌ Groups sync failed:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Sync Tickets from Zendesk using INCREMENTAL API with aggressive rate limiting
+ */
+async function syncTickets() {
+  console.log('🔄 Starting tickets incremental sync...');
+  
+  const client = await pool.connect();
+  
+  try {
+    // Check database connection
+    await client.query('SELECT 1');
+    console.log('✅ Database connection established');
+    
+    // Get last sync time from database (or use Unix epoch for first sync)
+    const lastSyncResult = await client.query(`
+      SELECT COALESCE(MAX(EXTRACT(EPOCH FROM updated_at)::bigint), 0) as last_sync
+      FROM tickets
+    `);
+    
+    const lastSync = lastSyncResult.rows[0].last_sync || 0;
+    const startTime = lastSync > 0 ? lastSync : 1;
+    
+    console.log(`📅 Last sync: ${lastSync > 0 ? new Date(lastSync * 1000).toISOString() : 'Never'}`);
+    console.log(`🕐 Fetching tickets updated since: ${new Date(startTime * 1000).toISOString()}`);
+    
+    // Fetch tickets using incremental API with rate limiting
+    const tickets = await zendeskFetchIncremental('incremental/tickets.json', startTime);
+    
+    if (tickets.length === 0) {
+      console.log('ℹ️  No new tickets to sync');
+      return { success: true, count: 0 };
+    }
+    
+    console.log(`💾 Inserting ${tickets.length} tickets into database...`);
+    
+    // Upsert tickets into database
+    let successCount = 0;
+    for (const ticket of tickets) {
+      try {
+        await client.query(`
+          INSERT INTO tickets (
+            id, subject, description, status, priority,
+            requester_id, assignee_id, organization_id, group_id,
+            created_at, updated_at, custom_fields, tags, via_channel
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          ON CONFLICT (id) DO UPDATE SET
+            subject = EXCLUDED.subject,
+            description = EXCLUDED.description,
+            status = EXCLUDED.status,
+            priority = EXCLUDED.priority,
+            requester_id = EXCLUDED.requester_id,
+            assignee_id = EXCLUDED.assignee_id,
+            organization_id = EXCLUDED.organization_id,
+            group_id = EXCLUDED.group_id,
+            updated_at = EXCLUDED.updated_at,
+            custom_fields = EXCLUDED.custom_fields,
+            tags = EXCLUDED.tags,
+            via_channel = EXCLUDED.via_channel
+        `, [
+          ticket.id,
+          ticket.subject,
+          ticket.description,
+          ticket.status,
+          ticket.priority,
+          ticket.requester_id,
+          ticket.assignee_id,
+          ticket.organization_id,
+          ticket.group_id,
+          ticket.created_at,
+          ticket.updated_at,
+          ticket.custom_fields || {},
+          ticket.tags || [],
+          ticket.via?.channel || 'unknown'
+        ]);
+        successCount++;
+      } catch (err) {
+        console.error(`⚠️  Failed to insert ticket ${ticket.id}:`, err.message);
+      }
+    }
+    
+    console.log(`✅ Tickets sync complete: ${successCount}/${tickets.length} records`);
+    return { success: true, count: successCount };
+    
+  } catch (error) {
+    console.error('❌ Tickets sync failed:', error);
+    return { success: false, error: error.message };
+    
+  } finally {
+    client.release();
+  }
+}
+
+// ============================================
+// MAIN SYNC ORCHESTRATOR
+// ============================================
+
+/**
+ * Run all sync jobs
+ */
+async function runAllSyncs() {
+  console.log('\n========================================');
+  console.log('🚀 Starting Zendesk Sync Process');
+  console.log('========================================\n');
+  
+  const results = {
+    organizations: await syncOrganizations(),
+    agents: await syncAgents(),
+    groups: await syncGroups(),
+    tickets: await syncTickets()
+  };
+  
+  console.log('\n========================================');
+  console.log('📊 Sync Summary');
+  console.log('========================================');
+  console.log('Organizations:', results.organizations.success ? `✅ ${results.organizations.count} synced` : `❌ ${results.organizations.error}`);
+  console.log('Agents:', results.agents.success ? `✅ ${results.agents.count} synced` : `❌ ${results.agents.error}`);
+  console.log('Groups:', results.groups.success ? `✅ ${results.groups.count} synced` : `❌ ${results.groups.error}`);
+  console.log('Tickets:', results.tickets.success ? `✅ ${results.tickets.count} synced` : `❌ ${results.tickets.error}`);
+  console.log('========================================\n');
+  
+  return results;
+}
+
+// ============================================
+// EXPORTS
+// ============================================
 
 module.exports = {
-    scheduleSync,
-    stopSync,
-    triggerSync,
-    syncOrganizations,
-    syncAgents,
-    syncGroups,
-    syncTickets
+  syncOrganizations,
+  syncAgents,
+  syncGroups,
+  syncTickets,
+  runAllSyncs
 };
