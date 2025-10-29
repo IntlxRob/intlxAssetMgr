@@ -1,9 +1,10 @@
 // services/syncJobs.js
 // Optimized background sync jobs with rate limiting and incremental updates
+// FIXED: Corrected timestamp handling for ticket sync
 
 const cron = require('node-cron');
 const axios = require('axios');
-const db = require('../db'); // Use your existing db.js
+const db = require('../db');
 const pool = db.getPool();
 
 // ============================================
@@ -11,23 +12,18 @@ const pool = db.getPool();
 // ============================================
 
 const SYNC_CONFIG = {
-  // Cron schedules
   schedules: {
-    tickets: '*/5 * * * *',        // Every 5 minutes
-    organizations: '0 */1 * * *',  // Every hour
-    agents: '0 */1 * * *',         // Every hour
-    groups: '0 */1 * * *'          // Every hour
+    tickets: '*/5 * * * *',
+    organizations: '0 */1 * * *',
+    agents: '0 */1 * * *',
+    groups: '0 */1 * * *'
   },
-  
-  // Rate limiting
   rateLimits: {
-    requestsPerMinute: 700,        // Zendesk limit
-    delayBetweenRequests: 7000,    // 7 seconds between requests
+    requestsPerMinute: 700,
+    delayBetweenRequests: 7000,
     maxRetries: 3,
-    retryDelay: 10000              // 10 seconds
+    retryDelay: 10000
   },
-  
-  // Batch sizes
   batchSizes: {
     tickets: 100,
     organizations: 100,
@@ -36,7 +32,6 @@ const SYNC_CONFIG = {
   }
 };
 
-// Zendesk API configuration
 const ZENDESK_CONFIG = {
   subdomain: process.env.ZENDESK_SUBDOMAIN,
   email: process.env.ZENDESK_EMAIL,
@@ -50,16 +45,10 @@ const ZENDESK_AUTH = Buffer.from(`${ZENDESK_CONFIG.email}/token:${ZENDESK_CONFIG
 // UTILITY FUNCTIONS
 // ============================================
 
-/**
- * Sleep function for rate limiting
- */
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Make rate-limited Zendesk API request with retry logic
- */
 async function makeZendeskRequest(url, retryCount = 0) {
   try {
     console.log(`📄 Fetching: ${url}`);
@@ -71,7 +60,6 @@ async function makeZendeskRequest(url, retryCount = 0) {
       }
     });
     
-    // Add delay to respect rate limits
     const delay = SYNC_CONFIG.rateLimits.delayBetweenRequests;
     console.log(`⏳ Waiting ${delay}ms (rate limit protection)...`);
     await sleep(delay);
@@ -93,9 +81,6 @@ async function makeZendeskRequest(url, retryCount = 0) {
 // SYNC STATUS MANAGEMENT
 // ============================================
 
-/**
- * Get sync status for a resource type
- */
 async function getSyncStatus(resourceType) {
   try {
     const result = await pool.query(
@@ -109,9 +94,6 @@ async function getSyncStatus(resourceType) {
   }
 }
 
-/**
- * Update sync status
- */
 async function updateSyncStatus(resourceType, status, error = null, recordsSynced = 0) {
   try {
     await pool.query(`
@@ -123,7 +105,7 @@ async function updateSyncStatus(resourceType, status, error = null, recordsSynce
         status = $2,
         error_message = $3,
         records_synced = EXCLUDED.records_synced + $4,
-        last_updated_at = EXCLUDED.last_updated_at
+        last_updated_at = NOW()
     `, [resourceType, status, error, recordsSynced]);
   } catch (err) {
     console.error(`Error updating sync status for ${resourceType}:`, err.message);
@@ -131,27 +113,38 @@ async function updateSyncStatus(resourceType, status, error = null, recordsSynce
 }
 
 // ============================================
-// TICKET SYNC (Incremental with Rate Limiting)
+// TICKET SYNC (FIXED TIMESTAMP HANDLING)
 // ============================================
 
 async function syncTickets() {
   console.log('\n🎫 Starting ticket sync...');
   
   try {
-    // Get last sync status
     const status = await getSyncStatus('tickets');
-    const lastUpdatedAt = status?.last_updated_at || '2000-01-01T00:00:00Z';
     
-    console.log(`📅 Last sync: ${lastUpdatedAt}`);
+    // FIX: Properly handle the timestamp
+    let startTime;
+    if (status && status.last_updated_at) {
+      // Convert PostgreSQL timestamp to Unix timestamp (seconds)
+      const lastUpdate = new Date(status.last_updated_at);
+      startTime = Math.floor(lastUpdate.getTime() / 1000); // Convert to seconds
+    } else {
+      // Default to 90 days ago
+      startTime = Math.floor((Date.now() - (90 * 24 * 60 * 60 * 1000)) / 1000);
+    }
+    
+    console.log(`📅 Last sync: ${status?.last_updated_at || 'Never'}`);
+    console.log(`⏰ Using start_time: ${startTime} (${new Date(startTime * 1000).toISOString()})`);
+    
     await updateSyncStatus('tickets', 'syncing');
     
     let allTickets = [];
     let page = 1;
     let hasMore = true;
     
-    // Fetch tickets incrementally
-    while (hasMore) {
-      const url = `${ZENDESK_API_BASE}/incremental/tickets.json?start_time=${new Date(lastUpdatedAt).getTime()}&per_page=${SYNC_CONFIG.batchSizes.tickets}&page=${page}`;
+    while (hasMore && page <= 50) {
+      // FIX: Use the corrected timestamp
+      const url = `${ZENDESK_API_BASE}/incremental/tickets.json?start_time=${startTime}&per_page=${SYNC_CONFIG.batchSizes.tickets}`;
       console.log(`📄 Fetching incremental page ${page}...`);
       
       const data = await makeZendeskRequest(url);
@@ -162,12 +155,6 @@ async function syncTickets() {
         
         hasMore = !data.end_of_stream;
         page++;
-        
-        // Extra safety: Stop if we've fetched too many pages
-        if (page > 50) {
-          console.log('⚠️  Reached page limit (50), stopping...');
-          hasMore = false;
-        }
       } else {
         hasMore = false;
       }
@@ -175,7 +162,6 @@ async function syncTickets() {
     
     console.log(`📦 Total tickets fetched: ${allTickets.length}`);
     
-    // Upsert tickets into database
     if (allTickets.length > 0) {
       for (const ticket of allTickets) {
         try {
@@ -255,7 +241,6 @@ async function syncOrganizations() {
       }
     }
     
-    // Upsert organizations
     if (allOrganizations.length > 0) {
       for (const org of allOrganizations) {
         try {
@@ -296,7 +281,7 @@ async function syncOrganizations() {
 }
 
 // ============================================
-// AGENT (USER) SYNC
+// AGENT SYNC
 // ============================================
 
 async function syncAgents() {
@@ -323,7 +308,6 @@ async function syncAgents() {
       }
     }
     
-    // Upsert agents
     if (allAgents.length > 0) {
       for (const agent of allAgents) {
         try {
@@ -395,7 +379,6 @@ async function syncGroups() {
       }
     }
     
-    // Upsert groups
     if (allGroups.length > 0) {
       for (const group of allGroups) {
         try {
@@ -433,32 +416,24 @@ async function syncGroups() {
 // SCHEDULER
 // ============================================
 
-/**
- * Schedule all sync jobs using cron
- * This is the function that index.js calls
- */
 function scheduleSync() {
   console.log('🚀 Scheduling background sync jobs...');
   
-  // Schedule ticket sync every 5 minutes
   cron.schedule(SYNC_CONFIG.schedules.tickets, () => {
     console.log('\n⏰ Running scheduled ticket sync...');
     syncTickets().catch(err => console.error('Scheduled ticket sync error:', err));
   });
   
-  // Schedule organization sync every hour
   cron.schedule(SYNC_CONFIG.schedules.organizations, () => {
     console.log('\n⏰ Running scheduled organization sync...');
     syncOrganizations().catch(err => console.error('Scheduled organization sync error:', err));
   });
   
-  // Schedule agent sync every hour
   cron.schedule(SYNC_CONFIG.schedules.agents, () => {
     console.log('\n⏰ Running scheduled agent sync...');
     syncAgents().catch(err => console.error('Scheduled agent sync error:', err));
   });
   
-  // Schedule group sync every hour
   cron.schedule(SYNC_CONFIG.schedules.groups, () => {
     console.log('\n⏰ Running scheduled group sync...');
     syncGroups().catch(err => console.error('Scheduled group sync error:', err));
@@ -471,7 +446,6 @@ function scheduleSync() {
   console.log(`   - Agents: ${SYNC_CONFIG.schedules.agents} (every hour)`);
   console.log(`   - Groups: ${SYNC_CONFIG.schedules.groups} (every hour)`);
   
-  // Run initial sync after a short delay (10-20 seconds)
   const initialDelay = Math.floor(Math.random() * 10000) + 10000;
   console.log(`⏳ Initial sync will run in ${initialDelay/1000} seconds...`);
   
@@ -483,7 +457,6 @@ function scheduleSync() {
       syncGroups()
     ]).then(() => {
       console.log('✅ Initial sync of orgs/agents/groups complete');
-      // Start ticket sync after the others complete
       return syncTickets();
     }).then(() => {
       console.log('✅ Initial ticket sync complete');
@@ -492,10 +465,6 @@ function scheduleSync() {
     });
   }, initialDelay);
 }
-
-// ============================================
-// EXPORTS
-// ============================================
 
 module.exports = {
   scheduleSync,
