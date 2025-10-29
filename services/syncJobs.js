@@ -124,16 +124,15 @@ async function syncTickets() {
     
     // FIX: Properly handle the timestamp
     let startTime;
-    if (status && status.last_updated_at) {
-      // Convert PostgreSQL timestamp to Unix timestamp (seconds)
-      const lastUpdate = new Date(status.last_updated_at);
+    if (status && status.last_sync_at) {
+  const lastUpdate = new Date(status.last_sync_at);
       startTime = Math.floor(lastUpdate.getTime() / 1000); // Convert to seconds
     } else {
       // Default to 90 days ago
       startTime = Math.floor((Date.now() - (90 * 24 * 60 * 60 * 1000)) / 1000);
     }
     
-    console.log(`📅 Last sync: ${status?.last_updated_at || 'Never'}`);
+    console.log(`📅 Last sync: ${status?.last_sync_at || 'Never'}`);
     console.log(`⏰ Using start_time: ${startTime} (${new Date(startTime * 1000).toISOString()})`);
     
     await updateSyncStatus('tickets', 'syncing');
