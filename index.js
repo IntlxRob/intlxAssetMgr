@@ -7,14 +7,33 @@ const apiRoutes = require('./routes/api');
 const app = express();
 const metrics = require('./routes/metrics');
 
+// ✨ NEW: Add these 3 imports for analytics
+const analyticsRoutes = require('./routes/analytics');
+const { initRedis } = require('./middleware/cache');
+const { scheduleSync } = require('./services/syncJobs');
+
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
+
+// ✨ NEW: Initialize Redis for analytics caching (add right here)
+(async () => {
+    try {
+        await initRedis();
+        console.log('✅ Redis initialized for analytics');
+    } catch (error) {
+        console.warn('⚠️  Redis unavailable (analytics will work without caching):', error.message);
+    }
+})();
+
 app.use('/api', apiRoutes);
 app.use('/hooks/metrics', metrics);
 app.use('/admin/metrics', require('./routes/metricsBackfill'));
+
+// ✨ NEW: Add analytics routes here
+app.use('/api/analytics', analyticsRoutes);
 
 app.get('/', (req, res) => {
   res.send('Backend API is running');
@@ -102,6 +121,12 @@ async function cleanup() {
 
 // Start the initialization
 initializeServer();
+
+// ✨ NEW: Start analytics sync scheduler (add right before app.listen)
+if (process.env.ENABLE_ANALYTICS_SYNC !== 'false') {
+    scheduleSync();
+    console.log('✅ Analytics sync scheduler started');
+}
 
 app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
