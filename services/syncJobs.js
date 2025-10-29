@@ -96,17 +96,34 @@ async function getSyncStatus(resourceType) {
 
 async function updateSyncStatus(resourceType, status, error = null, recordsSynced = 0) {
   try {
-    await pool.query(`
-      INSERT INTO sync_status (entity_type, last_sync_at, status, error_message, records_synced, updated_at)  
-      VALUES ($1, NOW(), $2, $3, $4, NOW())
-      ON CONFLICT (entity_type) 
-      DO UPDATE SET
-        last_sync_at = NOW(), 
-        status = $2,
-        error_message = $3,
-        records_synced = EXCLUDED.records_synced + $4,
-        updated_at = NOW()  
-    `, [resourceType, status, error, recordsSynced]);
+    if (status === 'success') {
+      // ✅ Update last_sync_at ONLY on success
+      await pool.query(`
+        INSERT INTO sync_status (entity_type, last_sync_at, status, error_message, records_synced, updated_at)  
+        VALUES ($1, NOW(), $2, $3, $4, NOW())
+        ON CONFLICT (entity_type) 
+        DO UPDATE SET
+          last_sync_at = NOW(), 
+          status = $2,
+          error_message = $3,
+          records_synced = EXCLUDED.records_synced + $4,
+          updated_at = NOW()  
+      `, [resourceType, status, error, recordsSynced]);
+      console.log(`✅ Sync status updated: ${resourceType} - ${status} (${recordsSynced} records)`);
+    } else {
+      // ❌ Do NOT update last_sync_at when syncing or error
+      await pool.query(`
+        INSERT INTO sync_status (entity_type, status, error_message, records_synced, updated_at)  
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (entity_type) 
+        DO UPDATE SET
+          status = $2,
+          error_message = $3,
+          records_synced = CASE WHEN $2 = 'error' THEN sync_status.records_synced ELSE EXCLUDED.records_synced + $4 END,
+          updated_at = NOW()  
+      `, [resourceType, status, error, recordsSynced]);
+      console.log(`📝 Sync status updated: ${resourceType} - ${status}`);
+    }
   } catch (err) {
     console.error(`Error updating sync status for ${resourceType}:`, err.message);
   }
