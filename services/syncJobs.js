@@ -166,38 +166,38 @@ async function syncTickets() {
       for (const ticket of allTickets) {
         try {
           await pool.query(`
-            INSERT INTO tickets (
-              id, subject, description, status, priority, request_type,
-              created_at, updated_at, requester_id, assignee_id,
-              organization_id, group_id, tags, custom_fields
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            ON CONFLICT (id) DO UPDATE SET
-              subject = EXCLUDED.subject,
-              description = EXCLUDED.description,
-              status = EXCLUDED.status,
-              priority = EXCLUDED.priority,
-              request_type = EXCLUDED.request_type,
-              updated_at = EXCLUDED.updated_at,
-              assignee_id = EXCLUDED.assignee_id,
-              group_id = EXCLUDED.group_id,
-              tags = EXCLUDED.tags,
-              custom_fields = EXCLUDED.custom_fields
-          `, [
-            ticket.id,
-            ticket.subject,
-            ticket.description,
-            ticket.status,
-            ticket.priority,
-            ticket.type,
-            ticket.created_at,
-            ticket.updated_at,
-            ticket.requester_id,
-            ticket.assignee_id,
-            ticket.organization_id,
-            ticket.group_id,
-            JSON.stringify(ticket.tags),
-            JSON.stringify(ticket.custom_fields)
-          ]);
+  INSERT INTO tickets (
+    id, subject, description, status, priority, request_type,
+    created_at, updated_at, requester_id, assignee_id,
+    organization_id, group_id, tags, custom_fields
+  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb)
+  ON CONFLICT (id) DO UPDATE SET
+    subject = EXCLUDED.subject,
+    description = EXCLUDED.description,
+    status = EXCLUDED.status,
+    priority = EXCLUDED.priority,
+    request_type = EXCLUDED.request_type,
+    updated_at = EXCLUDED.updated_at,
+    assignee_id = EXCLUDED.assignee_id,
+    group_id = EXCLUDED.group_id,
+    tags = EXCLUDED.tags,
+    custom_fields = EXCLUDED.custom_fields
+`, [
+  ticket.id,
+  ticket.subject,
+  ticket.description,
+  ticket.status,
+  ticket.priority,
+  ticket.type,
+  ticket.created_at,
+  ticket.updated_at,
+  ticket.requester_id,
+  ticket.assignee_id,
+  ticket.organization_id,
+  ticket.group_id,
+  JSON.stringify(ticket.tags),
+  JSON.stringify(ticket.custom_fields)
+]);
         } catch (err) {
           console.error(`Error upserting ticket ${ticket.id}:`, err.message);
         }
