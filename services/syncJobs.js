@@ -159,9 +159,9 @@ async function syncTickets() {
     let allTickets = [];
     let page = 1;
     let hasMore = true;
+    let endOfStream = false;  // ← ADD THIS LINE
     
     while (hasMore && page <= 50) {
-      // FIX: Use the corrected timestamp
       const url = `${ZENDESK_API_BASE}/incremental/tickets.json?start_time=${startTime}&per_page=${SYNC_CONFIG.batchSizes.tickets}`;
       console.log(`📄 Fetching incremental page ${page}...`);
       
@@ -171,14 +171,17 @@ async function syncTickets() {
         allTickets.push(...data.tickets);
         console.log(`✅ Retrieved ${data.tickets.length} items (Total: ${allTickets.length})`);
         
-        hasMore = !data.end_of_stream;
+        endOfStream = data.end_of_stream;  // ← ADD THIS LINE
+        hasMore = !endOfStream;            // ← CHANGE THIS LINE
         page++;
       } else {
         hasMore = false;
+        endOfStream = true;  // ← ADD THIS LINE
       }
     }
     
     console.log(`📦 Total tickets fetched: ${allTickets.length}`);
+    console.log(`🏁 End of stream: ${endOfStream}`);  // ← ADD THIS LINE
     
     if (allTickets.length > 0) {
       for (const ticket of allTickets) {
@@ -222,8 +225,8 @@ async function syncTickets() {
       }
     }
     
-    await updateSyncStatus('tickets', 'success', null, allTickets.length);
-    console.log(`✅ Ticket sync completed: ${allTickets.length} synced`);
+    await updateSyncStatus('tickets', 'success', null, allTickets.length, endOfStream);  // ← ADD endOfStream parameter
+    console.log(`✅ Ticket sync completed: ${allTickets.length} synced${endOfStream ? ' (timestamp updated - ready for incremental)' : ' (timestamp preserved - more historical data to fetch)'}`);  // ← UPDATE this line
     
   } catch (error) {
     console.error('❌ Ticket sync failed:', error.message);
