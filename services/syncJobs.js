@@ -1,6 +1,6 @@
 // services/syncJobs.js
 // Optimized background sync jobs with rate limiting and incremental updates
-// FIXED: Corrected timestamp handling for ticket sync
+// FIXED: Timestamp handling - only updates last_sync_at when end_of_stream is reached
 
 const cron = require('node-cron');
 const axios = require('axios');
@@ -94,11 +94,28 @@ async function getSyncStatus(resourceType) {
   }
 }
 
-async function updateSyncStatus(resourceType, status, error = null, recordsSynced = 0, updateTimestamp = false) {
+// FIXED: Added updateTimestamp parameter to control when last_sync_at is updated
+// AND newTimestamp parameter to save cursor position for continuation
+async function updateSyncStatus(resourceType, status, error = null, recordsSynced = 0, updateTimestamp = false, newTimestamp = null) {
   try {
-    // Build query dynamically based on whether we should update the timestamp
     let query;
-    if (updateTimestamp) {
+    let params;
+    
+    if (newTimestamp) {
+      // Save the specific timestamp for continuation (even if not at end_of_stream)
+      query = `
+        INSERT INTO sync_status (entity_type, last_sync_at, status, error_message, records_synced, updated_at)  
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (entity_type) 
+        DO UPDATE SET
+          last_sync_at = $2,
+          status = $3,
+          error_message = $4,
+          records_synced = EXCLUDED.records_synced + $5,
+          updated_at = NOW()
+      `;
+      params = [resourceType, newTimestamp, status, error, recordsSynced];
+    } else if (updateTimestamp) {
       // Update last_sync_at to NOW() - used when sync is complete
       query = `
         INSERT INTO sync_status (entity_type, last_sync_at, status, error_message, records_synced, updated_at)  
@@ -111,6 +128,7 @@ async function updateSyncStatus(resourceType, status, error = null, recordsSynce
           records_synced = EXCLUDED.records_synced + $4,
           updated_at = NOW()
       `;
+      params = [resourceType, status, error, recordsSynced];
     } else {
       // Keep existing last_sync_at - used during historical backfill
       query = `
@@ -123,9 +141,10 @@ async function updateSyncStatus(resourceType, status, error = null, recordsSynce
           records_synced = EXCLUDED.records_synced + $4,
           updated_at = NOW()
       `;
+      params = [resourceType, status, error, recordsSynced];
     }
     
-    await pool.query(query, [resourceType, status, error, recordsSynced]);
+    await pool.query(query, params);
   } catch (err) {
     console.error(`Error updating sync status for ${resourceType}:`, err.message);
   }
@@ -144,7 +163,7 @@ async function syncTickets() {
     // FIX: Properly handle the timestamp
     let startTime;
     if (status && status.last_sync_at) {
-  const lastUpdate = new Date(status.last_sync_at);
+      const lastUpdate = new Date(status.last_sync_at);
       startTime = Math.floor(lastUpdate.getTime() / 1000); // Convert to seconds
     } else {
       // Default to 90 days ago
@@ -159,10 +178,12 @@ async function syncTickets() {
     let allTickets = [];
     let page = 1;
     let hasMore = true;
-    let endOfStream = false;  // ← ADD THIS LINE
+    let endOfStream = false;
+    let currentStartTime = startTime;
     
+    // Fetch up to 50 pages (5000 tickets) per sync to avoid memory issues
     while (hasMore && page <= 50) {
-      const url = `${ZENDESK_API_BASE}/incremental/tickets.json?start_time=${startTime}&per_page=${SYNC_CONFIG.batchSizes.tickets}`;
+      const url = `${ZENDESK_API_BASE}/incremental/tickets.json?start_time=${currentStartTime}&per_page=${SYNC_CONFIG.batchSizes.tickets}`;
       console.log(`📄 Fetching incremental page ${page}...`);
       
       const data = await makeZendeskRequest(url);
@@ -171,62 +192,80 @@ async function syncTickets() {
         allTickets.push(...data.tickets);
         console.log(`✅ Retrieved ${data.tickets.length} items (Total: ${allTickets.length})`);
         
-        endOfStream = data.end_of_stream;  // ← ADD THIS LINE
-        hasMore = !endOfStream;            // ← CHANGE THIS LINE
+        // CRITICAL: Use end_time from response for next request
+        if (data.end_time) {
+          currentStartTime = data.end_time;
+        }
+        
+        // Track if we've reached the end of the stream
+        endOfStream = data.end_of_stream;
+        hasMore = !endOfStream;
         page++;
       } else {
         hasMore = false;
-        endOfStream = true;  // ← ADD THIS LINE
+        endOfStream = true; // No more data means we're at the end
       }
     }
     
+    console.log(`📊 Final end_time from Zendesk: ${currentStartTime}`);
+    
     console.log(`📦 Total tickets fetched: ${allTickets.length}`);
-    console.log(`🏁 End of stream: ${endOfStream}`);  // ← ADD THIS LINE
+    console.log(`🏁 End of stream: ${endOfStream}`);
     
     if (allTickets.length > 0) {
       for (const ticket of allTickets) {
         try {
           await pool.query(`
-  INSERT INTO tickets (
-    id, subject, description, status, priority, request_type,
-    created_at, updated_at, requester_id, assignee_id,
-    organization_id, group_id, tags, custom_fields
-  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb)
-  ON CONFLICT (id) DO UPDATE SET
-    subject = EXCLUDED.subject,
-    description = EXCLUDED.description,
-    status = EXCLUDED.status,
-    priority = EXCLUDED.priority,
-    request_type = EXCLUDED.request_type,
-    updated_at = EXCLUDED.updated_at,
-    assignee_id = EXCLUDED.assignee_id,
-    group_id = EXCLUDED.group_id,
-    tags = EXCLUDED.tags,
-    custom_fields = EXCLUDED.custom_fields
-`, [
-  ticket.id,
-  ticket.subject,
-  ticket.description,
-  ticket.status,
-  ticket.priority,
-  ticket.type,
-  ticket.created_at,
-  ticket.updated_at,
-  ticket.requester_id,
-  ticket.assignee_id,
-  ticket.organization_id,
-  ticket.group_id,
-  JSON.stringify(ticket.tags),
-  JSON.stringify(ticket.custom_fields)
-]);
+            INSERT INTO tickets (
+              id, subject, description, status, priority, request_type,
+              created_at, updated_at, requester_id, assignee_id,
+              organization_id, group_id, tags, custom_fields
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              subject = EXCLUDED.subject,
+              description = EXCLUDED.description,
+              status = EXCLUDED.status,
+              priority = EXCLUDED.priority,
+              request_type = EXCLUDED.request_type,
+              updated_at = EXCLUDED.updated_at,
+              assignee_id = EXCLUDED.assignee_id,
+              group_id = EXCLUDED.group_id,
+              tags = EXCLUDED.tags,
+              custom_fields = EXCLUDED.custom_fields
+          `, [
+            ticket.id,
+            ticket.subject,
+            ticket.description,
+            ticket.status,
+            ticket.priority,
+            ticket.type,
+            ticket.created_at,
+            ticket.updated_at,
+            ticket.requester_id,
+            ticket.assignee_id,
+            ticket.organization_id,
+            ticket.group_id,
+            JSON.stringify(ticket.tags),
+            JSON.stringify(ticket.custom_fields)
+          ]);
         } catch (err) {
           console.error(`Error upserting ticket ${ticket.id}:`, err.message);
         }
       }
     }
     
-    await updateSyncStatus('tickets', 'success', null, allTickets.length, endOfStream);  // ← ADD endOfStream parameter
-    console.log(`✅ Ticket sync completed: ${allTickets.length} synced${endOfStream ? ' (timestamp updated - ready for incremental)' : ' (timestamp preserved - more historical data to fetch)'}`);  // ← UPDATE this line
+    // CRITICAL FIX: Save the cursor position for continuation
+    // - If end_of_stream = true: Update to NOW() (ready for incremental)
+    // - If end_of_stream = false: Save currentStartTime (Zendesk's end_time) to continue from there
+    const timestampToSave = endOfStream ? null : new Date(currentStartTime * 1000);
+    
+    await updateSyncStatus('tickets', 'success', null, allTickets.length, endOfStream, timestampToSave);
+    
+    if (endOfStream) {
+      console.log(`✅ Ticket sync completed: ${allTickets.length} synced (ALL historical data fetched - timestamp updated to NOW for incremental syncs)`);
+    } else {
+      console.log(`✅ Ticket sync completed: ${allTickets.length} synced (cursor saved at ${new Date(currentStartTime * 1000).toISOString()} - will continue from here)`);
+    }
     
   } catch (error) {
     console.error('❌ Ticket sync failed:', error.message);
@@ -292,7 +331,7 @@ async function syncOrganizations() {
       }
     }
     
-    await updateSyncStatus('organizations', 'success', null, allOrganizations.length);
+    await updateSyncStatus('organizations', 'success', null, allOrganizations.length, true);
     console.log(`✅ Organization sync completed: ${allOrganizations.length} synced`);
     
   } catch (error) {
@@ -363,7 +402,7 @@ async function syncAgents() {
       }
     }
     
-    await updateSyncStatus('agents', 'success', null, allAgents.length);
+    await updateSyncStatus('agents', 'success', null, allAgents.length, true);
     console.log(`✅ Agent sync completed: ${allAgents.length} synced`);
     
   } catch (error) {
@@ -424,7 +463,7 @@ async function syncGroups() {
       }
     }
     
-    await updateSyncStatus('groups', 'success', null, allGroups.length);
+    await updateSyncStatus('groups', 'success', null, allGroups.length, true);
     console.log(`✅ Group sync completed: ${allGroups.length} synced`);
     
   } catch (error) {
