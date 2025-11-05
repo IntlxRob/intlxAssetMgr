@@ -443,4 +443,146 @@ router.get('/cache/stats', async (req, res) => {
     }
 });
 
+// ============================================================================
+// TICKET DATA ENDPOINTS (for iframe app)
+// ============================================================================
+
+/**
+ * GET /api/analytics/tickets
+ * Get actual ticket data with filters (for iframe display)
+ */
+router.get('/tickets', cacheMiddleware(60), async (req, res) => {
+    try {
+        const filters = {
+            startDate: req.query.startDate,
+            endDate: req.query.endDate,
+            organizationId: req.query.organizationId,
+            status: req.query.status,
+            priority: req.query.priority,
+            groupId: req.query.groupId,
+            assigneeId: req.query.assigneeId
+        };
+        
+        const limit = parseInt(req.query.limit) || 10000;
+        const offset = parseInt(req.query.offset) || 0;
+        
+        const { whereClause, params } = buildWhereClause(filters);
+        
+        // Add limit and offset to params
+        params.push(limit, offset);
+        const limitClause = `LIMIT $${params.length - 1} OFFSET $${params.length}`;
+        
+        const result = await query(`
+            SELECT 
+                t.*,
+                tm.first_reply_time_minutes,
+                tm.full_resolution_time_minutes,
+                tm.sla_first_reply_compliant,
+                tm.sla_resolution_compliant
+            FROM tickets t
+            LEFT JOIN ticket_metrics tm ON t.id = tm.ticket_id
+            ${whereClause}
+            ORDER BY t.created_at DESC
+            ${limitClause}
+        `, params);
+
+        res.json({
+            tickets: result.rows,
+            count: result.rows.length,
+            limit: limit,
+            offset: offset
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/filters
+ * Get available filter options (for dropdowns)
+ */
+router.get('/filters', cacheMiddleware(300), async (req, res) => {
+    try {
+        // Get all unique organizations
+        const orgs = await query(`
+            SELECT DISTINCT organization_id as id, organization_name as name
+            FROM tickets
+            WHERE organization_id IS NOT NULL
+            ORDER BY organization_name
+        `);
+        
+        // Get all assignees
+        const assignees = await query(`
+            SELECT DISTINCT assignee_id as id, assignee_name as name
+            FROM tickets
+            WHERE assignee_id IS NOT NULL
+            ORDER BY assignee_name
+        `);
+        
+        // Get all groups
+        const groups = await query(`
+            SELECT DISTINCT group_id as id, group_name as name
+            FROM tickets
+            WHERE group_id IS NOT NULL
+            ORDER BY group_name
+        `);
+        
+        // Get unique statuses
+        const statuses = await query(`
+            SELECT DISTINCT status
+            FROM tickets
+            WHERE status IS NOT NULL
+            ORDER BY status
+        `);
+        
+        // Get unique priorities
+        const priorities = await query(`
+            SELECT DISTINCT priority
+            FROM tickets
+            WHERE priority IS NOT NULL
+            ORDER BY priority
+        `);
+
+        res.json({
+            organizations: orgs.rows,
+            assignees: assignees.rows,
+            groups: groups.rows,
+            statuses: statuses.rows.map(r => r.status),
+            priorities: priorities.rows.map(r => r.priority)
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/count
+ * Quick count of tickets matching filters
+ */
+router.get('/count', cacheMiddleware(60), async (req, res) => {
+    try {
+        const filters = {
+            startDate: req.query.startDate,
+            endDate: req.query.endDate,
+            organizationId: req.query.organizationId,
+            status: req.query.status,
+            priority: req.query.priority,
+            groupId: req.query.groupId,
+            assigneeId: req.query.assigneeId
+        };
+        
+        const { whereClause, params } = buildWhereClause(filters);
+        
+        const result = await query(`
+            SELECT COUNT(*) as count
+            FROM tickets t
+            ${whereClause}
+        `, params);
+
+        res.json({ count: parseInt(result.rows[0].count) });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
