@@ -6361,41 +6361,19 @@ router.get('/tickets', async (req, res) => {
     let query = `
       SELECT 
         t.id,
-        t.url,
-        t.external_id,
-        t.type,
         t.subject,
         t.description,
-        t.priority,
         t.status,
-        t.recipient,
+        t.priority,
+        t.request_type,
+        t.created_at,
+        t.updated_at,
         t.requester_id,
-        t.submitter_id,
         t.assignee_id,
         t.organization_id,
         t.group_id,
-        t.collaborator_ids,
-        t.follower_ids,
-        t.email_cc_ids,
-        t.forum_topic_id,
-        t.problem_id,
-        t.has_incidents,
-        t.is_public,
-        t.due_at,
         t.tags,
-        t.custom_fields,
-        t.satisfaction_rating,
-        t.sharing_agreement_ids,
-        t.followup_ids,
-        t.via_channel,
-        t.via_source,
-        t.ticket_form_id,
-        t.brand_id,
-        t.allow_channelback,
-        t.allow_attachments,
-        t.created_at,
-        t.updated_at,
-        t.synced_at
+        t.custom_fields
       FROM tickets t
       WHERE t.created_at >= $1
         AND t.created_at <= $2
@@ -6428,14 +6406,8 @@ router.get('/tickets', async (req, res) => {
     // Try to parse if they're strings, otherwise use as-is
     const processedTickets = result.rows.map(ticket => ({
       ...ticket,
-      tags: typeof ticket.tags === 'string' ? JSON.parse(ticket.tags) : (ticket.tags || []),
-      custom_fields: typeof ticket.custom_fields === 'string' ? JSON.parse(ticket.custom_fields) : (ticket.custom_fields || []),
-      collaborator_ids: typeof ticket.collaborator_ids === 'string' ? JSON.parse(ticket.collaborator_ids) : (ticket.collaborator_ids || []),
-      follower_ids: typeof ticket.follower_ids === 'string' ? JSON.parse(ticket.follower_ids) : (ticket.follower_ids || []),
-      email_cc_ids: typeof ticket.email_cc_ids === 'string' ? JSON.parse(ticket.email_cc_ids) : (ticket.email_cc_ids || []),
-      followup_ids: typeof ticket.followup_ids === 'string' ? JSON.parse(ticket.followup_ids) : (ticket.followup_ids || []),
-      sharing_agreement_ids: typeof ticket.sharing_agreement_ids === 'string' ? JSON.parse(ticket.sharing_agreement_ids) : (ticket.sharing_agreement_ids || []),
-      satisfaction_rating: typeof ticket.satisfaction_rating === 'string' ? JSON.parse(ticket.satisfaction_rating) : (ticket.satisfaction_rating || null)
+      tags: ticket.tags || [],
+      custom_fields: ticket.custom_fields || []
     }));
 
     res.json({
