@@ -7,6 +7,7 @@ const zendeskService = require('../services/zendesk');
 const googleSheetsService = require('../services/googleSheets');
 const { google } = require('googleapis');
 const calendar = google.calendar('v3');
+const db = require('../db'); // ✅ Database for tickets endpoint
 
 const MATTERMOST_URL = process.env.MATTERMOST_URL; // e.g., 'https://mattermost.yourcompany.com'
 const MATTERMOST_TOKEN = process.env.MATTERMOST_TOKEN; // Personal Access Token or Bot Token
@@ -6306,6 +6307,149 @@ router.get('/catalog', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch catalog from Google Sheets.', details: error.message });
     }
 });
+
+// ============================================
+// GET TICKETS WITH PAGINATION & SORTING
+// ============================================
+/**
+ * Get tickets from database with pagination and sorting
+ * GET /api/tickets
+ * Query params:
+ *   - startDate (required): Start date for ticket creation filter
+ *   - endDate (required): End date for ticket creation filter
+ *   - limit (optional): Number of tickets per page (default: 5000)
+ *   - offset (optional): Pagination offset (default: 0)
+ *   - organizationId (optional): Filter by organization
+ *   - sortBy (optional): Field to sort by (default: created_at)
+ *   - sortOrder (optional): asc or desc (default: desc)
+ */
+router.get('/tickets', async (req, res) => {
+  try {
+    const { 
+      startDate, 
+      endDate, 
+      limit = 5000,           // ✅ Default 5000 per page
+      offset = 0,             // ✅ Pagination offset
+      organizationId,
+      sortBy = 'created_at',  // ✅ Default sort field
+      sortOrder = 'desc'      // ✅ Default newest first
+    } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ 
+        error: 'startDate and endDate are required' 
+      });
+    }
+
+    // Validate sort order
+    const validSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    
+    // Validate sort field (prevent SQL injection)
+    const validSortFields = [
+      'created_at', 'updated_at', 'id', 'status', 
+      'priority', 'organization_id', 'assignee_id'
+    ];
+    const safeSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+
+    console.log(`📊 Fetching tickets: ${startDate} to ${endDate}`);
+    console.log(`📄 Pagination: limit=${limit}, offset=${offset}`);
+    console.log(`🔄 Sorting: ${safeSortBy} ${validSortOrder}`);
+
+    // Build query with pagination
+    let query = `
+      SELECT 
+        t.id,
+        t.url,
+        t.external_id,
+        t.type,
+        t.subject,
+        t.description,
+        t.priority,
+        t.status,
+        t.recipient,
+        t.requester_id,
+        t.submitter_id,
+        t.assignee_id,
+        t.organization_id,
+        t.group_id,
+        t.collaborator_ids,
+        t.follower_ids,
+        t.email_cc_ids,
+        t.forum_topic_id,
+        t.problem_id,
+        t.has_incidents,
+        t.is_public,
+        t.due_at,
+        t.tags,
+        t.custom_fields,
+        t.satisfaction_rating,
+        t.sharing_agreement_ids,
+        t.followup_ids,
+        t.via_channel,
+        t.via_source,
+        t.ticket_form_id,
+        t.brand_id,
+        t.allow_channelback,
+        t.allow_attachments,
+        t.created_at,
+        t.updated_at,
+        t.synced_at
+      FROM tickets t
+      WHERE t.created_at >= ?
+        AND t.created_at <= ?
+    `;
+
+    const params = [startDate, endDate];
+
+    // Add organization filter if provided
+    if (organizationId) {
+      query += ` AND t.organization_id = ?`;
+      params.push(organizationId);
+    }
+
+    // Add sorting
+    query += ` ORDER BY t.${safeSortBy} ${validSortOrder}`;
+
+    // Add pagination
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const startTime = Date.now();
+    const tickets = await db.all(query, params);
+    const queryTime = Date.now() - startTime;
+
+    console.log(`✅ Fetched ${tickets.length} tickets in ${queryTime}ms`);
+
+    // Parse JSON fields
+    const processedTickets = tickets.map(ticket => ({
+      ...ticket,
+      tags: ticket.tags ? JSON.parse(ticket.tags) : [],
+      custom_fields: ticket.custom_fields ? JSON.parse(ticket.custom_fields) : [],
+      collaborator_ids: ticket.collaborator_ids ? JSON.parse(ticket.collaborator_ids) : [],
+      follower_ids: ticket.follower_ids ? JSON.parse(ticket.follower_ids) : [],
+      email_cc_ids: ticket.email_cc_ids ? JSON.parse(ticket.email_cc_ids) : [],
+      followup_ids: ticket.followup_ids ? JSON.parse(ticket.followup_ids) : [],
+      sharing_agreement_ids: ticket.sharing_agreement_ids ? JSON.parse(ticket.sharing_agreement_ids) : [],
+      satisfaction_rating: ticket.satisfaction_rating ? JSON.parse(ticket.satisfaction_rating) : null
+    }));
+
+    res.json({
+      tickets: processedTickets,
+      count: processedTickets.length,
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      queryTime: queryTime
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching tickets:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch tickets',
+      message: error.message 
+    });
+  }
+});
+
 
 /**
  * Endpoint to create a new ticket and associated asset records.
