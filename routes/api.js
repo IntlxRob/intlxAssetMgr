@@ -7,7 +7,8 @@ const zendeskService = require('../services/zendesk');
 const googleSheetsService = require('../services/googleSheets');
 const { google } = require('googleapis');
 const calendar = google.calendar('v3');
-const db = require('../db'); // ✅ Database for tickets endpoint
+const db = require('../db'); 
+const pool = db.getPool();
 
 const MATTERMOST_URL = process.env.MATTERMOST_URL; // e.g., 'https://mattermost.yourcompany.com'
 const MATTERMOST_TOKEN = process.env.MATTERMOST_TOKEN; // Personal Access Token or Bot Token
@@ -6323,6 +6324,7 @@ router.get('/catalog', async (req, res) => {
  *   - sortBy (optional): Field to sort by (default: created_at)
  *   - sortOrder (optional): asc or desc (default: desc)
  */
+
 router.get('/tickets', async (req, res) => {
   try {
     const { 
@@ -6355,7 +6357,7 @@ router.get('/tickets', async (req, res) => {
     console.log(`📄 Pagination: limit=${limit}, offset=${offset}`);
     console.log(`🔄 Sorting: ${safeSortBy} ${validSortOrder}`);
 
-    // Build query with pagination
+    // Build PostgreSQL query with $1, $2, $3 placeholders
     let query = `
       SELECT 
         t.id,
@@ -6395,42 +6397,45 @@ router.get('/tickets', async (req, res) => {
         t.updated_at,
         t.synced_at
       FROM tickets t
-      WHERE t.created_at >= ?
-        AND t.created_at <= ?
+      WHERE t.created_at >= $1
+        AND t.created_at <= $2
     `;
 
     const params = [startDate, endDate];
+    let paramIndex = 3;
 
     // Add organization filter if provided
     if (organizationId) {
-      query += ` AND t.organization_id = ?`;
+      query += ` AND t.organization_id = $${paramIndex}`;
       params.push(organizationId);
+      paramIndex++;
     }
 
-    // Add sorting
+    // Add sorting (safely injected, validated above)
     query += ` ORDER BY t.${safeSortBy} ${validSortOrder}`;
 
     // Add pagination
-    query += ` LIMIT ? OFFSET ?`;
+    query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(parseInt(limit), parseInt(offset));
 
     const startTime = Date.now();
-    const tickets = await db.all(query, params);
+    const result = await pool.query(query, params);
     const queryTime = Date.now() - startTime;
 
-    console.log(`✅ Fetched ${tickets.length} tickets in ${queryTime}ms`);
+    console.log(`✅ Fetched ${result.rows.length} tickets in ${queryTime}ms`);
 
-    // Parse JSON fields
-    const processedTickets = tickets.map(ticket => ({
+    // PostgreSQL may store JSON fields as JSONB (already parsed) or as text
+    // Try to parse if they're strings, otherwise use as-is
+    const processedTickets = result.rows.map(ticket => ({
       ...ticket,
-      tags: ticket.tags ? JSON.parse(ticket.tags) : [],
-      custom_fields: ticket.custom_fields ? JSON.parse(ticket.custom_fields) : [],
-      collaborator_ids: ticket.collaborator_ids ? JSON.parse(ticket.collaborator_ids) : [],
-      follower_ids: ticket.follower_ids ? JSON.parse(ticket.follower_ids) : [],
-      email_cc_ids: ticket.email_cc_ids ? JSON.parse(ticket.email_cc_ids) : [],
-      followup_ids: ticket.followup_ids ? JSON.parse(ticket.followup_ids) : [],
-      sharing_agreement_ids: ticket.sharing_agreement_ids ? JSON.parse(ticket.sharing_agreement_ids) : [],
-      satisfaction_rating: ticket.satisfaction_rating ? JSON.parse(ticket.satisfaction_rating) : null
+      tags: typeof ticket.tags === 'string' ? JSON.parse(ticket.tags) : (ticket.tags || []),
+      custom_fields: typeof ticket.custom_fields === 'string' ? JSON.parse(ticket.custom_fields) : (ticket.custom_fields || []),
+      collaborator_ids: typeof ticket.collaborator_ids === 'string' ? JSON.parse(ticket.collaborator_ids) : (ticket.collaborator_ids || []),
+      follower_ids: typeof ticket.follower_ids === 'string' ? JSON.parse(ticket.follower_ids) : (ticket.follower_ids || []),
+      email_cc_ids: typeof ticket.email_cc_ids === 'string' ? JSON.parse(ticket.email_cc_ids) : (ticket.email_cc_ids || []),
+      followup_ids: typeof ticket.followup_ids === 'string' ? JSON.parse(ticket.followup_ids) : (ticket.followup_ids || []),
+      sharing_agreement_ids: typeof ticket.sharing_agreement_ids === 'string' ? JSON.parse(ticket.sharing_agreement_ids) : (ticket.sharing_agreement_ids || []),
+      satisfaction_rating: typeof ticket.satisfaction_rating === 'string' ? JSON.parse(ticket.satisfaction_rating) : (ticket.satisfaction_rating || null)
     }));
 
     res.json({
