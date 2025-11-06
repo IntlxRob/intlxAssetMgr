@@ -188,11 +188,22 @@ async function syncTickets() {
       console.log(`📄 Fetching incremental page ${page}...`);
       
       const data = await makeZendeskRequest(url);
-      
-      if (data.tickets && data.tickets.length > 0) {
-        // Save tickets IMMEDIATELY after fetching (stream processing)
-        let savedCount = 0;
-        for (const ticket of data.tickets) {
+
+if (data.tickets && data.tickets.length > 0) {
+  // Extract metric_sets from response and create lookup map
+  const metricSetsMap = new Map();
+  if (data.metric_sets && data.metric_sets.length > 0) {
+    data.metric_sets.forEach(ms => {
+      metricSetsMap.set(ms.ticket_id, ms);
+    });
+    console.log(`📊 Extracted ${data.metric_sets.length} metric_sets`);
+  }
+  
+  // Save tickets IMMEDIATELY after fetching (stream processing)
+  let savedCount = 0;
+  for (const ticket of data.tickets) {
+    // Attach metric_set to ticket
+    ticket.metric_set = metricSetsMap.get(ticket.id) || null;
           try {
             await pool.query(`
             INSERT INTO tickets (
