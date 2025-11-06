@@ -6373,7 +6373,16 @@ router.get('/tickets', async (req, res) => {
         t.organization_id,
         t.group_id,
         t.tags,
-        t.custom_fields
+        t.custom_fields,
+        t.metric_set,
+        t.reply_count,
+        t.comment_count,
+        t.reopens,
+        t.first_resolution_time_minutes,
+        t.full_resolution_time_minutes,
+        t.agent_wait_time_minutes,
+        t.requester_wait_time_minutes,
+        t.on_hold_time_minutes
       FROM tickets t
       WHERE t.created_at >= $1
         AND t.created_at <= $2
@@ -6407,7 +6416,8 @@ router.get('/tickets', async (req, res) => {
     const processedTickets = result.rows.map(ticket => ({
       ...ticket,
       tags: ticket.tags || [],
-      custom_fields: ticket.custom_fields || []
+      custom_fields: ticket.custom_fields || [],
+      metric_set: ticket.metric_set || null
     }));
 
     res.json({
