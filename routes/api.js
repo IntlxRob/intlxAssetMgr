@@ -9504,6 +9504,40 @@ router.get('/pagerduty-oncall', async (req, res) => {
 // END OF PAGERDUTY ONCALL ENDPOINT
 // ============================================
 
+// Get database sync status
+router.get('/sync-status', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT entity_type, last_sync_at, status, records_synced, error_message
+      FROM sync_status
+      WHERE entity_type = 'tickets'
+      ORDER BY last_sync_at DESC
+      LIMIT 1
+    `);
+    
+    if (result.rows.length === 0) {
+      return res.json({
+        lastSync: null,
+        status: 'never',
+        recordsSynced: 0
+      });
+    }
+    
+    const syncData = result.rows[0];
+    res.json({
+      lastSync: syncData.last_sync_at,
+      status: syncData.status,
+      recordsSynced: syncData.records_synced,
+      error: syncData.error_message
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching sync status:', error);
+    res.status(500).json({ error: 'Failed to fetch sync status' });
+  }
+});
+
+
 module.exports = router;
 module.exports.initializePresenceCache = initializePresenceCache;
 module.exports.intermediaCache = intermediaCache;
