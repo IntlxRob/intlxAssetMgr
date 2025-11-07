@@ -184,7 +184,7 @@ async function syncTickets() {
     // Fetch up to 50 pages (5000 tickets) per sync
     // CRITICAL: Save each page immediately to avoid memory issues
     while (hasMore && page <= 50) {
-      const url = `${ZENDESK_API_BASE}/incremental/tickets.json?start_time=${startTime}&per_page=${SYNC_CONFIG.batchSizes.tickets}&include=metric_sets`;
+      const url = `${ZENDESK_API_BASE}/incremental/tickets.json?start_time=${currentStartTime}&per_page=${SYNC_CONFIG.batchSizes.tickets}&include=metric_sets`;
       console.log(`📄 Fetching incremental page ${page}...`);
       
       const data = await makeZendeskRequest(url);
