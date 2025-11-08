@@ -28,7 +28,16 @@ app.use(cors({
     // Allow requests with no origin (like Postman, curl, or server-to-server)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    // Check if origin matches any allowed origin (string or regex)
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (allowed instanceof RegExp) {
+        return allowed.test(origin);  // ✅ Test regex patterns
+      }
+      return allowed === origin;  // ✅ Match exact strings
+    });
+    
+    if (isAllowed) {
+      console.log(`✅ CORS allowed origin: ${origin}`);
       callback(null, true);
     } else {
       console.log(`❌ CORS blocked origin: ${origin}`);
