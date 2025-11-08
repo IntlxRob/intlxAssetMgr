@@ -14,7 +14,28 @@ const { scheduleSync } = require('./services/syncJobs');
 
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// CORS Configuration - Allow Zendesk app domain
+const allowedOrigins = [
+  'http://localhost:4567',                      // Local development
+  'https://1184017.apps.zdusercontent.com',     // Zendesk app domain (CRITICAL)
+  'https://intlxsolutions.zendesk.com'          // Your Zendesk instance
+];
+
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like Postman, curl, or server-to-server)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log(`❌ CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 app.use(cookieParser());
 
