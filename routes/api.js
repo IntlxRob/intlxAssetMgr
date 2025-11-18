@@ -6505,10 +6505,32 @@ ${assets.map(asset => `
 });
 
 /**
+ * Handle CORS preflight for create-ticket endpoint
+ */
+router.options('/zendesk/create-ticket', (req, res) => {
+    res.header('Access-Control-Allow-Origin', 'https://www.knowi.com');
+    res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    res.sendStatus(200);
+});
+
+/**
  * Create Zendesk ticket from 3rd party application
  * POST /api/zendesk/create-ticket
  */
 router.post('/zendesk/create-ticket', async (req, res) => {
+
+    // CORS HEADERS START
+    res.header('Access-Control-Allow-Origin', 'https://www.knowi.com');
+    res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    
+    // Handle preflight request
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    // END OF CORS HEADERS
+
     const requestId = Math.random().toString(36).substring(7);
     const startTime = Date.now();
     
