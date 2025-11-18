@@ -20,7 +20,8 @@ const allowedOrigins = [
   /^https:\/\/\d+\.apps\.zdusercontent\.com$/,  // Matches ANY Zendesk app
   'https://1184027.apps.zdusercontent.com',     // Ticket IQ app
   'https://1179764.apps.zdusercontent.com',     // Agent Assist app
-  'https://intlxsolutions.zendesk.com'          // Your Zendesk instance
+  'https://intlxsolutions.zendesk.com',          // Your Zendesk instance
+  'https://www.knowi.com' // knowi Integration
 ];
 
 app.use(cors({
