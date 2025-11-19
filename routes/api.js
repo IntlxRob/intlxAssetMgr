@@ -6515,6 +6515,65 @@ router.options('/zendesk/create-ticket', (req, res) => {
 });
 
 /**
+ * Upload file to Zendesk (for attachments)
+ * POST /api/zendesk/upload
+ */
+router.post('/zendesk/upload', async (req, res) => {
+    const requestId = Math.random().toString(36).substring(7);
+    
+    console.log(`[Zendesk Upload:${requestId}] File upload request`);
+    
+    try {
+        const { filename } = req.query;
+        const { content, contentType } = req.body;
+
+        if (!filename || !content) {
+            return res.status(400).json({ 
+                error: 'Missing filename or content' 
+            });
+        }
+
+        console.log(`[Zendesk Upload:${requestId}] Uploading: ${filename}`);
+
+        // Convert base64 to buffer
+        const fileBuffer = Buffer.from(content, 'base64');
+
+        // Upload to Zendesk
+        const config = {
+            headers: {
+                'Content-Type': contentType || 'application/octet-stream',
+                'Authorization': `Basic ${Buffer.from(
+                    `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
+                ).toString('base64')}`
+            }
+        };
+
+        const axios = require('axios');
+        const response = await axios.post(
+            `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/uploads.json?filename=${encodeURIComponent(filename)}`,
+            fileBuffer,
+            config
+        );
+
+        console.log(`[Zendesk Upload:${requestId}] Upload successful: ${response.data.upload.token}`);
+
+        res.json({
+            success: true,
+            token: response.data.upload.token,
+            attachment: response.data.upload.attachment
+        });
+
+    } catch (error) {
+        console.error(`[Zendesk Upload:${requestId}] Error:`, error.response?.data || error.message);
+        
+        res.status(error.response?.status || 500).json({
+            error: 'Failed to upload file',
+            details: error.response?.data || error.message
+        });
+    }
+});
+
+/**
  * Create Zendesk ticket from 3rd party application
  * POST /api/zendesk/create-ticket
  */
