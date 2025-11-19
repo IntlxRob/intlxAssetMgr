@@ -6522,33 +6522,50 @@ router.post('/zendesk/upload', async (req, res) => {
     const requestId = Math.random().toString(36).substring(7);
     
     console.log(`[Zendesk Upload:${requestId}] File upload request`);
+    console.log(`[Zendesk Upload:${requestId}] Query params:`, req.query);
+    console.log(`[Zendesk Upload:${requestId}] Body keys:`, Object.keys(req.body));
     
     try {
-        const { filename } = req.query;
-        const { content, contentType } = req.body;
+        // Get filename from query params OR body
+        const filename = req.query.filename || req.body.filename;
+        const content = req.body.content;
+        const contentType = req.body.contentType || 'application/octet-stream';
 
-        if (!filename || !content) {
+        if (!filename) {
+            console.error(`[Zendesk Upload:${requestId}] Missing filename`);
             return res.status(400).json({ 
-                error: 'Missing filename or content' 
+                error: 'Missing filename',
+                received: { query: req.query, bodyKeys: Object.keys(req.body) }
             });
         }
 
-        console.log(`[Zendesk Upload:${requestId}] Uploading: ${filename}`);
+        if (!content) {
+            console.error(`[Zendesk Upload:${requestId}] Missing content`);
+            return res.status(400).json({ 
+                error: 'Missing file content',
+                received: { query: req.query, bodyKeys: Object.keys(req.body) }
+            });
+        }
+
+        console.log(`[Zendesk Upload:${requestId}] Uploading: ${filename} (${contentType})`);
 
         // Convert base64 to buffer
         const fileBuffer = Buffer.from(content, 'base64');
+        console.log(`[Zendesk Upload:${requestId}] File size: ${fileBuffer.length} bytes`);
 
         // Upload to Zendesk
+        const axios = require('axios');
         const config = {
             headers: {
-                'Content-Type': contentType || 'application/octet-stream',
+                'Content-Type': contentType,
                 'Authorization': `Basic ${Buffer.from(
                     `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
                 ).toString('base64')}`
-            }
+            },
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity
         };
 
-        const axios = require('axios');
         const response = await axios.post(
             `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/uploads.json?filename=${encodeURIComponent(filename)}`,
             fileBuffer,
