@@ -26,15 +26,15 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like Postman, curl, or server-to-server)
-    if (!origin) return callback(null, true);
+    // Allow requests with no origin (like Postman, curl, or server-to-server, or local files)
+    if (!origin || origin === 'null') return callback(null, true); 
     
     // Check if origin matches any allowed origin (string or regex)
     const isAllowed = allowedOrigins.some(allowed => {
       if (allowed instanceof RegExp) {
-        return allowed.test(origin);  // ✅ Test regex patterns
+        return allowed.test(origin);
       }
-      return allowed === origin;  // ✅ Match exact strings
+      return allowed === origin;
     });
     
     if (isAllowed) {
