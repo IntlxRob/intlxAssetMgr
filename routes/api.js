@@ -6615,7 +6615,7 @@ router.post('/zendesk/create-ticket', async (req, res) => {
     console.log(`[Zendesk:${requestId}] Uploads received:`, req.body.uploads);
     
     try {
-        const { name, email, subject, description, priority, tags, customFields, attachments } = req.body;
+        const { name, email, subject, description, priority, tags, customFields, attachments, uploads, uploadTokens, commentUploads } = req.body;
 
         // Validation
         if (!name || !email || !subject || !description) {
@@ -6655,17 +6655,19 @@ router.post('/zendesk/create-ticket', async (req, res) => {
         }
 
         // Add comment with attachments if provided
-        if (attachments && attachments.length > 0) {
-            // Extract tokens if objects are sent, otherwise use as-is
-            const tokens = attachments.map(att => 
+        // Accept attachments from multiple possible field names
+        const attachmentTokens = attachments || uploads || uploadTokens || commentUploads || [];
+
+        if (attachmentTokens && attachmentTokens.length > 0) {
+            const tokens = attachmentTokens.map(att => 
                 typeof att === 'string' ? att : att.token || att
             );
-            
+                    
             ticketData.comment = {
                 body: description,
                 uploads: tokens
             };
-            console.log(`[Zendesk:${requestId}] Including ${attachments.length} attachment(s)`, tokens);
+            console.log(`[Zendesk:${requestId}] Including ${attachmentTokens.length} attachment(s)`, tokens);
         }
 
         console.log(`[Zendesk:${requestId}] Creating ticket...`);
