@@ -6654,15 +6654,16 @@ router.post('/zendesk/create-ticket', async (req, res) => {
 
         // Add comment with attachments if provided
         if (attachments && attachments.length > 0) {
+            // Extract tokens if objects are sent, otherwise use as-is
+            const tokens = attachments.map(att => 
+                typeof att === 'string' ? att : att.token || att
+            );
+            
             ticketData.comment = {
                 body: description,
-                uploads: attachments.map(att => ({
-                    filename: att.filename,
-                    content: att.content,
-                    content_type: att.contentType
-                }))
+                uploads: tokens
             };
-            console.log(`[Zendesk:${requestId}] Including ${attachments.length} attachment(s)`);
+            console.log(`[Zendesk:${requestId}] Including ${attachments.length} attachment(s)`, tokens);
         }
 
         console.log(`[Zendesk:${requestId}] Creating ticket...`);
