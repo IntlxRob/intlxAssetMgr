@@ -7997,7 +7997,7 @@ if (process.env.SIPORTAL_API_KEY) {
 router.get('/ops-calendar/config', (req, res) => {
     res.json({
         calendarId: process.env.OPS_CALENDAR_ID || 'primary',
-        ptoCalendarId: process.env.PTO_CALENDAR_ID, 
+        ptoCalendarId: process.env.INTLXSOLUTIONS_CALENDAR_ID, 
         timezone: process.env.OPS_CALENDAR_TIMEZONE || 'America/New_York',
         workingHours: {
             start: '09:00',
