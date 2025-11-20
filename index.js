@@ -22,6 +22,7 @@ const allowedOrigins = [
   'https://1184027.apps.zdusercontent.com',     // Ticket IQ app
   'https://1179764.apps.zdusercontent.com',     // Agent Assist app
   'https://intlxsolutions.zendesk.com',          // Your Zendesk instance
+  'https://support.intlxsolutions.com', // intlx Help Center Domain
   'https://www.knowi.com', // knowi Integration
   null
 ];
