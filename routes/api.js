@@ -6609,6 +6609,10 @@ router.post('/zendesk/create-ticket', async (req, res) => {
     const startTime = Date.now();
     
     console.log(`[Zendesk:${requestId}] New ticket request from ${req.ip}`);
+
+    console.log(`[Zendesk:${requestId}] Request body keys:`, Object.keys(req.body));
+    console.log(`[Zendesk:${requestId}] Attachments received:`, req.body.attachments);
+    console.log(`[Zendesk:${requestId}] Uploads received:`, req.body.uploads);
     
     try {
         const { name, email, subject, description, priority, tags, customFields, attachments } = req.body;
