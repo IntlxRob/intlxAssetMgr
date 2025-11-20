@@ -48,7 +48,8 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));  // Increase JSON body size limit
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));  // Also handle URL-encoded data
 app.use(cookieParser());
 
 // ✨ NEW: Initialize Redis for analytics caching (add right here)
