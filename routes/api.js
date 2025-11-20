@@ -6505,6 +6505,14 @@ ${assets.map(asset => `
 });
 
 /**
+ * Handle CORS preflight for upload endpoint
+ */
+router.options('/zendesk/upload', (req, res) => {
+    // Don't set headers - let global CORS middleware handle it
+    res.sendStatus(200);
+});
+
+/**
  * Upload file to Zendesk (for attachments)
  * POST /api/zendesk/upload
  */
@@ -6512,8 +6520,12 @@ router.post('/zendesk/upload', async (req, res) => {
     const requestId = Math.random().toString(36).substring(7);
     
     console.log(`[Zendesk Upload:${requestId}] File upload request`);
+    console.log(`[Zendesk Upload:${requestId}] Origin:`, req.headers.origin);
+    console.log(`[Zendesk Upload:${requestId}] Content-Type:`, req.headers['content-type']);
+    console.log(`[Zendesk Upload:${requestId}] Content-Length:`, req.headers['content-length']);
     console.log(`[Zendesk Upload:${requestId}] Query params:`, req.query);
     console.log(`[Zendesk Upload:${requestId}] Body keys:`, Object.keys(req.body));
+    console.log(`[Zendesk Upload:${requestId}] Body size:`, JSON.stringify(req.body).length);
     
     try {
         // Get filename from query params OR body
@@ -6578,6 +6590,14 @@ router.post('/zendesk/upload', async (req, res) => {
             details: error.response?.data || error.message
         });
     }
+});
+
+/**
+ * Handle CORS preflight for create-ticket endpoint
+ */
+router.options('/zendesk/create-ticket', (req, res) => {
+    // Don't set headers - let global CORS middleware handle it
+    res.sendStatus(200);
 });
 
 /**
