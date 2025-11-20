@@ -6549,8 +6549,8 @@ router.post('/zendesk/upload', async (req, res) => {
 
         console.log(`[Zendesk Upload:${requestId}] Uploading: ${filename} (${contentType})`);
 
-        // Convert base64 to buffer
-        const fileBuffer = Buffer.from(content, 'base64');
+        // ✅ CHANGED: Accept plain text, convert to buffer
+        const fileBuffer = Buffer.from(content, 'utf-8');
         console.log(`[Zendesk Upload:${requestId}] File size: ${fileBuffer.length} bytes`);
 
         // Upload to Zendesk
