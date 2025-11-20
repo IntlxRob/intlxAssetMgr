@@ -17,11 +17,13 @@ const PORT = process.env.PORT || 3000;
 // CORS Configuration - Allow Zendesk app domain
 const allowedOrigins = [
   'http://localhost:4567',                      // Local development
+  'http://localhost:8000',
   /^https:\/\/\d+\.apps\.zdusercontent\.com$/,  // Matches ANY Zendesk app
   'https://1184027.apps.zdusercontent.com',     // Ticket IQ app
   'https://1179764.apps.zdusercontent.com',     // Agent Assist app
   'https://intlxsolutions.zendesk.com',          // Your Zendesk instance
-  'https://www.knowi.com' // knowi Integration
+  'https://www.knowi.com', // knowi Integration
+  null
 ];
 
 app.use(cors({

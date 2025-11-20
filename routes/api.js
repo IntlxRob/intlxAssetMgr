@@ -6508,6 +6508,7 @@ ${assets.map(asset => `
  * Handle CORS preflight for create-ticket endpoint
  */
 router.options('/zendesk/create-ticket', (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');  // Allow all origins for testing
     res.header('Access-Control-Allow-Origin', 'https://www.knowi.com');
     res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type');
@@ -6519,6 +6520,18 @@ router.options('/zendesk/create-ticket', (req, res) => {
  * POST /api/zendesk/upload
  */
 router.post('/zendesk/upload', async (req, res) => {
+
+    // CORS HEADERS
+    res.header('Access-Control-Allow-Origin', '*');  // Allow all origins for testing
+    res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Accept');
+    
+    // Handle preflight request
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    // END OF CORS HEADERS
+
     const requestId = Math.random().toString(36).substring(7);
     
     console.log(`[Zendesk Upload:${requestId}] File upload request`);
