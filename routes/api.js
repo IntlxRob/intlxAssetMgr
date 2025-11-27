@@ -2837,6 +2837,66 @@ router.get('/pagerduty-oncall', async (req, res) => {
 // END OF PAGERDUTY ONCALL ENDPOINT
 // ============================================
 
+// ============================================
+// ZENDESK USER POP ENDPOINT (for Unite CRM Screen Pop)
+// ============================================
+
+/**
+ * Zendesk User Pop - Screen pop redirector for Unite
+ * GET /zendesk-user-pop?phone={phone_number}
+ */
+router.get('/zendesk-user-pop', async (req, res) => {
+    try {
+        const phone = req.query.phone;
+        
+        console.log(`[Zendesk User Pop] Incoming: ${phone}`);
+        
+        if (!phone) {
+            return res.redirect(302, 'https://intlxsolutions.zendesk.com/agent/users');
+        }
+        
+        const zendeskAuth = Buffer.from(
+            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
+        ).toString('base64');
+        
+        const response = await fetch(
+            `https://intlxsolutions.zendesk.com/api/v2/users/search.json?query=phone:"${phone}"`,
+            {
+                headers: {
+                    'Authorization': `Basic ${zendeskAuth}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        
+        if (!response.ok) {
+            console.error(`[Zendesk User Pop] API error: ${response.status}`);
+            return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/users?query=${encodeURIComponent(phone)}`);
+        }
+        
+        const data = await response.json();
+        const users = data.users || [];
+        
+        console.log(`[Zendesk User Pop] Found ${users.length} user(s)`);
+        
+        if (users.length === 1) {
+            console.log(`[Zendesk User Pop] ✅ Match: ${users[0].name}`);
+            return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/users/${users[0].id}`);
+        } else {
+            console.log(`[Zendesk User Pop] ${users.length === 0 ? '⚠️ No match' : '⚠️ Multiple matches'}`);
+            return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/users?query=${encodeURIComponent(phone)}`);
+        }
+        
+    } catch (error) {
+        console.error('[Zendesk User Pop] Error:', error);
+        return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/users?query=${encodeURIComponent(req.query.phone || '')}`);
+    }
+});
+
+// ============================================
+// END OF ZENDESK USER POP ENDPOINT
+// ============================================
+
 // Get database sync status
 router.get('/sync-status', async (req, res) => {
   try {
