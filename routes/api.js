@@ -2847,13 +2847,25 @@ router.get('/pagerduty-oncall', async (req, res) => {
  */
 router.get('/zendesk-user-pop', async (req, res) => {
     try {
-        const phone = req.query.phone;
+        let phone = req.query.phone;
         
         console.log(`[Zendesk User Pop] Incoming: ${phone}`);
         
         if (!phone) {
             return res.redirect(302, 'https://intlxsolutions.zendesk.com/agent/users');
         }
+        
+        // Normalize to E.164
+        phone = phone.replace(/\D/g, ''); // Strip non-digits
+        if (phone.length === 10) {
+            phone = '+1' + phone;
+        } else if (phone.length === 11 && phone.startsWith('1')) {
+            phone = '+' + phone;
+        } else if (!phone.startsWith('+')) {
+            phone = '+' + phone;
+        }
+        
+        console.log(`[Zendesk User Pop] Normalized: ${phone}`);
         
         const zendeskAuth = Buffer.from(
             `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
