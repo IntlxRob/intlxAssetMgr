@@ -2883,7 +2883,7 @@ router.get('/zendesk-user-pop', async (req, res) => {
         
         if (!response.ok) {
             console.error(`[Zendesk User Pop] API error: ${response.status}`);
-            return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/users?query=${encodeURIComponent(phone)}`);
+            return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/search?q=${encodeURIComponent(phone)}`);
         }
         
         const data = await response.json();
@@ -2896,7 +2896,7 @@ router.get('/zendesk-user-pop', async (req, res) => {
             return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/users/${users[0].id}`);
         } else {
             console.log(`[Zendesk User Pop] ${users.length === 0 ? '⚠️ No match' : '⚠️ Multiple matches'}`);
-            return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/users?query=${encodeURIComponent(phone)}`);
+            return res.redirect(302, `https://intlxsolutions.zendesk.com/agent/search?q=${encodeURIComponent(phone)}`);
         }
         
     } catch (error) {
