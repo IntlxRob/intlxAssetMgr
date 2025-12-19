@@ -2942,5 +2942,421 @@ router.get('/sync-status', async (req, res) => {
   }
 });
 
+// ============================================
+// ANALYTICS API ENDPOINTS
+// Add this entire section to your api.js file
+// Place it anywhere after your router initialization
+// ============================================
+
+// ============================================
+// FAST ANALYTICS ENDPOINTS (Pre-aggregated)
+// ============================================
+
+/**
+ * Dashboard summary - FAST (reads pre-aggregated data)
+ * GET /api/analytics/dashboard?days=30&org_id=123&agent_id=456
+ */
+router.get('/analytics/dashboard', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days) || 30;
+        const orgId = req.query.org_id;
+        const agentId = req.query.agent_id;
+        const groupId = req.query.group_id;
+        
+        let whereClause = 'WHERE date >= CURRENT_DATE - $1::int';
+        const params = [days];
+        let paramIndex = 2;
+        
+        if (orgId) {
+            whereClause += ` AND organization_id = $${paramIndex}`;
+            params.push(orgId);
+            paramIndex++;
+        }
+        if (agentId) {
+            whereClause += ` AND agent_id = $${paramIndex}`;
+            params.push(agentId);
+            paramIndex++;
+        }
+        if (groupId) {
+            whereClause += ` AND group_id = $${paramIndex}`;
+            params.push(groupId);
+            paramIndex++;
+        }
+        
+        const result = await pool.query(`
+            SELECT
+                SUM(tickets_created) as total_created,
+                SUM(tickets_solved) as total_solved,
+                SUM(tickets_closed) as total_closed,
+                ROUND(SUM(total_time_minutes)::numeric / 60, 1) as total_hours,
+                ROUND(SUM(billable_time_minutes)::numeric / 60, 1) as billable_hours,
+                ROUND(AVG(avg_first_reply_minutes)) as avg_first_reply_minutes,
+                ROUND(AVG(avg_full_resolution_minutes)) as avg_resolution_minutes,
+                SUM(sla_met) as sla_met,
+                SUM(sla_breached) as sla_breached,
+                CASE 
+                    WHEN SUM(sla_met) + SUM(sla_breached) > 0 
+                    THEN ROUND(SUM(sla_met)::numeric / (SUM(sla_met) + SUM(sla_breached)) * 100, 1)
+                    ELSE NULL 
+                END as sla_rate,
+                SUM(one_touch_count) as one_touch_count,
+                SUM(two_touch_count) as two_touch_count,
+                SUM(multi_touch_count) as multi_touch_count,
+                CASE 
+                    WHEN SUM(tickets_solved) > 0 
+                    THEN ROUND(SUM(one_touch_count)::numeric / SUM(tickets_solved) * 100, 1)
+                    ELSE NULL 
+                END as one_touch_rate
+            FROM analytics_daily
+            ${whereClause}
+        `, params);
+        
+        res.json({
+            success: true,
+            period: `last_${days}_days`,
+            filters: { org_id: orgId, agent_id: agentId, group_id: groupId },
+            data: result.rows[0],
+            source: 'pre_aggregated'
+        });
+        
+    } catch (error) {
+        console.error('Error fetching dashboard analytics:', error);
+        res.status(500).json({ error: 'Failed to fetch analytics', details: error.message });
+    }
+});
+
+/**
+ * Daily trend data for charts - FAST
+ * GET /api/analytics/daily-trend?days=30
+ */
+router.get('/analytics/daily-trend', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days) || 30;
+        const orgId = req.query.org_id;
+        const agentId = req.query.agent_id;
+        
+        let whereClause = 'WHERE date >= CURRENT_DATE - $1::int';
+        const params = [days];
+        let paramIndex = 2;
+        
+        if (orgId) {
+            whereClause += ` AND organization_id = $${paramIndex}`;
+            params.push(orgId);
+            paramIndex++;
+        }
+        if (agentId) {
+            whereClause += ` AND agent_id = $${paramIndex}`;
+            params.push(agentId);
+            paramIndex++;
+        }
+        
+        const result = await pool.query(`
+            SELECT
+                date,
+                SUM(tickets_created) as tickets_created,
+                SUM(tickets_solved) as tickets_solved,
+                ROUND(SUM(total_time_minutes)::numeric / 60, 2) as hours,
+                ROUND(AVG(avg_first_reply_minutes)) as avg_first_reply,
+                ROUND(AVG(avg_full_resolution_minutes)) as avg_resolution,
+                SUM(sla_met) as sla_met,
+                SUM(sla_breached) as sla_breached
+            FROM analytics_daily
+            ${whereClause}
+            GROUP BY date
+            ORDER BY date ASC
+        `, params);
+        
+        res.json({
+            success: true,
+            period: `last_${days}_days`,
+            data: result.rows,
+            source: 'pre_aggregated'
+        });
+        
+    } catch (error) {
+        console.error('Error fetching daily trend:', error);
+        res.status(500).json({ error: 'Failed to fetch trend data', details: error.message });
+    }
+});
+
+/**
+ * Agent leaderboard - FAST
+ * GET /api/analytics/agent-leaderboard?days=30&limit=20
+ */
+router.get('/analytics/agent-leaderboard', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days) || 30;
+        const limit = parseInt(req.query.limit) || 20;
+        
+        const result = await pool.query(`
+            SELECT
+                a.id as agent_id,
+                a.name as agent_name,
+                a.email as agent_email,
+                COALESCE(SUM(ad.tickets_solved), 0) as tickets_solved,
+                COALESCE(SUM(ad.tickets_created), 0) as tickets_touched,
+                ROUND(COALESCE(SUM(ad.total_time_minutes), 0)::numeric / 60, 1) as total_hours,
+                ROUND(AVG(ad.avg_full_resolution_minutes)) as avg_resolution_minutes,
+                ROUND(AVG(ad.avg_first_reply_minutes)) as avg_first_reply_minutes,
+                CASE 
+                    WHEN SUM(ad.sla_met) + SUM(ad.sla_breached) > 0 
+                    THEN ROUND(SUM(ad.sla_met)::numeric / (SUM(ad.sla_met) + SUM(ad.sla_breached)) * 100, 1)
+                    ELSE NULL 
+                END as sla_rate,
+                CASE 
+                    WHEN SUM(ad.tickets_solved) > 0 
+                    THEN ROUND(SUM(ad.one_touch_count)::numeric / SUM(ad.tickets_solved) * 100, 1)
+                    ELSE NULL 
+                END as one_touch_rate
+            FROM agents a
+            LEFT JOIN analytics_daily ad ON ad.agent_id = a.id 
+                AND ad.date >= CURRENT_DATE - $1::int
+            WHERE a.active = true
+            GROUP BY a.id, a.name, a.email
+            HAVING SUM(ad.tickets_solved) > 0
+            ORDER BY tickets_solved DESC
+            LIMIT $2
+        `, [days, limit]);
+        
+        res.json({
+            success: true,
+            period: `last_${days}_days`,
+            agents: result.rows,
+            source: 'pre_aggregated'
+        });
+        
+    } catch (error) {
+        console.error('Error fetching agent leaderboard:', error);
+        res.status(500).json({ error: 'Failed to fetch leaderboard', details: error.message });
+    }
+});
+
+/**
+ * Organization summary - FAST
+ * GET /api/analytics/org-summary?days=30&limit=50
+ */
+router.get('/analytics/org-summary', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days) || 30;
+        const orgId = req.query.org_id;
+        const limit = parseInt(req.query.limit) || 50;
+        
+        let whereClause = 'WHERE ad.date >= CURRENT_DATE - $1::int';
+        const params = [days];
+        let paramIndex = 2;
+        
+        if (orgId) {
+            whereClause += ` AND ad.organization_id = $${paramIndex}`;
+            params.push(orgId);
+            paramIndex++;
+        }
+        
+        params.push(limit);
+        
+        const result = await pool.query(`
+            SELECT
+                o.id as organization_id,
+                o.name as organization_name,
+                SUM(ad.tickets_created) as tickets_created,
+                SUM(ad.tickets_solved) as tickets_solved,
+                ROUND(SUM(ad.total_time_minutes)::numeric / 60, 1) as total_hours,
+                ROUND(SUM(ad.billable_time_minutes)::numeric / 60, 1) as billable_hours,
+                ROUND(AVG(ad.avg_full_resolution_minutes)) as avg_resolution_minutes,
+                CASE 
+                    WHEN SUM(ad.sla_met) + SUM(ad.sla_breached) > 0 
+                    THEN ROUND(SUM(ad.sla_met)::numeric / (SUM(ad.sla_met) + SUM(ad.sla_breached)) * 100, 1)
+                    ELSE NULL 
+                END as sla_rate
+            FROM organizations o
+            INNER JOIN analytics_daily ad ON ad.organization_id = o.id
+            ${whereClause}
+            GROUP BY o.id, o.name
+            ORDER BY tickets_created DESC
+            LIMIT $${paramIndex}
+        `, params);
+        
+        res.json({
+            success: true,
+            period: `last_${days}_days`,
+            organizations: result.rows,
+            source: 'pre_aggregated'
+        });
+        
+    } catch (error) {
+        console.error('Error fetching org summary:', error);
+        res.status(500).json({ error: 'Failed to fetch org summary', details: error.message });
+    }
+});
+
+/**
+ * Priority breakdown - FAST
+ * GET /api/analytics/priority-breakdown?days=30
+ */
+router.get('/analytics/priority-breakdown', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days) || 30;
+        const orgId = req.query.org_id;
+        
+        let whereClause = 'WHERE date >= CURRENT_DATE - $1::int';
+        const params = [days];
+        let paramIndex = 2;
+        
+        if (orgId) {
+            whereClause += ` AND organization_id = $${paramIndex}`;
+            params.push(orgId);
+            paramIndex++;
+        }
+        
+        const result = await pool.query(`
+            SELECT
+                COALESCE(priority, 'none') as priority,
+                SUM(tickets_created) as tickets_created,
+                SUM(tickets_solved) as tickets_solved,
+                ROUND(AVG(avg_first_reply_minutes)) as avg_first_reply,
+                ROUND(AVG(avg_full_resolution_minutes)) as avg_resolution,
+                SUM(sla_met) as sla_met,
+                SUM(sla_breached) as sla_breached,
+                CASE 
+                    WHEN SUM(sla_met) + SUM(sla_breached) > 0 
+                    THEN ROUND(SUM(sla_met)::numeric / (SUM(sla_met) + SUM(sla_breached)) * 100, 1)
+                    ELSE NULL 
+                END as sla_rate,
+                SUM(one_touch_count) as one_touch,
+                SUM(two_touch_count) as two_touch,
+                SUM(multi_touch_count) as multi_touch
+            FROM analytics_daily
+            ${whereClause}
+            GROUP BY priority
+            ORDER BY 
+                CASE priority 
+                    WHEN 'urgent' THEN 1 
+                    WHEN 'high' THEN 2 
+                    WHEN 'normal' THEN 3 
+                    WHEN 'low' THEN 4 
+                    ELSE 5 
+                END
+        `, params);
+        
+        res.json({
+            success: true,
+            period: `last_${days}_days`,
+            priorities: result.rows,
+            source: 'pre_aggregated'
+        });
+        
+    } catch (error) {
+        console.error('Error fetching priority breakdown:', error);
+        res.status(500).json({ error: 'Failed to fetch priority data', details: error.message });
+    }
+});
+
+// ============================================
+// AGGREGATION MANAGEMENT ENDPOINTS
+// ============================================
+
+/**
+ * Get aggregation status
+ * GET /api/analytics/aggregation-status
+ */
+router.get('/analytics/aggregation-status', async (req, res) => {
+    try {
+        const status = await pool.query(`
+            SELECT 
+                aggregation_type,
+                MAX(date_processed) as last_processed,
+                COUNT(*) FILTER (WHERE status = 'success') as success_count,
+                COUNT(*) FILTER (WHERE status = 'error') as error_count,
+                MAX(completed_at) as last_completed
+            FROM aggregation_log
+            GROUP BY aggregation_type
+            ORDER BY aggregation_type
+        `);
+        
+        const tableCounts = await pool.query(`
+            SELECT 
+                'analytics_daily' as table_name, 
+                COUNT(*) as row_count,
+                MIN(date) as earliest_date,
+                MAX(date) as latest_date
+            FROM analytics_daily
+            UNION ALL
+            SELECT 'analytics_agent_weekly', COUNT(*), MIN(week_start), MAX(week_start) FROM analytics_agent_weekly
+            UNION ALL
+            SELECT 'analytics_org_monthly', COUNT(*), MIN(month), MAX(month) FROM analytics_org_monthly
+        `);
+        
+        res.json({
+            success: true,
+            aggregation_status: status.rows,
+            table_stats: tableCounts.rows
+        });
+        
+    } catch (error) {
+        console.error('Error fetching aggregation status:', error);
+        res.status(500).json({ error: 'Failed to fetch status', details: error.message });
+    }
+});
+
+/**
+ * Manually trigger daily aggregation
+ * POST /api/analytics/aggregate-daily
+ * Body: { "date": "YYYY-MM-DD" } (optional)
+ */
+router.post('/analytics/aggregate-daily', async (req, res) => {
+    try {
+        const { date } = req.body;
+        const targetDate = date ? new Date(date) : null;
+        
+        // Import the function from syncJobs
+        const { aggregateDailyAnalytics } = require('../services/syncJobs');
+        
+        const result = await aggregateDailyAnalytics(targetDate);
+        res.json(result);
+        
+    } catch (error) {
+        console.error('Error triggering aggregation:', error);
+        res.status(500).json({ error: 'Failed to run aggregation', details: error.message });
+    }
+});
+
+/**
+ * Backfill historical data
+ * POST /api/analytics/backfill
+ * Body: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD" }
+ */
+router.post('/analytics/backfill', async (req, res) => {
+    try {
+        const { start_date, end_date } = req.body;
+        
+        if (!start_date || !end_date) {
+            return res.status(400).json({ 
+                error: 'Missing required fields',
+                required: ['start_date', 'end_date']
+            });
+        }
+        
+        // Import the function from syncJobs
+        const { backfillDailyAnalytics } = require('../services/syncJobs');
+        
+        console.log(`Starting backfill from ${start_date} to ${end_date}...`);
+        
+        // Run backfill
+        const result = await backfillDailyAnalytics(start_date, end_date);
+        
+        res.json({
+            success: true,
+            message: 'Backfill completed',
+            ...result
+        });
+        
+    } catch (error) {
+        console.error('Error running backfill:', error);
+        res.status(500).json({ error: 'Failed to run backfill', details: error.message });
+    }
+});
+
+// ============================================
+// END OF ANALYTICS ENDPOINTS
+// ============================================
 
 module.exports = router;
