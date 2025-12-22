@@ -477,6 +477,142 @@ router.get('/catalog', async (req, res) => {
 });
 
 // ============================================
+// FAST COUNT ENDPOINT
+// ============================================
+router.get('/tickets/count', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  try {
+    const { startDate, endDate, organizationId } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate required' });
+    }
+
+    let query = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
+    const params = [startDate, endDate];
+    
+    if (organizationId) {
+      query += ` AND organization_id = $3`;
+      params.push(organizationId);
+    }
+
+    const result = await pool.query(query, params);
+    
+    res.json({
+      success: true,
+      count: parseInt(result.rows[0].total),
+      startDate,
+      endDate
+    });
+    
+  } catch (error) {
+    console.error('Error counting tickets:', error);
+    res.status(500).json({ error: 'Failed to count tickets', message: error.message });
+  }
+});
+
+// ============================================
+// PAGINATED TICKETS ENDPOINT
+// ============================================
+router.get('/tickets/paginated', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  try {
+    const { 
+      startDate, 
+      endDate, 
+      page = 1,
+      pageSize = 1000,
+      organizationId,
+      sortBy = 'created_at',
+      sortOrder = 'desc'
+    } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate required' });
+    }
+
+    const pageNum = Math.max(1, parseInt(page));
+    const size = Math.min(2000, Math.max(100, parseInt(pageSize)));
+    const offset = (pageNum - 1) * size;
+
+    const validSortFields = ['created_at', 'updated_at', 'id', 'status', 'priority'];
+    const safeSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+    const validSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    console.log(`📊 Paginated fetch: page ${pageNum}, size ${size}`);
+
+    // Get total count
+    let countQuery = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
+    const countParams = [startDate, endDate];
+    
+    if (organizationId) {
+      countQuery += ` AND organization_id = $3`;
+      countParams.push(organizationId);
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+    const totalCount = parseInt(countResult.rows[0].total);
+    const totalPages = Math.ceil(totalCount / size);
+
+    // Fetch page
+    let query = `
+      SELECT 
+        id, subject, description, status, priority, request_type,
+        created_at, updated_at, requester_id, assignee_id,
+        organization_id, group_id, tags, custom_fields, metric_set,
+        reply_count, comment_count, reopens,
+        first_resolution_time_minutes, full_resolution_time_minutes,
+        agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes
+      FROM tickets
+      WHERE created_at >= $1 AND created_at <= $2
+    `;
+    
+    const params = [startDate, endDate];
+    let paramIndex = 3;
+
+    if (organizationId) {
+      query += ` AND organization_id = $${paramIndex}`;
+      params.push(organizationId);
+      paramIndex++;
+    }
+
+    query += ` ORDER BY ${safeSortBy} ${validSortOrder}`;
+    query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(size, offset);
+
+    const startTime = Date.now();
+    const result = await pool.query(query, params);
+    const queryTime = Date.now() - startTime;
+
+    console.log(`✅ Page ${pageNum}/${totalPages}: ${result.rows.length} tickets in ${queryTime}ms`);
+
+    res.json({
+      success: true,
+      tickets: result.rows,
+      pagination: {
+        page: pageNum,
+        pageSize: size,
+        totalCount,
+        totalPages,
+        hasMore: pageNum < totalPages,
+        nextPage: pageNum < totalPages ? pageNum + 1 : null
+      },
+      queryTime
+    });
+
+  } catch (error) {
+    console.error('Error fetching paginated tickets:', error);
+    res.status(500).json({ error: 'Failed to fetch tickets', message: error.message });
+  }
+});
+
+// ============================================
 // GET TICKETS WITH PAGINATION & SORTING
 // ============================================
 /**
@@ -493,6 +629,12 @@ router.get('/catalog', async (req, res) => {
  */
 
 router.get('/tickets', async (req, res) => {
+
+    // Send CORS headers immediately
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
   try {
     const { 
       startDate, 
