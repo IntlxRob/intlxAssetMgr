@@ -16,14 +16,22 @@ function buildWhereClause(filters = {}) {
     const params = [];
     let paramIndex = 1;
 
+    // Determine which date field to use
+    const dateField = filters.dateFilterType === 'solved' ? 't.updated_at' : 't.created_at';
+
     // Date range filter
     if (filters.startDate) {
-        conditions.push(`t.created_at >= $${paramIndex++}`);
+        conditions.push(`${dateField} >= $${paramIndex++}`);
         params.push(filters.startDate);
     }
     if (filters.endDate) {
-        conditions.push(`t.created_at <= $${paramIndex++}`);
+        conditions.push(`${dateField} <= $${paramIndex++}`);
         params.push(filters.endDate);
+    }
+
+    // For solved date filter, only include solved/closed tickets
+    if (filters.dateFilterType === 'solved') {
+        conditions.push(`t.status IN ('solved', 'closed')`);
     }
 
     // Organization filter
@@ -62,11 +70,11 @@ function buildWhereClause(filters = {}) {
         params.push(filters.billable);
     }
 
-    const whereClause = conditions.length > 0 
+    const whereClause = conditions.length > 0
         ? 'WHERE ' + conditions.join(' AND ')
         : '';
 
-    return { whereClause, params };
+    return { whereClause, params, dateField };
 }
 
 // ============================================================================
@@ -452,14 +460,22 @@ router.get('/tickets/count', async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
   try {
-    const { startDate, endDate, organizationId } = req.query;
+    const { startDate, endDate, organizationId, dateFilterType } = req.query;
 
     if (!startDate || !endDate) {
       return res.status(400).json({ error: 'startDate and endDate required' });
     }
 
-    let sql = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
+    // Determine which date field to use
+    const dateField = dateFilterType === 'solved' ? 'updated_at' : 'created_at';
+    
+    let sql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} <= $2`;
     const params = [startDate, endDate];
+    
+    // For solved date filter, only include solved/closed tickets
+    if (dateFilterType === 'solved') {
+      sql += ` AND status IN ('solved', 'closed')`;
+    }
     
     if (organizationId) {
       sql += ` AND organization_id = $3`;
@@ -472,7 +488,8 @@ router.get('/tickets/count', async (req, res) => {
       success: true,
       count: parseInt(result.rows[0].total),
       startDate,
-      endDate
+      endDate,
+      dateFilterType: dateFilterType || 'created'
     });
     
   } catch (error) {
@@ -496,6 +513,7 @@ router.get('/tickets/paginated', async (req, res) => {
       page = 1,
       pageSize = 1000,
       organizationId,
+      dateFilterType = 'created',
       sortBy = 'created_at',
       sortOrder = 'desc'
     } = req.query;
@@ -512,18 +530,29 @@ router.get('/tickets/paginated', async (req, res) => {
     const safeSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
     const validSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-    console.log(`📊 Paginated fetch: page ${pageNum}, size ${size}`);
+    // Determine which date field to use
+    const dateField = dateFilterType === 'solved' ? 'updated_at' : 'created_at';
+
+    console.log(`📊 Paginated fetch: page ${pageNum}, size ${size}, dateFilter: ${dateFilterType}`);
 
     // Get total count
-    let countSql = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
+    let countSql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} <= $2`;
     const countParams = [startDate, endDate];
+    
+    // For solved date filter, only include solved/closed tickets
+    if (dateFilterType === 'solved') {
+      countSql += ` AND status IN ('solved', 'closed')`;
+    }
+    
     if (organizationId) {
       countSql += ` AND organization_id = $3`;
       countParams.push(organizationId);
     }
+
     const countResult = await query(countSql, countParams);
     const totalCount = parseInt(countResult.rows[0].total);
     const totalPages = Math.ceil(totalCount / size);
+
     // Fetch page
     let sql = `
       SELECT
@@ -534,18 +563,27 @@ router.get('/tickets/paginated', async (req, res) => {
         first_resolution_time_minutes, full_resolution_time_minutes,
         agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes
       FROM tickets
-      WHERE created_at >= $1 AND created_at <= $2
+      WHERE ${dateField} >= $1 AND ${dateField} <= $2
     `;
+    
     const params = [startDate, endDate];
     let paramIndex = 3;
+
+    // For solved date filter, only include solved/closed tickets
+    if (dateFilterType === 'solved') {
+      sql += ` AND status IN ('solved', 'closed')`;
+    }
+
     if (organizationId) {
       sql += ` AND organization_id = $${paramIndex}`;
       params.push(organizationId);
       paramIndex++;
     }
+
     sql += ` ORDER BY ${safeSortBy} ${validSortOrder}`;
     sql += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(size, offset);
+
     const startTime = Date.now();
     const result = await query(sql, params);
     const queryTime = Date.now() - startTime;
@@ -563,6 +601,7 @@ router.get('/tickets/paginated', async (req, res) => {
         hasMore: pageNum < totalPages,
         nextPage: pageNum < totalPages ? pageNum + 1 : null
       },
+      dateFilterType,
       queryTime
     });
 
@@ -585,6 +624,7 @@ router.get('/tickets', cacheMiddleware(60), async (req, res) => {
         const filters = {
             startDate: req.query.startDate,
             endDate: req.query.endDate,
+            dateFilterType: req.query.dateFilterType || 'created',
             organizationId: req.query.organizationId,
             status: req.query.status,
             priority: req.query.priority,
