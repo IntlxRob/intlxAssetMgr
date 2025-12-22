@@ -458,15 +458,15 @@ router.get('/tickets/count', async (req, res) => {
       return res.status(400).json({ error: 'startDate and endDate required' });
     }
 
-    let query = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
+    let sql = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
     const params = [startDate, endDate];
     
     if (organizationId) {
-      query += ` AND organization_id = $3`;
+      sql += ` AND organization_id = $3`;
       params.push(organizationId);
     }
 
-    const result = await pool.query(query, params);
+    const result = await query(sql, params);
     
     res.json({
       success: true,
@@ -554,7 +554,7 @@ router.get('/tickets/paginated', async (req, res) => {
     params.push(size, offset);
 
     const startTime = Date.now();
-    const result = await pool.query(query, params);
+    const result = await query(sql, params);
     const queryTime = Date.now() - startTime;
 
     console.log(`✅ Page ${pageNum}/${totalPages}: ${result.rows.length} tickets in ${queryTime}ms`);
