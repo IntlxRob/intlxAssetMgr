@@ -523,7 +523,7 @@ router.get('/tickets/paginated', async (req, res) => {
       countParams.push(organizationId);
     }
 
-    const countResult = await pool.query(countQuery, countParams);
+    const countResult = await query(countSql, countParams);
     const totalCount = parseInt(countResult.rows[0].total);
     const totalPages = Math.ceil(totalCount / size);
 
