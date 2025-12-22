@@ -515,21 +515,18 @@ router.get('/tickets/paginated', async (req, res) => {
     console.log(`📊 Paginated fetch: page ${pageNum}, size ${size}`);
 
     // Get total count
-    let countQuery = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
+    let countSql = `SELECT COUNT(*) as total FROM tickets WHERE created_at >= $1 AND created_at <= $2`;
     const countParams = [startDate, endDate];
-    
     if (organizationId) {
-      countQuery += ` AND organization_id = $3`;
+      countSql += ` AND organization_id = $3`;
       countParams.push(organizationId);
     }
-
     const countResult = await query(countSql, countParams);
     const totalCount = parseInt(countResult.rows[0].total);
     const totalPages = Math.ceil(totalCount / size);
-
     // Fetch page
-    let query = `
-      SELECT 
+    let sql = `
+      SELECT
         id, subject, description, status, priority, request_type,
         created_at, updated_at, requester_id, assignee_id,
         organization_id, group_id, tags, custom_fields, metric_set,
@@ -539,20 +536,16 @@ router.get('/tickets/paginated', async (req, res) => {
       FROM tickets
       WHERE created_at >= $1 AND created_at <= $2
     `;
-    
     const params = [startDate, endDate];
     let paramIndex = 3;
-
     if (organizationId) {
-      query += ` AND organization_id = $${paramIndex}`;
+      sql += ` AND organization_id = $${paramIndex}`;
       params.push(organizationId);
       paramIndex++;
     }
-
-    query += ` ORDER BY ${safeSortBy} ${validSortOrder}`;
-    query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    sql += ` ORDER BY ${safeSortBy} ${validSortOrder}`;
+    sql += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(size, offset);
-
     const startTime = Date.now();
     const result = await query(sql, params);
     const queryTime = Date.now() - startTime;
