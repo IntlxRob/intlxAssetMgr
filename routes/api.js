@@ -3029,15 +3029,25 @@ router.get('/analytics/dashboard', async (req, res) => {
  * Daily trend data for charts - FAST
  * GET /api/analytics/daily-trend?days=30
  */
-router.get('/analytics/daily-trend', async (req, res) => {
+router.get('/analytics/dashboard', async (req, res) => {
     try {
-        const days = parseInt(req.query.days) || 30;
-        const orgId = req.query.org_id;
-        const agentId = req.query.agent_id;
+        const { days, start_date, end_date, org_id: orgId, agent_id: agentId, group_id: groupId } = req.query;
         
-        let whereClause = 'WHERE date >= CURRENT_DATE - $1::int';
-        const params = [days];
-        let paramIndex = 2;
+        let whereClause;
+        const params = [];
+        let paramIndex = 1;
+        
+        // Support both date range params and legacy 'days' param
+        if (start_date && end_date) {
+            whereClause = `WHERE date >= $${paramIndex} AND date <= $${paramIndex + 1}`;
+            params.push(start_date, end_date);
+            paramIndex = 3;
+        } else {
+            const daysNum = parseInt(days) || 30;
+            whereClause = `WHERE date >= CURRENT_DATE - $${paramIndex}::int`;
+            params.push(daysNum);
+            paramIndex = 2;
+        }
         
         if (orgId) {
             whereClause += ` AND organization_id = $${paramIndex}`;
@@ -3049,33 +3059,50 @@ router.get('/analytics/daily-trend', async (req, res) => {
             params.push(agentId);
             paramIndex++;
         }
+        if (groupId) {
+            whereClause += ` AND group_id = $${paramIndex}`;
+            params.push(groupId);
+            paramIndex++;
+        }
         
         const result = await pool.query(`
             SELECT
-                date,
-                SUM(tickets_created) as tickets_created,
-                SUM(tickets_solved) as tickets_solved,
-                ROUND(SUM(total_time_minutes)::numeric / 60, 2) as hours,
-                ROUND(AVG(avg_first_reply_minutes)) as avg_first_reply,
-                ROUND(AVG(avg_full_resolution_minutes)) as avg_resolution,
+                SUM(tickets_created) as total_created,
+                SUM(tickets_solved) as total_solved,
+                SUM(tickets_closed) as total_closed,
+                ROUND(SUM(total_time_minutes)::numeric / 60, 1) as total_hours,
+                ROUND(SUM(billable_time_minutes)::numeric / 60, 1) as billable_hours,
+                ROUND(AVG(avg_first_reply_minutes)) as avg_first_reply_minutes,
+                ROUND(AVG(avg_full_resolution_minutes)) as avg_resolution_minutes,
                 SUM(sla_met) as sla_met,
-                SUM(sla_breached) as sla_breached
+                SUM(sla_breached) as sla_breached,
+                CASE
+                    WHEN SUM(sla_met) + SUM(sla_breached) > 0
+                    THEN ROUND(SUM(sla_met)::numeric / (SUM(sla_met) + SUM(sla_breached)) * 100, 1)
+                    ELSE NULL
+                END as sla_rate,
+                SUM(one_touch_count) as one_touch_count,
+                SUM(two_touch_count) as two_touch_count,
+                SUM(multi_touch_count) as multi_touch_count,
+                CASE
+                    WHEN SUM(tickets_solved) > 0
+                    THEN ROUND(SUM(one_touch_count)::numeric / SUM(tickets_solved) * 100, 1)
+                    ELSE NULL
+                END as one_touch_rate
             FROM analytics_daily
             ${whereClause}
-            GROUP BY date
-            ORDER BY date ASC
         `, params);
         
         res.json({
             success: true,
-            period: `last_${days}_days`,
-            data: result.rows,
+            period: start_date && end_date ? `${start_date}_to_${end_date}` : `last_${days || 30}_days`,
+            filters: { org_id: orgId, agent_id: agentId, group_id: groupId },
+            data: result.rows[0],
             source: 'pre_aggregated'
         });
-        
     } catch (error) {
-        console.error('Error fetching daily trend:', error);
-        res.status(500).json({ error: 'Failed to fetch trend data', details: error.message });
+        console.error('Error fetching dashboard analytics:', error);
+        res.status(500).json({ error: 'Failed to fetch analytics', details: error.message });
     }
 });
 
