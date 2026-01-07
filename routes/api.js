@@ -2958,14 +2958,23 @@ router.get('/sync-status', async (req, res) => {
  */
 router.get('/analytics/dashboard', async (req, res) => {
     try {
-        const days = parseInt(req.query.days) || 30;
-        const orgId = req.query.org_id;
-        const agentId = req.query.agent_id;
-        const groupId = req.query.group_id;
+        const { days, start_date, end_date, org_id: orgId, agent_id: agentId, group_id: groupId } = req.query;
         
-        let whereClause = 'WHERE date >= CURRENT_DATE - $1::int';
-        const params = [days];
-        let paramIndex = 2;
+        let whereClause;
+        const params = [];
+        let paramIndex = 1;
+        
+        // Support both date range params and legacy 'days' param
+        if (start_date && end_date) {
+            whereClause = `WHERE date >= $${paramIndex}::date AND date <= $${paramIndex + 1}::date`;
+            params.push(start_date, end_date);
+            paramIndex = 3;
+        } else {
+            const daysNum = parseInt(days) || 30;
+            whereClause = `WHERE date >= CURRENT_DATE - $${paramIndex}::int`;
+            params.push(daysNum);
+            paramIndex = 2;
+        }
         
         if (orgId) {
             whereClause += ` AND organization_id = $${paramIndex}`;
@@ -2994,18 +3003,18 @@ router.get('/analytics/dashboard', async (req, res) => {
                 ROUND(AVG(avg_full_resolution_minutes)) as avg_resolution_minutes,
                 SUM(sla_met) as sla_met,
                 SUM(sla_breached) as sla_breached,
-                CASE 
-                    WHEN SUM(sla_met) + SUM(sla_breached) > 0 
+                CASE
+                    WHEN SUM(sla_met) + SUM(sla_breached) > 0
                     THEN ROUND(SUM(sla_met)::numeric / (SUM(sla_met) + SUM(sla_breached)) * 100, 1)
-                    ELSE NULL 
+                    ELSE NULL
                 END as sla_rate,
                 SUM(one_touch_count) as one_touch_count,
                 SUM(two_touch_count) as two_touch_count,
                 SUM(multi_touch_count) as multi_touch_count,
-                CASE 
-                    WHEN SUM(tickets_solved) > 0 
+                CASE
+                    WHEN SUM(tickets_solved) > 0
                     THEN ROUND(SUM(one_touch_count)::numeric / SUM(tickets_solved) * 100, 1)
-                    ELSE NULL 
+                    ELSE NULL
                 END as one_touch_rate
             FROM analytics_daily
             ${whereClause}
@@ -3013,12 +3022,11 @@ router.get('/analytics/dashboard', async (req, res) => {
         
         res.json({
             success: true,
-            period: `last_${days}_days`,
+            period: start_date && end_date ? `${start_date}_to_${end_date}` : `last_${days || 30}_days`,
             filters: { org_id: orgId, agent_id: agentId, group_id: groupId },
             data: result.rows[0],
             source: 'pre_aggregated'
         });
-        
     } catch (error) {
         console.error('Error fetching dashboard analytics:', error);
         res.status(500).json({ error: 'Failed to fetch analytics', details: error.message });
