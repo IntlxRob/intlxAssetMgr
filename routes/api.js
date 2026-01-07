@@ -3039,7 +3039,7 @@ router.get('/analytics/dashboard', async (req, res) => {
         
         // Support both date range params and legacy 'days' param
         if (start_date && end_date) {
-            whereClause = `WHERE date >= $${paramIndex} AND date <= $${paramIndex + 1}`;
+            whereClause = `WHERE date >= $${paramIndex}::date AND date <= $${paramIndex + 1}::date`;
             params.push(start_date, end_date);
             paramIndex = 3;
         } else {
