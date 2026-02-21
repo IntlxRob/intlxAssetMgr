@@ -476,6 +476,42 @@ router.get('/catalog', async (req, res) => {
     }
 });
 
+/**
+ * Fetch manager name and email for a user by their email address.
+ * Uses admin credentials so it works for all users regardless of field visibility settings.
+ * Called by the service catalog page to auto-fill the Approving Manager section.
+ */
+router.get('/user-manager-fields', async (req, res) => {
+    try {
+        const { email } = req.query;
+        if (!email) return res.status(400).json({ error: 'Missing email parameter' });
+
+        const response = await fetch(
+            `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/search.json?query=email:${encodeURIComponent(email)}`,
+            {
+                headers: {
+                    'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+                }
+            }
+        );
+
+        if (!response.ok) throw new Error(`Zendesk API error: ${response.status}`);
+
+        const data = await response.json();
+        const user = data.users?.[0];
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        res.json({
+            manager_name: user.user_fields?.manager_name || '',
+            manager_email: user.user_fields?.manager_email || ''
+        });
+
+    } catch (error) {
+        console.error('Error fetching manager fields:', error.message);
+        res.status(500).json({ error: 'Failed to fetch manager fields' });
+    }
+});
+
 // ============================================
 // GET TICKETS WITH PAGINATION & SORTING
 // ============================================
