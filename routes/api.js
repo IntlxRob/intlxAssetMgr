@@ -475,7 +475,6 @@ router.get('/catalog', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch catalog from Google Sheets.', details: error.message });
     }
 });
-
 /**
  * Fetch manager name and email for a user by their email address.
  * Uses admin credentials so it works for all users regardless of field visibility settings.
@@ -511,6 +510,8 @@ router.get('/user-manager-fields', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch manager fields' });
     }
 });
+
+
 
 // ============================================
 // GET TICKETS WITH PAGINATION & SORTING
@@ -646,8 +647,49 @@ router.get('/tickets', async (req, res) => {
  */
 router.post('/ticket', async (req, res) => {
     try {
-        const { name, email, subject, body, approved_by, tags, assets } = req.body;
-        
+        const { name, email, subject, body, approved_by, approved_by_email, tags, assets } = req.body;
+
+        // ---- Update manager fields on the requester's Zendesk profile ----
+        // This ensures ticket.requester.manager_email always matches what was submitted,
+        // so the Approve app sends the approval request to the correct person.
+        if (email && (approved_by || approved_by_email)) {
+            try {
+                // First find the user by email
+                const searchRes = await fetch(
+                    `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/search.json?query=email:${encodeURIComponent(email)}`,
+                    { headers: { 'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}` } }
+                );
+                const searchData = await searchRes.json();
+                const zendeskUser = searchData.users?.[0];
+
+                if (zendeskUser) {
+                    await fetch(
+                        `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/${zendeskUser.id}.json`,
+                        {
+                            method: 'PUT',
+                            headers: {
+                                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                user: {
+                                    user_fields: {
+                                        manager_name: approved_by || '',
+                                        manager_email: approved_by_email || ''
+                                    }
+                                }
+                            })
+                        }
+                    );
+                    console.log(`[Ticket] Updated manager fields for ${email}: ${approved_by} <${approved_by_email}>`);
+                }
+            } catch (managerUpdateErr) {
+                // Non-fatal — log but continue with ticket creation
+                console.warn('[Ticket] Failed to update manager fields:', managerUpdateErr.message);
+            }
+        }
+        // ------------------------------------------------------------------
+
         // Handle new React app format if assets are provided
         if (assets && Array.isArray(assets)) {
             const ticketDescription = `
