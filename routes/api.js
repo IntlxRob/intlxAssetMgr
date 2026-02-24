@@ -641,6 +641,114 @@ router.get('/tickets', async (req, res) => {
   }
 });
 
+/**
+ * Agent Time Report: Returns tickets where time was logged by a given agent
+ * within a date range based on updated_at. Optionally filter by assignee_id.
+ */
+router.get('/tickets/agent-time-report', async (req, res) => {
+  try {
+    const {
+      startDate,
+      endDate,
+      assigneeId,
+      limit = 10000,
+      offset = 0
+    } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+
+    const TIME_FIELD_ID = 17213443224599;
+
+    let query = `
+      SELECT
+        t.id,
+        t.subject,
+        t.status,
+        t.priority,
+        t.created_at,
+        t.updated_at,
+        t.assignee_id,
+        t.organization_id,
+        t.group_id,
+        t.tags,
+        t.custom_fields,
+        t.metric_set,
+        t.reply_count,
+        t.comment_count
+      FROM tickets t
+      WHERE t.updated_at >= $1
+        AND t.updated_at <= $2
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(t.custom_fields) cf
+          WHERE (cf->>'id')::bigint = ${TIME_FIELD_ID}
+            AND cf->>'value' IS NOT NULL
+            AND cf->>'value' != ''
+            AND cf->>'value' != '0'
+            AND (cf->>'value')::numeric > 0
+        )
+    `;
+
+    const params = [startDate, endDate];
+    let paramIndex = 3;
+
+    if (assigneeId) {
+      query += ` AND t.assignee_id = $${paramIndex}`;
+      params.push(parseInt(assigneeId));
+      paramIndex++;
+    }
+
+    query += ` ORDER BY t.updated_at DESC`;
+    query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const startTime = Date.now();
+    const result = await pool.query(query, params);
+    const queryTime = Date.now() - startTime;
+
+    let countQuery = `
+      SELECT COUNT(*) FROM tickets t
+      WHERE t.updated_at >= $1
+        AND t.updated_at <= $2
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(t.custom_fields) cf
+          WHERE (cf->>'id')::bigint = ${TIME_FIELD_ID}
+            AND cf->>'value' IS NOT NULL
+            AND cf->>'value' != ''
+            AND cf->>'value' != '0'
+            AND (cf->>'value')::numeric > 0
+        )
+    `;
+    const countParams = [startDate, endDate];
+    if (assigneeId) {
+      countQuery += ` AND t.assignee_id = $3`;
+      countParams.push(parseInt(assigneeId));
+    }
+    const countResult = await pool.query(countQuery, countParams);
+    const totalCount = parseInt(countResult.rows[0].count);
+
+    const processedTickets = result.rows.map(ticket => ({
+      ...ticket,
+      tags: ticket.tags || [],
+      custom_fields: ticket.custom_fields || [],
+      metric_set: ticket.metric_set || null
+    }));
+
+    console.log(`✅ Agent time report: ${processedTickets.length} tickets in ${queryTime}ms`);
+
+    res.json({
+      tickets: processedTickets,
+      count: processedTickets.length,
+      totalCount,
+      queryTime
+    });
+
+  } catch (error) {
+    console.error('❌ Error in agent-time-report:', error);
+    res.status(500).json({ error: 'Failed to fetch agent time report', message: error.message });
+  }
+});
 
 /**
  * Endpoint to create a new ticket and associated asset records.
