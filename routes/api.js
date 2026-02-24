@@ -686,7 +686,8 @@ router.get('/tickets/agent-time-report', async (req, res) => {
             AND cf->>'value' IS NOT NULL
             AND cf->>'value' != ''
             AND cf->>'value' != '0'
-            AND (cf->>'value')::numeric > 0
+            AND (cf->>'value') ~ '^[0-9]+(\.[0-9]+)?$'
+AND (cf->>'value')::numeric > 0
         )
     `;
 
@@ -717,7 +718,8 @@ router.get('/tickets/agent-time-report', async (req, res) => {
             AND cf->>'value' IS NOT NULL
             AND cf->>'value' != ''
             AND cf->>'value' != '0'
-            AND (cf->>'value')::numeric > 0
+            AND (cf->>'value') ~ '^[0-9]+(\.[0-9]+)?$'
+AND (cf->>'value')::numeric > 0
         )
     `;
     const countParams = [startDate, endDate];
