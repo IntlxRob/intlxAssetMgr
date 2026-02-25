@@ -969,11 +969,10 @@ for (const event of events) {
   const childEvents = event.child_events || [];
         for (const child of childEvents) {
       if (child.event_type !== 'Change') continue;
-      console.log(`Change event: ${JSON.stringify(child).substring(0, 300)}`);
-      const fieldName = String(child.field_name || '');
-      if (!fieldName.includes(String(TIME_FIELD_ID))) continue;
+      const customFields = child.custom_ticket_fields || {};
+      if (!customFields.hasOwnProperty(String(TIME_FIELD_ID))) continue;
 
-          const newTotal = parseInt(child.value) || 0;
+          const newTotal = parseInt(customFields[String(TIME_FIELD_ID)]) || 0;
           const prevTotal = parseInt(child.previous_value) || 0;
           const delta = newTotal - prevTotal;
 
