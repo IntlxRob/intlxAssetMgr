@@ -968,9 +968,13 @@ async function syncTimeEntries() {
       for (const event of events) {
         const childEvents = event.child_events || [];
         for (const child of childEvents) {
-          const fieldName = String(child.field_name || '');
-          if (!fieldName.includes(String(TIME_FIELD_ID))) continue;
-          if (child.type !== 'Change') continue;
+  const fieldName = String(child.field_name || '');
+  // Debug: log any field changes to see what format field names take
+  if (child.type === 'Change') {
+    console.log(`Field change: field_name="${fieldName}" value="${child.value}" prev="${child.previous_value}"`);
+  }
+  if (!fieldName.includes(String(TIME_FIELD_ID))) continue;
+  if (child.type !== 'Change') continue;
 
           const newTotal = parseInt(child.value) || 0;
           const prevTotal = parseInt(child.previous_value) || 0;
