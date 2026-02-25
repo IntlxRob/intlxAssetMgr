@@ -911,78 +911,169 @@ async function getAggregationStatus() {
 }
 
 // ============================================
+// TIME ENTRIES SYNC
+// ============================================
+
+const TIME_FIELD_ID = 17213443224599;
+
+async function ensureTimeEntriesTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ticket_time_entries (
+      id BIGSERIAL PRIMARY KEY,
+      ticket_event_id BIGINT UNIQUE,
+      ticket_id BIGINT NOT NULL,
+      agent_id BIGINT,
+      time_seconds INTEGER NOT NULL,
+      total_time_seconds INTEGER,
+      created_at TIMESTAMPTZ NOT NULL,
+      synced_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_ticket_id ON ticket_time_entries(ticket_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_agent_id ON ticket_time_entries(agent_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_created_at ON ticket_time_entries(created_at)`);
+}
+
+async function syncTimeEntries() {
+  console.log('\n Starting time entries sync...');
+
+  try {
+    await ensureTimeEntriesTable();
+    await updateSyncStatus('time_entries', 'syncing');
+
+    const status = await getSyncStatus('time_entries');
+    let startTime;
+    if (status && status.last_sync_at) {
+      startTime = Math.floor(new Date(status.last_sync_at).getTime() / 1000);
+    } else {
+      startTime = Math.floor(new Date('2020-01-01T00:00:00Z').getTime() / 1000);
+    }
+
+    console.log(`Time entries sync from: ${new Date(startTime * 1000).toISOString()}`);
+
+    let totalSynced = 0;
+    let hasMore = true;
+    let endOfStream = false;
+    let currentStartTime = startTime;
+    let page = 1;
+
+    while (hasMore && page <= 100) {
+      const url = `${ZENDESK_API_BASE}/incremental/ticket_events.json?start_time=${currentStartTime}`;
+      console.log(`Fetching ticket events page ${page}...`);
+
+      const data = await makeZendeskRequest(url);
+      const events = data.ticket_events || [];
+
+      let savedCount = 0;
+      for (const event of events) {
+        const childEvents = event.child_events || [];
+        for (const child of childEvents) {
+          const fieldName = String(child.field_name || '');
+          if (!fieldName.includes(String(TIME_FIELD_ID))) continue;
+          if (child.type !== 'Change') continue;
+
+          const newTotal = parseInt(child.value) || 0;
+          const prevTotal = parseInt(child.previous_value) || 0;
+          const delta = newTotal - prevTotal;
+
+          if (delta <= 0) continue;
+
+          try {
+            await pool.query(`
+              INSERT INTO ticket_time_entries
+                (ticket_event_id, ticket_id, agent_id, time_seconds, total_time_seconds, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6)
+              ON CONFLICT (ticket_event_id) DO UPDATE SET
+                time_seconds = EXCLUDED.time_seconds,
+                total_time_seconds = EXCLUDED.total_time_seconds,
+                agent_id = EXCLUDED.agent_id
+            `, [
+              event.id,
+              event.ticket_id,
+              event.updater_id || null,
+              delta,
+              newTotal,
+              new Date(event.timestamp * 1000).toISOString()
+            ]);
+            savedCount++;
+          } catch (err) {
+            console.error(`Error upserting time entry for event ${event.id}:`, err.message);
+          }
+        }
+      }
+
+      totalSynced += savedCount;
+      console.log(`Page ${page}: ${savedCount} time entries saved (Total: ${totalSynced})`);
+
+      if (data.end_time) currentStartTime = data.end_time;
+      endOfStream = data.end_of_stream;
+      hasMore = !endOfStream && events.length > 0;
+      page++;
+    }
+
+    const timestampToSave = endOfStream ? null : new Date(currentStartTime * 1000);
+    await updateSyncStatus('time_entries', 'success', null, totalSynced, endOfStream, timestampToSave);
+    console.log(`Time entries sync complete: ${totalSynced} entries saved`);
+
+  } catch (error) {
+    console.error('Time entries sync failed:', error.message);
+    await updateSyncStatus('time_entries', 'error', error.message);
+  }
+}
+
+// ============================================
 // SCHEDULER
 // ============================================
 
 function scheduleSync() {
-  console.log('🚀 Scheduling background sync jobs...');
-  
-  // Existing sync jobs
+  console.log('Scheduling background sync jobs...');
+
   cron.schedule(SYNC_CONFIG.schedules.tickets, () => {
-    console.log('\n⏰ Running scheduled ticket sync...');
+    console.log('\nRunning scheduled ticket sync...');
     syncTickets().catch(err => console.error('Scheduled ticket sync error:', err));
   });
-  
+
   cron.schedule(SYNC_CONFIG.schedules.organizations, () => {
-    console.log('\n⏰ Running scheduled organization sync...');
+    console.log('\nRunning scheduled organization sync...');
     syncOrganizations().catch(err => console.error('Scheduled organization sync error:', err));
   });
-  
+
   cron.schedule(SYNC_CONFIG.schedules.agents, () => {
-    console.log('\n⏰ Running scheduled agent sync...');
+    console.log('\nRunning scheduled agent sync...');
     syncAgents().catch(err => console.error('Scheduled agent sync error:', err));
   });
-  
+
   cron.schedule(SYNC_CONFIG.schedules.groups, () => {
-    console.log('\n⏰ Running scheduled group sync...');
+    console.log('\nRunning scheduled group sync...');
     syncGroups().catch(err => console.error('Scheduled group sync error:', err));
   });
-  
-  // NEW: Analytics aggregation jobs
-  cron.schedule(SYNC_CONFIG.schedules.dailyAggregation, () => {
-    console.log('\n⏰ Running daily analytics aggregation...');
-    aggregateDailyAnalytics()
-      .catch(err => console.error('Daily aggregation error:', err));
+
+  cron.schedule('*/15 * * * *', () => {
+    console.log('\nRunning scheduled time entries sync...');
+    syncTimeEntries().catch(err => console.error('Scheduled time entries sync error:', err));
   });
 
-  cron.schedule(SYNC_CONFIG.schedules.weeklyAggregation, () => {
-    console.log('\n⏰ Running weekly agent performance aggregation...');
-    aggregateWeeklyAgentPerformance()
-      .catch(err => console.error('Weekly aggregation error:', err));
-  });
+  console.log('All sync jobs scheduled successfully');
 
-  cron.schedule(SYNC_CONFIG.schedules.monthlyAggregation, () => {
-    console.log('\n⏰ Running monthly organization aggregation...');
-    aggregateMonthlyOrgPerformance()
-      .catch(err => console.error('Monthly aggregation error:', err));
-  });
-  
-  console.log('✅ All sync jobs scheduled successfully');
-  console.log('📅 Schedules:');
-  console.log(`   - Tickets: ${SYNC_CONFIG.schedules.tickets} (every 5 minutes)`);
-  console.log(`   - Organizations: ${SYNC_CONFIG.schedules.organizations} (every hour)`);
-  console.log(`   - Agents: ${SYNC_CONFIG.schedules.agents} (every hour)`);
-  console.log(`   - Groups: ${SYNC_CONFIG.schedules.groups} (every hour)`);
-  console.log(`   - Daily Analytics: ${SYNC_CONFIG.schedules.dailyAggregation} (2 AM daily)`);
-  console.log(`   - Weekly Agent Perf: ${SYNC_CONFIG.schedules.weeklyAggregation} (3 AM Mondays)`);
-  console.log(`   - Monthly Org Perf: ${SYNC_CONFIG.schedules.monthlyAggregation} (4 AM 1st of month)`);
-  
   const initialDelay = Math.floor(Math.random() * 10000) + 10000;
-  console.log(`⏳ Initial sync will run in ${initialDelay/1000} seconds...`);
-  
+  console.log(`Initial sync will run in ${initialDelay/1000} seconds...`);
+
   setTimeout(() => {
-    console.log('\n🎬 Running initial sync...');
+    console.log('\nRunning initial sync...');
     Promise.all([
       syncOrganizations(),
       syncAgents(),
       syncGroups()
     ]).then(() => {
-      console.log('✅ Initial sync of orgs/agents/groups complete');
+      console.log('Initial sync of orgs/agents/groups complete');
       return syncTickets();
     }).then(() => {
-      console.log('✅ Initial ticket sync complete');
+      console.log('Initial ticket sync complete');
+      return syncTimeEntries();
+    }).then(() => {
+      console.log('Initial time entries sync complete');
     }).catch(err => {
-      console.error('❌ Initial sync error:', err);
+      console.error('Initial sync error:', err);
     });
   }, initialDelay);
 }
@@ -993,11 +1084,6 @@ module.exports = {
   syncOrganizations,
   syncAgents,
   syncGroups,
-  getSyncStatus,
-  // NEW: Analytics functions
-  aggregateDailyAnalytics,
-  aggregateWeeklyAgentPerformance,
-  aggregateMonthlyOrgPerformance,
-  backfillDailyAnalytics,
-  getAggregationStatus
+  syncTimeEntries,
+  getSyncStatus
 };

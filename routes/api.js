@@ -753,6 +753,73 @@ AND (cf->>'value')::bigint > 0
 });
 
 /**
+ * Time Entries Report: Returns individual agent time entries from ticket_time_entries table
+ */
+router.get('/time-entries', async (req, res) => {
+  try {
+    const { startDate, endDate, assigneeId, limit = 10000, offset = 0 } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+
+    let query = `
+      SELECT
+        te.id,
+        te.ticket_event_id,
+        te.ticket_id,
+        te.agent_id,
+        te.time_seconds,
+        te.total_time_seconds,
+        te.created_at,
+        t.subject,
+        t.status,
+        t.organization_id,
+        t.group_id,
+        t.assignee_id AS ticket_assignee_id,
+        t.custom_fields,
+        t.tags,
+        a.name AS agent_name
+      FROM ticket_time_entries te
+      LEFT JOIN tickets t ON t.id = te.ticket_id
+      LEFT JOIN agents a ON a.id = te.agent_id
+      WHERE te.created_at >= $1
+        AND te.created_at <= $2
+        AND te.time_seconds > 0
+    `;
+
+    const params = [startDate, endDate];
+    let paramIndex = 3;
+
+    if (assigneeId) {
+      query += ` AND te.agent_id = $${paramIndex}`;
+      params.push(parseInt(assigneeId));
+      paramIndex++;
+    }
+
+    query += ` ORDER BY te.created_at DESC`;
+    query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const startTime = Date.now();
+    const result = await pool.query(query, params);
+    const queryTime = Date.now() - startTime;
+
+    console.log(`✅ Time entries report: ${result.rows.length} entries in ${queryTime}ms`);
+
+    res.json({
+      entries: result.rows,
+      count: result.rows.length,
+      queryTime
+    });
+
+  } catch (error) {
+    console.error('❌ Error in time-entries:', error);
+    res.status(500).json({ error: 'Failed to fetch time entries', message: error.message });
+  }
+});
+
+/**
  * Endpoint to create a new ticket and associated asset records.
  */
 router.post('/ticket', async (req, res) => {
