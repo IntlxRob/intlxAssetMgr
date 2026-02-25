@@ -964,11 +964,18 @@ async function syncTimeEntries() {
       const data = await makeZendeskRequest(url);
       const events = data.ticket_events || [];
 
-      let savedCount = 0;
-      for (const event of events) {
-        const childEvents = event.child_events || [];
+// Debug: log first event's full structure
+if (events.length > 0) {
+  console.log('Sample event keys:', Object.keys(events[0]));
+  console.log('Sample event:', JSON.stringify(events[0]).substring(0, 500));
+}
+
+let savedCount = 0;
+for (const event of events) {
+  const childEvents = event.child_events || [];
         for (const child of childEvents) {
-  const fieldName = String(child.field_name || '');
+        const fieldName = String(child.field_name || '');
+
   // Debug: log any field changes to see what format field names take
   if (child.type === 'Change') {
     console.log(`Field change: field_name="${fieldName}" value="${child.value}" prev="${child.previous_value}"`);
