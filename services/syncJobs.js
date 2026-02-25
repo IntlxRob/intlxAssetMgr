@@ -939,9 +939,9 @@ async function syncTimeEntries() {
 
   try {
     await ensureTimeEntriesTable();
-    await updateSyncStatus('time_entries', 'syncing');
-
     const status = await getSyncStatus('time_entries');
+
+    await updateSyncStatus('time_entries', 'syncing');
     let startTime;
     if (status && status.last_sync_at) {
       startTime = Math.floor(new Date(status.last_sync_at).getTime() / 1000);
