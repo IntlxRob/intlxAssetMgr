@@ -1056,6 +1056,14 @@ function scheduleSync() {
     console.log('\nRunning scheduled daily analytics aggregation...');
     aggregateDailyAnalytics().catch(err => console.error('Scheduled daily aggregation error:', err));
   });
+  cron.schedule('0 3 * * 1', () => {
+    console.log('\nRunning scheduled weekly agent aggregation...');
+    aggregateWeeklyAgentPerformance().catch(err => console.error('Scheduled weekly aggregation error:', err));
+  });
+  cron.schedule('0 4 1 * *', () => {
+    console.log('\nRunning scheduled monthly org aggregation...');
+    aggregateMonthlyOrgPerformance().catch(err => console.error('Scheduled monthly aggregation error:', err));
+  });
   console.log('All sync jobs scheduled successfully');
 
   const initialDelay = Math.floor(Math.random() * 10000) + 10000;
@@ -1089,5 +1097,7 @@ module.exports = {
   syncGroups,
   syncTimeEntries,
   aggregateDailyAnalytics,
+  aggregateWeeklyAgentPerformance,
+  aggregateMonthlyOrgPerformance,
   getSyncStatus
 };
