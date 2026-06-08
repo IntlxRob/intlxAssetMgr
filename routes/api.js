@@ -3479,6 +3479,42 @@ router.get('/analytics/org-summary', async (req, res) => {
 });
 
 /**
+ * Current ticket status snapshot - point-in-time (reads live tickets table)
+ * Active states are live totals; solved/closed scoped to year-to-date.
+ * GET /api/analytics/status-snapshot?org_id=123
+ */
+router.get('/analytics/status-snapshot', async (req, res) => {
+    try {
+        const { org_id: orgId } = req.query;
+        const params = [];
+        let orgClause = '';
+        if (orgId) {
+            orgClause = ' AND organization_id = $1';
+            params.push(orgId);
+        }
+
+        const result = await pool.query(`
+            SELECT
+                COUNT(*) FILTER (WHERE status IN ('new','open'))                              AS new_open,
+                COUNT(*) FILTER (WHERE status = 'pending')                                    AS pending,
+                COUNT(*) FILTER (WHERE status = 'hold')                                       AS hold,
+                COUNT(*) FILTER (WHERE status = 'solved'
+                                 AND updated_at >= date_trunc('year', CURRENT_DATE))          AS solved_ytd,
+                COUNT(*) FILTER (WHERE status = 'closed'
+                                 AND updated_at >= date_trunc('year', CURRENT_DATE))          AS closed_ytd,
+                COUNT(*) FILTER (WHERE status IN ('new','open','pending','hold'))             AS open_total
+            FROM tickets
+            WHERE 1=1${orgClause}
+        `, params);
+
+        res.json({ success: true, data: result.rows[0], source: 'live_tickets' });
+    } catch (error) {
+        console.error('Error fetching status snapshot:', error);
+        res.status(500).json({ error: 'Failed to fetch status snapshot', details: error.message });
+    }
+});
+
+/**
  * Priority breakdown - FAST
  * GET /api/analytics/priority-breakdown?days=30
  */
