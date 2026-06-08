@@ -1056,6 +1056,10 @@ function scheduleSync() {
     console.log('\nRunning scheduled daily analytics aggregation...');
     aggregateDailyAnalytics().catch(err => console.error('Scheduled daily aggregation error:', err));
   });
+  cron.schedule('*/15 * * * *', () => {
+    console.log('\nRunning current-day analytics refresh...');
+    aggregateDailyAnalytics(new Date()).catch(err => console.error('Current-day aggregation error:', err));
+  });
   cron.schedule('0 3 * * 1', () => {
     console.log('\nRunning scheduled weekly agent aggregation...');
     aggregateWeeklyAgentPerformance().catch(err => console.error('Scheduled weekly aggregation error:', err));
