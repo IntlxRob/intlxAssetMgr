@@ -3292,7 +3292,7 @@ router.get('/analytics/dashboard', async (req, res) => {
  * Daily trend data for charts - FAST
  * GET /api/analytics/daily-trend?days=30
  */
-router.get('/analytics/dashboard', async (req, res) => {
+router.get('/analytics/daily-trend', async (req, res) => {
     try {
         const { days, start_date, end_date, org_id: orgId, agent_id: agentId, group_id: groupId } = req.query;
         
