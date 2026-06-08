@@ -1052,7 +1052,10 @@ function scheduleSync() {
     console.log('\nRunning scheduled time entries sync...');
     syncTimeEntries().catch(err => console.error('Scheduled time entries sync error:', err));
   });
-
+  cron.schedule('30 1 * * *', () => {
+    console.log('\nRunning scheduled daily analytics aggregation...');
+    aggregateDailyAnalytics().catch(err => console.error('Scheduled daily aggregation error:', err));
+  });
   console.log('All sync jobs scheduled successfully');
 
   const initialDelay = Math.floor(Math.random() * 10000) + 10000;
@@ -1085,5 +1088,6 @@ module.exports = {
   syncAgents,
   syncGroups,
   syncTimeEntries,
+  aggregateDailyAnalytics,
   getSyncStatus
 };
