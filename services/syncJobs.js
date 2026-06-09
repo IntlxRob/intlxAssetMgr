@@ -548,10 +548,10 @@ async function aggregateDailyAnalytics(targetDate = null) {
       )
       SELECT
         $1::date as date,
-        organization_id,
-        assignee_id as agent_id,
-        group_id,
-        priority,
+        COALESCE(organization_id, 0) as organization_id,
+        COALESCE(assignee_id, 0) as agent_id,
+        COALESCE(group_id, 0) as group_id,
+        COALESCE(priority, 'none') as priority,
         
         -- Volume metrics
         COUNT(*) FILTER (WHERE DATE(created_at) = $1::date) as tickets_created,
@@ -605,7 +605,7 @@ async function aggregateDailyAnalytics(targetDate = null) {
         DATE(created_at) = $1::date
         OR (status IN ('solved', 'closed') AND DATE(updated_at) = $1::date)
       )
-      GROUP BY organization_id, assignee_id, group_id, priority
+      GROUP BY COALESCE(organization_id, 0), COALESCE(assignee_id, 0), COALESCE(group_id, 0), COALESCE(priority, 'none')
       
       ON CONFLICT ON CONSTRAINT analytics_daily_unique
       DO UPDATE SET
@@ -684,7 +684,7 @@ async function aggregateWeeklyAgentPerformance(targetWeekStart = null) {
       )
       SELECT
         $1::date as week_start,
-        assignee_id as agent_id,
+        COALESCE(assignee_id, 0) as agent_id,
         
         COUNT(*) FILTER (WHERE status IN ('solved', 'closed')) as tickets_solved,
         COUNT(*) as tickets_touched,
@@ -736,7 +736,7 @@ async function aggregateWeeklyAgentPerformance(targetWeekStart = null) {
       WHERE assignee_id IS NOT NULL
         AND updated_at >= $1::date
         AND updated_at < $2::date
-      GROUP BY assignee_id
+      GROUP BY COALESCE(assignee_id, 0)
       
       ON CONFLICT (week_start, agent_id)
       DO UPDATE SET
@@ -786,7 +786,7 @@ async function aggregateMonthlyOrgPerformance(targetMonth = null) {
       )
       SELECT
         $1::date as month,
-        organization_id,
+        COALESCE(organization_id, 0) as organization_id,
         
         COUNT(*) FILTER (WHERE DATE(created_at) >= $1::date AND DATE(created_at) < $2::date) as tickets_created,
         COUNT(*) FILTER (WHERE status IN ('solved', 'closed')) as tickets_solved,
@@ -831,7 +831,7 @@ async function aggregateMonthlyOrgPerformance(targetMonth = null) {
       WHERE organization_id IS NOT NULL
         AND updated_at >= $1::date
         AND updated_at < $2::date
-      GROUP BY organization_id
+      GROUP BY COALESCE(organization_id, 0)
       
       ON CONFLICT (month, organization_id)
       DO UPDATE SET
