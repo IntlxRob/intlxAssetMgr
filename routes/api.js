@@ -3499,9 +3499,9 @@ router.get('/analytics/status-snapshot', async (req, res) => {
                 COUNT(*) FILTER (WHERE status = 'pending')                                    AS pending,
                 COUNT(*) FILTER (WHERE status = 'hold')                                       AS hold,
                 COUNT(*) FILTER (WHERE status = 'solved'
-                                 AND updated_at >= date_trunc('year', CURRENT_DATE))          AS solved_ytd,
+                                 AND created_at >= date_trunc('year', CURRENT_DATE))          AS solved_ytd,
                 COUNT(*) FILTER (WHERE status = 'closed'
-                                 AND updated_at >= date_trunc('year', CURRENT_DATE))          AS closed_ytd,
+                                 AND created_at >= date_trunc('year', CURRENT_DATE))          AS closed_ytd,
                 COUNT(*) FILTER (WHERE status IN ('new','open','pending','hold'))             AS open_total
             FROM tickets
             WHERE 1=1${orgClause}
