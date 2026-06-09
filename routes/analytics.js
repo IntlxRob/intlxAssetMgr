@@ -468,9 +468,10 @@ router.get('/tickets/count', async (req, res) => {
 
     // Determine which date field to use
     const dateField = dateFilterType === 'solved' ? 'updated_at' : 'created_at';
-    
-    let sql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} <= $2`;
-    const params = [startDate, endDate];
+    // Normalize end to exclusive next-day boundary so the full end day is included regardless of time/timezone
+    const endExclusive = new Date(new Date(endDate.substring(0, 10) + 'T00:00:00Z').getTime() + 86400000).toISOString();
+    let sql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} < $2`;
+    const params = [startDate, endExclusive];
     
     // For solved date filter, only include solved/closed tickets
     if (dateFilterType === 'solved') {
@@ -536,8 +537,9 @@ router.get('/tickets/paginated', async (req, res) => {
     console.log(`📊 Paginated fetch: page ${pageNum}, size ${size}, dateFilter: ${dateFilterType}`);
 
     // Get total count
-    let countSql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} <= $2`;
-    const countParams = [startDate, endDate];
+    const endExclusive = new Date(new Date(endDate.substring(0, 10) + 'T00:00:00Z').getTime() + 86400000).toISOString();
+    let countSql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} < $2`;
+    const countParams = [startDate, endExclusive];
     
     // For solved date filter, only include solved/closed tickets
     if (dateFilterType === 'solved') {
@@ -563,10 +565,9 @@ router.get('/tickets/paginated', async (req, res) => {
         first_resolution_time_minutes, full_resolution_time_minutes,
         agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes
       FROM tickets
-      WHERE ${dateField} >= $1 AND ${dateField} <= $2
+      WHERE ${dateField} >= $1 AND ${dateField} < $2
     `;
-    
-    const params = [startDate, endDate];
+    const params = [startDate, endExclusive];
     let paramIndex = 3;
 
     // For solved date filter, only include solved/closed tickets
