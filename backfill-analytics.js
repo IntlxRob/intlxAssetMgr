@@ -5,7 +5,7 @@ const {
   aggregateMonthlyOrgPerformance
 } = require('./services/syncJobs');
 
-const START = new Date('2026-02-25');
+const START = new Date('2026-01-01');
 const TODAY = new Date(); TODAY.setHours(0, 0, 0, 0);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
