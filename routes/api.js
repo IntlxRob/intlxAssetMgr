@@ -1133,6 +1133,33 @@ router.get('/zendesk/health', (req, res) => {
     });
 });
 
+/**
+ * Get Zendesk groups (escalation targets) for the Assign To dropdown.
+ * GET /api/groups
+ */
+router.get('/groups', async (req, res) => {
+    try {
+        const subdomain = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
+        const auth = Buffer.from(
+            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
+        ).toString('base64');
+
+        const response = await fetch(
+            `https://${subdomain}.zendesk.com/api/v2/groups.json?per_page=100`,
+            { headers: { 'Authorization': `Basic ${auth}` } }
+        );
+
+        if (!response.ok) throw new Error(`Zendesk API error: ${response.status}`);
+
+        const data = await response.json();
+        const groups = (data.groups || []).map(g => ({ id: g.id, name: g.name }));
+        res.json({ groups });
+    } catch (error) {
+        console.error('Error fetching groups:', error.message);
+        res.status(500).json({ error: 'Failed to fetch groups', details: error.message });
+    }
+});
+
 // ============================================
 // END OF KNOWI 3RD PARTY ZENDESK ENDPOINTS
 // ============================================
