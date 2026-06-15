@@ -1185,22 +1185,27 @@ router.get('/escalation-assignees', async (req, res) => {
             ALLOWED_GROUPS.includes(g.name)
         );
 
-        // 2. Get memberships for those groups, collect the member user IDs
-        const memberIds = new Set();
+        // 2. For each group, get its member user IDs (keep them per-group)
+        const groupMemberIds = {}; // groupId -> [userId]
+        const allMemberIds = new Set();
         for (const group of allowedGroups) {
+            groupMemberIds[group.id] = [];
             const memResp = await fetch(
                 `https://${subdomain}.zendesk.com/api/v2/groups/${group.id}/memberships.json?per_page=100`,
                 { headers }
             );
             if (!memResp.ok) continue;
             const memData = await memResp.json();
-            (memData.group_memberships || []).forEach(m => memberIds.add(m.user_id));
+            (memData.group_memberships || []).forEach(m => {
+                groupMemberIds[group.id].push(m.user_id);
+                allMemberIds.add(m.user_id);
+            });
         }
 
-        // 3. Resolve member user IDs to names
-        const agents = [];
-        if (memberIds.size > 0) {
-            const idList = Array.from(memberIds).join(',');
+        // 3. Resolve all member user IDs to names in one call
+        const userNames = {}; // userId -> name
+        if (allMemberIds.size > 0) {
+            const idList = Array.from(allMemberIds).join(',');
             const usersResp = await fetch(
                 `https://${subdomain}.zendesk.com/api/v2/users/show_many.json?ids=${idList}`,
                 { headers }
@@ -1209,14 +1214,21 @@ router.get('/escalation-assignees', async (req, res) => {
                 const usersData = await usersResp.json();
                 (usersData.users || [])
                     .filter(u => u.active !== false)
-                    .forEach(u => agents.push({ id: u.id, name: u.name }));
+                    .forEach(u => { userNames[u.id] = u.name; });
             }
         }
 
-        res.json({
-            groups: allowedGroups.map(g => ({ id: g.id, name: g.name })),
-            agents: agents.sort((a, b) => a.name.localeCompare(b.name))
-        });
+        // 4. Build nested structure: each group with its members attached
+        const groups = allowedGroups.map(g => ({
+            id: g.id,
+            name: g.name,
+            members: (groupMemberIds[g.id] || [])
+                .filter(uid => userNames[uid])
+                .map(uid => ({ id: uid, name: userNames[uid] }))
+                .sort((a, b) => a.name.localeCompare(b.name))
+        }));
+
+        res.json({ groups });
     } catch (error) {
         console.error('Error fetching escalation assignees:', error.message);
         res.status(500).json({ error: 'Failed to fetch escalation assignees', details: error.message });
