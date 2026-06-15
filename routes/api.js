@@ -1235,6 +1235,41 @@ router.get('/escalation-assignees', async (req, res) => {
     }
 });
 
+/**
+ * Get active custom ticket statuses for the escalation Status dropdown.
+ * Returns { statuses: [{ id, label, category }] }.
+ * GET /api/custom-statuses
+ */
+router.get('/custom-statuses', async (req, res) => {
+    try {
+        const subdomain = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
+        const auth = Buffer.from(
+            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
+        ).toString('base64');
+
+        const response = await fetch(
+            `https://${subdomain}.zendesk.com/api/v2/custom_statuses.json`,
+            { headers: { 'Authorization': `Basic ${auth}` } }
+        );
+        if (!response.ok) throw new Error(`Zendesk API error: ${response.status}`);
+
+        const data = await response.json();
+        const EXCLUDED_CATEGORIES = ['solved', 'closed'];
+        const statuses = (data.custom_statuses || [])
+            .filter(s => s.active !== false)
+            .filter(s => !EXCLUDED_CATEGORIES.includes(s.status_category))
+            .map(s => ({
+                id: s.id,
+                label: s.agent_label || s.raw_agent_label || s.status_category,
+                category: s.status_category
+            }));
+        res.json({ statuses });
+    } catch (error) {
+        console.error('Error fetching custom statuses:', error.message);
+        res.status(500).json({ error: 'Failed to fetch custom statuses', details: error.message });
+    }
+});
+
 // ============================================
 // END OF KNOWI 3RD PARTY ZENDESK ENDPOINTS
 // ============================================
