@@ -1160,6 +1160,69 @@ router.get('/groups', async (req, res) => {
     }
 });
 
+/**
+ * Get the allowed escalation groups and their member agents for the
+ * "Assign To" dropdown. Restricted to Triage, Engineering, Escalations, DevOPS.
+ * GET /api/escalation-assignees
+ */
+router.get('/escalation-assignees', async (req, res) => {
+    const ALLOWED_GROUPS = ['Triage', 'Engineering', 'Escalations', 'DevOPS'];
+    try {
+        const subdomain = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
+        const auth = Buffer.from(
+            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
+        ).toString('base64');
+        const headers = { 'Authorization': `Basic ${auth}` };
+
+        // 1. Get all groups, keep only the allowed ones
+        const groupsResp = await fetch(
+            `https://${subdomain}.zendesk.com/api/v2/groups.json?per_page=100`,
+            { headers }
+        );
+        if (!groupsResp.ok) throw new Error(`Groups fetch failed: ${groupsResp.status}`);
+        const groupsData = await groupsResp.json();
+        const allowedGroups = (groupsData.groups || []).filter(g =>
+            ALLOWED_GROUPS.includes(g.name)
+        );
+
+        // 2. Get memberships for those groups, collect the member user IDs
+        const memberIds = new Set();
+        for (const group of allowedGroups) {
+            const memResp = await fetch(
+                `https://${subdomain}.zendesk.com/api/v2/groups/${group.id}/memberships.json?per_page=100`,
+                { headers }
+            );
+            if (!memResp.ok) continue;
+            const memData = await memResp.json();
+            (memData.group_memberships || []).forEach(m => memberIds.add(m.user_id));
+        }
+
+        // 3. Resolve member user IDs to names
+        const agents = [];
+        if (memberIds.size > 0) {
+            const idList = Array.from(memberIds).join(',');
+            const usersResp = await fetch(
+                `https://${subdomain}.zendesk.com/api/v2/users/show_many.json?ids=${idList}`,
+                { headers }
+            );
+            if (usersResp.ok) {
+                const usersData = await usersResp.json();
+                (usersData.users || [])
+                    .filter(u => u.active !== false)
+                    .forEach(u => agents.push({ id: u.id, name: u.name }));
+            }
+        }
+
+        res.json({
+            groups: allowedGroups.map(g => ({ id: g.id, name: g.name })),
+            agents: agents.sort((a, b) => a.name.localeCompare(b.name))
+        });
+    } catch (error) {
+        console.error('Error fetching escalation assignees:', error.message);
+        res.status(500).json({ error: 'Failed to fetch escalation assignees', details: error.message });
+    }
+});
+
 // ============================================
 // END OF KNOWI 3RD PARTY ZENDESK ENDPOINTS
 // ============================================
