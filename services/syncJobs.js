@@ -7,6 +7,10 @@ const cron = require('node-cron');
 const axios = require('axios');
 const db = require('../db');
 const pool = db.getPool();
+const {
+  computeBillingFields,
+  refreshDenormalisedNames
+} = require('./billing');
 
 // ============================================
 // CONFIGURATION
@@ -209,63 +213,75 @@ async function syncTickets() {
         for (const ticket of data.tickets) {
           // Attach metric_set to ticket
           ticket.metric_set = metricSetsMap.get(ticket.id) || null;
+          const billing = computeBillingFields(ticket);
           try {
             await pool.query(`
               INSERT INTO tickets (
-                id, subject, description, status, priority, request_type,
-                created_at, updated_at, requester_id, assignee_id,
-                organization_id, group_id, tags, custom_fields,
-                metric_set, reply_count, comment_count, reopens,
-                first_resolution_time_minutes, full_resolution_time_minutes,
-                agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb,
-                $15::jsonb, $16, $17, $18, $19, $20, $21, $22, $23)
-              ON CONFLICT (id) DO UPDATE SET
-                subject = EXCLUDED.subject,
-                description = EXCLUDED.description,
-                status = EXCLUDED.status,
-                priority = EXCLUDED.priority,
-                request_type = EXCLUDED.request_type,
-                updated_at = EXCLUDED.updated_at,
-                assignee_id = EXCLUDED.assignee_id,
-                group_id = EXCLUDED.group_id,
-                tags = EXCLUDED.tags,
-                custom_fields = EXCLUDED.custom_fields,
-                metric_set = EXCLUDED.metric_set,
-                reply_count = EXCLUDED.reply_count,
-                comment_count = EXCLUDED.comment_count,
-                reopens = EXCLUDED.reopens,
-                first_resolution_time_minutes = EXCLUDED.first_resolution_time_minutes,
-                full_resolution_time_minutes = EXCLUDED.full_resolution_time_minutes,
-                agent_wait_time_minutes = EXCLUDED.agent_wait_time_minutes,
-                requester_wait_time_minutes = EXCLUDED.requester_wait_time_minutes,
-                on_hold_time_minutes = EXCLUDED.on_hold_time_minutes
-            `, [
-              ticket.id,
-              ticket.subject,
-              ticket.description,
-              ticket.status,
-              ticket.priority,
-              ticket.type,
-              ticket.created_at,
-              ticket.updated_at,
-              ticket.requester_id,
-              ticket.assignee_id,
-              ticket.organization_id,
-              ticket.group_id,
-              JSON.stringify(ticket.tags),
-              JSON.stringify(ticket.custom_fields),
-              // Metrics fields
-              ticket.metric_set ? JSON.stringify(ticket.metric_set) : null,
-              ticket.metric_set?.replies ?? null,
-              ticket.metric_set?.full_resolution_time_in_minutes?.business ?? null,
-              ticket.metric_set?.reopens ?? 0,
-              ticket.metric_set?.reply_time_in_minutes?.business ?? null,
-              ticket.metric_set?.full_resolution_time_in_minutes?.business ?? null,
-              ticket.metric_set?.agent_wait_time_in_minutes?.business ?? null,
-              ticket.metric_set?.requester_wait_time_in_minutes?.business ?? null,
-              ticket.metric_set?.on_hold_time_in_minutes?.business ?? null
-            ]);
+    id, subject, description, status, priority, request_type,
+    created_at, updated_at, requester_id, assignee_id,
+    organization_id, group_id, tags, custom_fields,
+    metric_set, reply_count, comment_count, reopens,
+    first_resolution_time_minutes, full_resolution_time_minutes,
+    agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes,
+    is_billable, billable_time_minutes, billing_field_id, billing_computed_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb,
+    $15::jsonb, $16, $17, $18, $19, $20, $21, $22, $23,
+    $24, $25, $26, $27)
+    ON CONFLICT (id) DO UPDATE SET
+    subject = EXCLUDED.subject,
+    description = EXCLUDED.description,
+    status = EXCLUDED.status,
+    priority = EXCLUDED.priority,
+    request_type = EXCLUDED.request_type,
+    updated_at = EXCLUDED.updated_at,
+    assignee_id = EXCLUDED.assignee_id,
+    group_id = EXCLUDED.group_id,
+    tags = EXCLUDED.tags,
+    custom_fields = EXCLUDED.custom_fields,
+    metric_set = EXCLUDED.metric_set,
+    reply_count = EXCLUDED.reply_count,
+    comment_count = EXCLUDED.comment_count,
+    reopens = EXCLUDED.reopens,
+    first_resolution_time_minutes = EXCLUDED.first_resolution_time_minutes,
+    full_resolution_time_minutes = EXCLUDED.full_resolution_time_minutes,
+    agent_wait_time_minutes = EXCLUDED.agent_wait_time_minutes,
+    requester_wait_time_minutes = EXCLUDED.requester_wait_time_minutes,
+    on_hold_time_minutes = EXCLUDED.on_hold_time_minutes,
+    is_billable = EXCLUDED.is_billable,
+    billable_time_minutes = EXCLUDED.billable_time_minutes,
+    billing_field_id = EXCLUDED.billing_field_id,
+    billing_computed_at = EXCLUDED.billing_computed_at
+  `, [
+      ticket.id,
+      ticket.subject,
+      ticket.description,
+      ticket.status,
+      ticket.priority,
+      ticket.type,
+      ticket.created_at,
+      ticket.updated_at,
+      ticket.requester_id,
+      ticket.assignee_id,
+      ticket.organization_id,
+      ticket.group_id,
+      JSON.stringify(ticket.tags),
+      JSON.stringify(ticket.custom_fields),
+      // Metrics fields
+      ticket.metric_set ? JSON.stringify(ticket.metric_set) : null,
+      ticket.metric_set?.replies ?? null,
+      ticket.metric_set?.comments ?? null,                                    // FIXED: was full_resolution_time
+      ticket.metric_set?.reopens ?? 0,
+      ticket.metric_set?.first_resolution_time_in_minutes?.business ?? null,  // FIXED: was reply_time
+      ticket.metric_set?.full_resolution_time_in_minutes?.business ?? null,
+      ticket.metric_set?.agent_wait_time_in_minutes?.business ?? null,
+      ticket.metric_set?.requester_wait_time_in_minutes?.business ?? null,
+      ticket.metric_set?.on_hold_time_in_minutes?.business ?? null,
+      // Billing
+      billing.is_billable,
+      billing.billable_time_minutes,
+      billing.billing_field_id,
+      billing.billing_computed_at
+    ]);
             savedCount++;
           } catch (err) {
             console.error(`Error upserting ticket ${ticket.id}:`, err.message);
@@ -1009,6 +1025,14 @@ for (const event of events) {
       endOfStream = data.end_of_stream;
       hasMore = !endOfStream && events.length > 0;
       page++;
+    }
+
+    if (totalTicketsSynced > 0) {
+      try {
+        await refreshDenormalisedNames(pool);
+      } catch (err) {
+        console.error('Name refresh failed (non-fatal):', err.message);
+      }
     }
 
     const timestampToSave = endOfStream ? null : new Date(currentStartTime * 1000);
