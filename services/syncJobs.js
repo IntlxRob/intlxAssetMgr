@@ -309,6 +309,14 @@ async function syncTickets() {
     console.log(`📊 Final end_time from Zendesk: ${currentStartTime}`);
     console.log(`📦 Total tickets synced: ${totalTicketsSynced}`);
     console.log(`🏁 End of stream: ${endOfStream}`);
+
+    if (totalTicketsSynced > 0) {
+      try {
+        await refreshDenormalisedNames(pool);
+      } catch (err) {
+        console.error('Name refresh failed (non-fatal):', err.message);
+      }
+    }
     
     // FIXED: Only update timestamp if we reached end_of_stream
     if (endOfStream) {
@@ -1025,14 +1033,6 @@ for (const event of events) {
       endOfStream = data.end_of_stream;
       hasMore = !endOfStream && events.length > 0;
       page++;
-    }
-
-    if (totalTicketsSynced > 0) {
-      try {
-        await refreshDenormalisedNames(pool);
-      } catch (err) {
-        console.error('Name refresh failed (non-fatal):', err.message);
-      }
     }
 
     const timestampToSave = endOfStream ? null : new Date(currentStartTime * 1000);
