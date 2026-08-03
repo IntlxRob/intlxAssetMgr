@@ -11,6 +11,7 @@ const {
   computeBillingFields,
   refreshDenormalisedNames
 } = require('./billing');
+const { computeDerivedFields } = require('./derived');
 
 // ============================================
 // CONFIGURATION
@@ -214,6 +215,7 @@ async function syncTickets() {
           // Attach metric_set to ticket
           ticket.metric_set = metricSetsMap.get(ticket.id) || null;
           const billing = computeBillingFields(ticket);
+          const derivedFields = computeDerivedFields(ticket);
           try {
             await pool.query(`
               INSERT INTO tickets (
@@ -223,10 +225,13 @@ async function syncTickets() {
     metric_set, reply_count, comment_count, reopens,
     first_resolution_time_minutes, full_resolution_time_minutes,
     agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes,
-    is_billable, billable_time_minutes, billing_field_id, billing_computed_at
+    is_billable, billable_time_minutes, billing_field_id, billing_computed_at,
+    request_type_derived, has_alarmtraq, has_virsae, has_checkmk,
+    first_reply_minutes, resolution_minutes, derived_computed_at
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb,
     $15::jsonb, $16, $17, $18, $19, $20, $21, $22, $23,
-    $24, $25, $26, $27)
+    $24, $25, $26, $27,
+    $28, $29, $30, $31, $32, $33, $34)
     ON CONFLICT (id) DO UPDATE SET
     subject = EXCLUDED.subject,
     description = EXCLUDED.description,
@@ -250,7 +255,14 @@ async function syncTickets() {
     is_billable = EXCLUDED.is_billable,
     billable_time_minutes = EXCLUDED.billable_time_minutes,
     billing_field_id = EXCLUDED.billing_field_id,
-    billing_computed_at = EXCLUDED.billing_computed_at
+    billing_computed_at = EXCLUDED.billing_computed_at,
+    request_type_derived = EXCLUDED.request_type_derived,
+    has_alarmtraq = EXCLUDED.has_alarmtraq,
+    has_virsae = EXCLUDED.has_virsae,
+    has_checkmk = EXCLUDED.has_checkmk,
+    first_reply_minutes = EXCLUDED.first_reply_minutes,
+    resolution_minutes = EXCLUDED.resolution_minutes,
+    derived_computed_at = EXCLUDED.derived_computed_at
   `, [
       ticket.id,
       ticket.subject,
@@ -280,7 +292,15 @@ async function syncTickets() {
       billing.is_billable,
       billing.billable_time_minutes,
       billing.billing_field_id,
-      billing.billing_computed_at
+      billing.billing_computed_at,
+      // Derived
+      derivedFields.request_type_derived,
+      derivedFields.has_alarmtraq,
+      derivedFields.has_virsae,
+      derivedFields.has_checkmk,
+      derivedFields.first_reply_minutes,
+      derivedFields.resolution_minutes,
+      derivedFields.derived_computed_at
     ]);
             savedCount++;
           } catch (err) {
