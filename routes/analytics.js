@@ -40,10 +40,22 @@ function buildWhereClause(filters = {}, options = {}) {
         params.push(filters.organizationId);
     }
 
-    // Status filter
+    // Status filter.
+    // The UI status control is a multi-select, so this accepts either a single
+    // value (?status=open) or a list (?status=open&status=pending, or
+    // ?status=open,pending). A single value still behaves exactly as before.
     if (filters.status) {
-        conditions.push(`t.status = $${paramIndex++}`);
-        params.push(filters.status);
+        const statuses = Array.isArray(filters.status)
+            ? filters.status
+            : String(filters.status).split(',').map(s => s.trim()).filter(Boolean);
+
+        if (statuses.length === 1) {
+            conditions.push(`t.status = $${paramIndex++}`);
+            params.push(statuses[0]);
+        } else if (statuses.length > 1) {
+            conditions.push(`t.status = ANY($${paramIndex++})`);
+            params.push(statuses);
+        }
     }
 
     // Priority filter
@@ -64,11 +76,84 @@ function buildWhereClause(filters = {}, options = {}) {
         params.push(filters.assigneeId);
     }
 
-    // Billable filter
-    if (filters.billable !== undefined) {
-        conditions.push(`t.is_billable = $${paramIndex++}`);
-        params.push(filters.billable);
+    // Assignee by name, for the UI's assignee dropdown which sends names
+    // rather than ids. 'Unassigned' matches a missing assignee.
+    if (filters.assigneeName) {
+        if (filters.assigneeName === 'Unassigned') {
+            conditions.push(`(t.assignee_id IS NULL OR t.assignee_name IS NULL)`);
+        } else {
+            conditions.push(`t.assignee_name = $${paramIndex++}`);
+            params.push(filters.assigneeName);
+        }
     }
+
+    // Billable filter.
+    // Accepts a real boolean, or the strings the UI dropdown sends
+    // ('billable' / 'non-billable' / 'true' / 'false').
+    if (filters.billable !== undefined && filters.billable !== '') {
+        const v = filters.billable;
+        const isTrue = v === true || v === 'true' || v === 'billable';
+        const isFalse = v === false || v === 'false' || v === 'non-billable';
+        if (isTrue || isFalse) {
+            conditions.push(`t.is_billable = $${paramIndex++}`);
+            params.push(isTrue);
+        }
+    }
+
+    // Request type. 'not_set' means no type was derived, matching the UI
+    // option of the same name.
+    if (filters.requestType) {
+        if (filters.requestType === 'not_set') {
+            conditions.push(`t.request_type_derived IS NULL`);
+        } else {
+            conditions.push(`t.request_type_derived = $${paramIndex++}`);
+            params.push(filters.requestType);
+        }
+    }
+
+    // Alarm source. Vocabulary matches the UI dropdown exactly.
+    // 'include-all' is the default and adds no condition.
+    if (filters.alarmFilter && filters.alarmFilter !== 'include-all') {
+        switch (filters.alarmFilter) {
+            case 'exclude-all':
+                conditions.push(`(t.has_alarmtraq = false AND t.has_virsae = false AND t.has_checkmk = false)`);
+                break;
+            case 'exclude-alarmtraq':
+                conditions.push(`t.has_alarmtraq = false`);
+                break;
+            case 'exclude-virsae':
+                conditions.push(`t.has_virsae = false`);
+                break;
+            case 'exclude-checkmk':
+                conditions.push(`t.has_checkmk = false`);
+                break;
+            case 'only-alarms':
+                conditions.push(`(t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`);
+                break;
+        }
+    }
+
+    // Minimum tracked time, given in HOURS by the UI, stored in minutes.
+    if (filters.minTime) {
+        const hours = parseFloat(filters.minTime);
+        if (!isNaN(hours) && hours > 0) {
+            conditions.push(`COALESCE(t.billable_time_minutes, 0) >= $${paramIndex++}`);
+            params.push(Math.round(hours * 60));
+        }
+    }
+
+    // Ticket number, partial match. The UI strips a leading '#'.
+    if (filters.ticketNumber) {
+        const clean = String(filters.ticketNumber).replace('#', '').trim();
+        if (clean) {
+            conditions.push(`t.id::text LIKE $${paramIndex++}`);
+            params.push('%' + clean + '%');
+        }
+    }
+
+    // SLA status is NOT filtered here. The browser computes 76.5% compliance
+    // while analytics_daily reports 99.2%, so there are two definitions in play
+    // and neither should be frozen into a query until that is settled.
 
     // When the caller already has a WHERE clause of its own, it needs these
     // conditions as an appendable AND fragment instead.
