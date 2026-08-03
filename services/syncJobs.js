@@ -12,6 +12,7 @@ const {
   refreshDenormalisedNames
 } = require('./billing');
 const { computeDerivedFields } = require('./derived');
+const { syncCustomStatuses } = require('./customStatuses');
 
 // ============================================
 // CONFIGURATION
@@ -227,11 +228,10 @@ async function syncTickets() {
     agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes,
     is_billable, billable_time_minutes, billing_field_id, billing_computed_at,
     request_type_derived, has_alarmtraq, has_virsae, has_checkmk,
-    first_reply_minutes, resolution_minutes, derived_computed_at
+    first_reply_minutes, resolution_minutes, derived_computed_at, custom_status_id
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb,
     $15::jsonb, $16, $17, $18, $19, $20, $21, $22, $23,
-    $24, $25, $26, $27,
-    $28, $29, $30, $31, $32, $33, $34)
+    $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
     ON CONFLICT (id) DO UPDATE SET
     subject = EXCLUDED.subject,
     description = EXCLUDED.description,
@@ -262,7 +262,8 @@ async function syncTickets() {
     has_checkmk = EXCLUDED.has_checkmk,
     first_reply_minutes = EXCLUDED.first_reply_minutes,
     resolution_minutes = EXCLUDED.resolution_minutes,
-    derived_computed_at = EXCLUDED.derived_computed_at
+    derived_computed_at = EXCLUDED.derived_computed_at,
+    custom_status_id = EXCLUDED.custom_status_id
   `, [
       ticket.id,
       ticket.subject,
@@ -300,7 +301,8 @@ async function syncTickets() {
       derivedFields.has_checkmk,
       derivedFields.first_reply_minutes,
       derivedFields.resolution_minutes,
-      derivedFields.derived_computed_at
+      derivedFields.derived_computed_at,
+      ticket.custom_status_id ?? null
     ]);
             savedCount++;
           } catch (err) {
@@ -1122,7 +1124,8 @@ function scheduleSync() {
     Promise.all([
       syncOrganizations(),
       syncAgents(),
-      syncGroups()
+      syncGroups(),
+      syncCustomStatuses(pool)
     ]).then(() => {
       console.log('Initial sync of orgs/agents/groups complete');
       return syncTickets();
