@@ -416,28 +416,177 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
 
 /**
  * GET /api/analytics/sla/compliance
- * Get SLA compliance metrics
+ *
+ * Response and resolution compliance against the published intlx 24x7 SLA
+ * policy, measured via the tickets_sla view (targets in sla_targets, on-hold
+ * time subtracted per policy).
+ *
+ * Always split by source: alarm-generated tickets are ~89% of volume and
+ * behave completely differently from customer-reported ones.
+ *
+ * Optional ?source=alarm|human narrows to one; omitting it returns both.
  */
 router.get('/sla/compliance', cacheMiddleware(300), async (req, res) => {
     try {
         const filters = req.query;
-        const { whereClause, params } = buildWhereClause(filters);
+        const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
 
         const result = await query(`
-            SELECT 
-                COUNT(*) as total_tickets,
-                AVG(CASE WHEN sla_first_reply_compliant THEN 100.0 ELSE 0.0 END) as first_reply_compliance,
-                AVG(CASE WHEN sla_resolution_compliant THEN 100.0 ELSE 0.0 END) as resolution_compliance,
-                AVG(first_reply_time_minutes) as avg_first_reply_minutes,
-                AVG(full_resolution_time_minutes) as avg_resolution_minutes,
-                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY first_reply_time_minutes) as median_first_reply,
-                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY full_resolution_time_minutes) as median_resolution
-            FROM ticket_metrics tm
-            JOIN tickets t ON tm.ticket_id = t.id
+            SELECT
+                CASE WHEN t.has_alarmtraq OR t.has_virsae OR t.has_checkmk
+                     THEN 'alarm' ELSE 'human' END AS source,
+                s.priority_label,
+                s.response_target,
+                s.resolution_target,
+                COUNT(*)::int AS tickets,
+
+                COUNT(*) FILTER (WHERE s.response_met IS NOT NULL)::int AS response_measured,
+                COUNT(*) FILTER (WHERE s.response_met)::int AS response_met,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
+                      AS response_compliance,
+
+                COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL)::int AS resolution_measured,
+                COUNT(*) FILTER (WHERE s.resolution_met)::int AS resolution_met,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
+                      AS resolution_compliance,
+
+                ROUND(AVG(s.first_reply_minutes)) AS avg_response_minutes,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY s.first_reply_minutes)
+                      AS median_response_minutes,
+                PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY s.first_reply_minutes)
+                      AS p90_response_minutes,
+
+                ROUND(AVG(s.resolution_adjusted_minutes)) AS avg_resolution_minutes,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY s.resolution_adjusted_minutes)
+                      AS median_resolution_minutes,
+                PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY s.resolution_adjusted_minutes)
+                      AS p90_resolution_minutes
+
+            FROM tickets_sla s
+            JOIN tickets t ON t.id = s.id
+            WHERE 1=1
+            ${whereClause}
+            ${filters.source === 'alarm'
+                ? 'AND (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)'
+                : filters.source === 'human'
+                ? 'AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)'
+                : ''}
+            GROUP BY 1, s.priority_label, s.response_target, s.resolution_target
+            ORDER BY 1, s.response_target
+        `, params);
+
+        // Totals per source, so callers do not have to re-aggregate. There is
+        // deliberately no combined figure: see the note above.
+        const bySource = {};
+        for (const r of result.rows) {
+            const k = r.source;
+            if (!bySource[k]) {
+                bySource[k] = {
+                    tickets: 0,
+                    response_measured: 0, response_met: 0,
+                    resolution_measured: 0, resolution_met: 0
+                };
+            }
+            const b = bySource[k];
+            b.tickets += r.tickets;
+            b.response_measured += r.response_measured;
+            b.response_met += r.response_met;
+            b.resolution_measured += r.resolution_measured;
+            b.resolution_met += r.resolution_met;
+        }
+        for (const k of Object.keys(bySource)) {
+            const b = bySource[k];
+            b.response_compliance = b.response_measured
+                ? Math.round((b.response_met / b.response_measured) * 1000) / 10 : null;
+            b.resolution_compliance = b.resolution_measured
+                ? Math.round((b.resolution_met / b.resolution_measured) * 1000) / 10 : null;
+        }
+
+        res.json({
+            by_priority: result.rows,
+            totals: bySource,
+            note: 'Alarm and human tickets are reported separately. Alarm tickets are ~89% of volume and are frequently auto-resolved, so a combined figure would be dominated by them.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/sla/targets
+ *
+ * The published SLA policy as stored, so the UI can render targets without
+ * hardcoding them the way iframe.html currently does.
+ */
+router.get('/sla/targets', cacheMiddleware(3600), async (req, res) => {
+    try {
+        const result = await query(`
+            SELECT priority, label, response_minutes, resolution_minutes,
+                   escalation_minutes, comm_objective_minutes, resolution_is_business
+            FROM sla_targets
+            ORDER BY response_minutes
+        `);
+        res.json({ targets: result.rows });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/sla/data-quality
+ *
+ * Surfaces how much the compliance numbers can be trusted.
+ *
+ * The workflow guide excludes third-party delays from team metrics via the
+ * hold statuses. If those statuses are not being used, long resolutions look
+ * like slow work when they may be vendor waits. This endpoint measures that
+ * gap rather than leaving the reader to assume the data is clean.
+ */
+router.get('/sla/data-quality', cacheMiddleware(300), async (req, res) => {
+    try {
+        const filters = req.query;
+        const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
+
+        const result = await query(`
+            SELECT
+                COUNT(*) FILTER (WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk))::int
+                    AS human_tickets,
+                COUNT(*) FILTER (WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                                   AND t.resolution_minutes > 480)::int
+                    AS human_over_8h,
+                COUNT(*) FILTER (WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                                   AND t.resolution_minutes > 480
+                                   AND COALESCE(t.on_hold_time_minutes, 0) > 0)::int
+                    AS human_over_8h_with_hold,
+                COUNT(*) FILTER (WHERE t.custom_status_id IS NULL)::int
+                    AS missing_custom_status,
+                COUNT(*) FILTER (WHERE t.first_reply_minutes IS NULL)::int
+                    AS missing_first_reply,
+                COUNT(*) FILTER (WHERE t.resolution_minutes IS NULL)::int
+                    AS missing_resolution,
+                COUNT(*)::int AS total
+            FROM tickets t
+            WHERE 1=1
             ${whereClause}
         `, params);
 
-        res.json(result.rows[0]);
+        const r = result.rows[0];
+        const unexplained = r.human_over_8h - r.human_over_8h_with_hold;
+
+        res.json({
+            ...r,
+            unexplained_long_resolutions: unexplained,
+            warnings: [
+                unexplained > 0
+                    ? `${unexplained.toLocaleString()} human tickets resolved in over 8 hours with no on-hold time recorded. Third-party and customer waits are excluded from team metrics by policy, but only if the hold statuses are used. Resolution compliance is likely understated.`
+                    : null,
+                r.missing_custom_status > 0
+                    ? `${r.missing_custom_status.toLocaleString()} tickets predate custom status sync, so workflow-level detail is unavailable for them.`
+                    : null
+            ].filter(Boolean)
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
