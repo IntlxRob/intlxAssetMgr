@@ -737,113 +737,118 @@ router.get('/tickets/count', async (req, res) => {
   }
 });
 
-// ============================================
-// PAGINATED TICKETS ENDPOINT
-// ============================================
-router.get('/tickets/paginated', async (req, res) => {
+/**
+ * GET /api/analytics/tickets/paginated
+ *
+ * A page of tickets with the derived columns already resolved. Supports every
+ * filter in buildWhereClause, so the same query string works here as on the
+ * summary endpoints.
+ *
+ * Returns computed columns (is_billable, billable_time_minutes,
+ * request_type_derived, sla status, custom status label) rather than raw
+ * custom_fields / metric_set. Callers that genuinely need the raw JSONB can
+ * request a single ticket.
+ */
+router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
+
   try {
-    const { 
-      startDate, 
-      endDate, 
-      page = 1,
-      pageSize = 1000,
-      organizationId,
-      dateFilterType = 'created',
-      sortBy = 'created_at',
-      sortOrder = 'desc'
-    } = req.query;
+    const filters = req.query;
+    const page = Math.max(1, parseInt(filters.page || '1', 10));
 
-    if (!startDate || !endDate) {
-      return res.status(400).json({ error: 'startDate and endDate required' });
-    }
+    // Default 50, max 500. The old default of 1000 existed to bulk-load the
+    // browser's in-memory array; a table does not want that.
+    const pageSize = Math.min(1000, Math.max(1, parseInt(filters.pageSize || '50', 10)));
+    const offset = (page - 1) * pageSize;
 
-    const pageNum = Math.max(1, parseInt(page));
-    const size = Math.min(2000, Math.max(100, parseInt(pageSize)));
-    const offset = (pageNum - 1) * size;
+    const sortable = {
+      id: 't.id',
+      created_at: 't.created_at',
+      updated_at: 't.updated_at',
+      status: 't.status',
+      priority: 't.priority',
+      organization: 't.organization_name',
+      assignee: 't.assignee_name',
+      time: 't.billable_time_minutes',
+      billable: 't.is_billable',
+      first_reply: 't.first_reply_minutes',
+      resolution: 't.resolution_minutes'
+    };
+    const sortBy = sortable[filters.sortBy] || 't.created_at';
+    const sortOrder = String(filters.sortOrder || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-    const validSortFields = ['created_at', 'updated_at', 'id', 'status', 'priority'];
-    const safeSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
-    const validSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const { whereClause, params } = buildWhereClause(filters);
 
-    // Determine which date field to use
-    const dateField = dateFilterType === 'solved' ? 'updated_at' : 'created_at';
+    // Alarm source is a column condition rather than a buildWhereClause filter,
+    // so it is applied here. Kept consistent with /sla/compliance.
+    const sourceClause =
+      filters.source === 'alarm'
+        ? `${whereClause ? 'AND' : 'WHERE'} (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`
+        : filters.source === 'human'
+        ? `${whereClause ? 'AND' : 'WHERE'} NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`
+        : '';
 
-    console.log(`📊 Paginated fetch: page ${pageNum}, size ${size}, dateFilter: ${dateFilterType}`);
+    const countResult = await query(
+      `SELECT COUNT(*)::int AS total FROM tickets t ${whereClause} ${sourceClause}`,
+      params
+    );
+    const totalCount = countResult.rows[0].total;
+    const totalPages = Math.ceil(totalCount / pageSize) || 1;
 
-    // Get total count
-    const endExclusive = new Date(new Date(endDate.substring(0, 10) + 'T00:00:00Z').getTime() + 86400000).toISOString();
-    let countSql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} < $2`;
-    const countParams = [startDate, endExclusive];
-    
-    // For solved date filter, only include solved/closed tickets
-    if (dateFilterType === 'solved') {
-      countSql += ` AND status IN ('solved', 'closed')`;
-    }
-    
-    if (organizationId) {
-      countSql += ` AND organization_id = $3`;
-      countParams.push(organizationId);
-    }
-
-    const countResult = await query(countSql, countParams);
-    const totalCount = parseInt(countResult.rows[0].total);
-    const totalPages = Math.ceil(totalCount / size);
-
-    // Fetch page
-    let sql = `
+    const started = Date.now();
+    const result = await query(`
       SELECT
-        id, subject, description, status, priority, request_type,
-        created_at, updated_at, requester_id, assignee_id,
-        organization_id, group_id, tags, custom_fields, metric_set,
-        reply_count, comment_count, reopens,
-        first_resolution_time_minutes, full_resolution_time_minutes,
-        agent_wait_time_minutes, requester_wait_time_minutes, on_hold_time_minutes
-      FROM tickets
-      WHERE ${dateField} >= $1 AND ${dateField} < $2
-    `;
-    const params = [startDate, endExclusive];
-    let paramIndex = 3;
+        t.id,
+        t.subject,
+        t.status,
+        t.priority,
+        t.created_at,
+        t.updated_at,
+        t.organization_id,
+        t.organization_name,
+        t.assignee_id,
+        t.assignee_name,
+        t.group_id,
+        t.tags,
 
-    // For solved date filter, only include solved/closed tickets
-    if (dateFilterType === 'solved') {
-      sql += ` AND status IN ('solved', 'closed')`;
-    }
+        t.is_billable,
+        t.billable_time_minutes,
 
-    if (organizationId) {
-      sql += ` AND organization_id = $${paramIndex}`;
-      params.push(organizationId);
-      paramIndex++;
-    }
+        t.request_type_derived,
+        t.has_alarmtraq,
+        t.has_virsae,
+        t.has_checkmk,
 
-    sql += ` ORDER BY ${safeSortBy} ${validSortOrder}`;
-    sql += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-    params.push(size, offset);
+        t.first_reply_minutes,
+        t.resolution_minutes,
+        t.on_hold_time_minutes,
 
-    const startTime = Date.now();
-    const result = await query(sql, params);
-    const queryTime = Date.now() - startTime;
+        cs.agent_label     AS custom_status_label,
+        cs.status_category AS custom_status_category
 
-    console.log(`✅ Page ${pageNum}/${totalPages}: ${result.rows.length} tickets in ${queryTime}ms`);
+      FROM tickets t
+      LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+      ${whereClause}
+      ${sourceClause}
+      ORDER BY ${sortBy} ${sortOrder} NULLS LAST, t.id DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+    `, [...params, pageSize, offset]);
 
     res.json({
       success: true,
       tickets: result.rows,
       pagination: {
-        page: pageNum,
-        pageSize: size,
+        page,
+        pageSize,
         totalCount,
         totalPages,
-        hasMore: pageNum < totalPages,
-        nextPage: pageNum < totalPages ? pageNum + 1 : null
+        hasMore: page < totalPages,
+        nextPage: page < totalPages ? page + 1 : null
       },
-      dateFilterType,
-      queryTime
+      queryTime: Date.now() - started
     });
-
   } catch (error) {
     console.error('Error fetching paginated tickets:', error);
     res.status(500).json({ error: 'Failed to fetch tickets', message: error.message });
