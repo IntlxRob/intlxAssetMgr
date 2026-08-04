@@ -855,6 +855,122 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
   }
 });
 
+/**
+ * GET /api/analytics/export/tickets
+ *
+ * Every ticket matching the filters, with both actual and billed time.
+ * Same filter vocabulary as every other endpoint, so what the table shows and
+ * what the export contains cannot drift apart.
+ *
+ * Not paginated by design: an export is a whole result set. Capped at 25,000
+ * rows, which covers any realistic filtered export while refusing to attempt
+ * the full 114k table.
+ */
+router.get('/export/tickets', async (req, res) => {
+  try {
+    const filters = req.query;
+    const { whereClause, params } = buildWhereClause(filters);
+
+    const sourceClause =
+      filters.source === 'alarm'
+        ? `${whereClause ? 'AND' : 'WHERE'} (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`
+        : filters.source === 'human'
+        ? `${whereClause ? 'AND' : 'WHERE'} NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`
+        : '';
+
+    const MAX_ROWS = 25000;
+
+    const countResult = await query(
+      `SELECT COUNT(*)::int AS total FROM tickets_billed t ${whereClause} ${sourceClause}`,
+      params
+    );
+    const total = countResult.rows[0].total;
+
+    if (total > MAX_ROWS) {
+      return res.status(413).json({
+        error: 'Export too large',
+        message: `${total.toLocaleString()} tickets match these filters, above the ${MAX_ROWS.toLocaleString()} row limit. Narrow the date range or add a filter.`,
+        totalCount: total,
+        maxRows: MAX_ROWS
+      });
+    }
+
+    const sortable = {
+      id: 't.id', created_at: 't.created_at', updated_at: 't.updated_at',
+      status: 't.status', priority: 't.priority',
+      organization: 't.organization_name', assignee: 't.assignee_name',
+      time: 't.billable_time_minutes', billable: 't.is_billable',
+      first_reply: 't.first_reply_minutes', resolution: 't.resolution_minutes'
+    };
+    const sortBy = sortable[filters.sortBy] || 't.created_at';
+    const sortOrder = String(filters.sortOrder || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    const started = Date.now();
+    const result = await query(`
+      SELECT
+        t.id,
+        t.subject,
+        t.status,
+        t.priority,
+        t.created_at,
+        t.updated_at,
+        t.organization_id,
+        t.organization_name,
+        t.assignee_name,
+        t.tags,
+
+        t.is_billable,
+        t.billable_time_minutes,
+        t.billed_minutes,
+        t.rounding_increment,
+
+        t.request_type_derived,
+        t.has_alarmtraq,
+        t.has_virsae,
+        t.has_checkmk,
+
+        t.first_reply_minutes,
+        t.resolution_minutes,
+        t.on_hold_time_minutes,
+
+        cs.agent_label     AS custom_status_label,
+        cs.status_category AS custom_status_category
+
+      FROM tickets_billed t
+      LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+      ${whereClause}
+      ${sourceClause}
+      ORDER BY ${sortBy} ${sortOrder} NULLS LAST, t.id DESC
+      LIMIT ${MAX_ROWS}
+    `, params);
+
+    // Totals computed server-side so the export footer cannot disagree with
+    // the rows above it.
+    const totals = result.rows.reduce((acc, r) => {
+      acc.actual_minutes += r.billable_time_minutes || 0;
+      acc.billed_minutes += r.billed_minutes || 0;
+      if (r.is_billable) acc.billable_tickets += 1;
+      return acc;
+    }, { actual_minutes: 0, billed_minutes: 0, billable_tickets: 0 });
+
+    res.json({
+      success: true,
+      tickets: result.rows,
+      totals: {
+        ...totals,
+        tickets: result.rows.length,
+        actual_hours: Math.round((totals.actual_minutes / 60) * 100) / 100,
+        billed_hours: Math.round((totals.billed_minutes / 60) * 100) / 100
+      },
+      generated_at: new Date().toISOString(),
+      queryTime: Date.now() - started
+    });
+  } catch (error) {
+    console.error('Error exporting tickets:', error);
+    res.status(500).json({ error: 'Export failed', message: error.message });
+  }
+});
+
 // ============================================================================
 // TICKET DATA ENDPOINTS (for iframe app)
 // ============================================================================
