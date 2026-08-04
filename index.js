@@ -16,8 +16,9 @@ const PORT = process.env.PORT || 3000;
 
 // CORS Configuration - Allow Zendesk app domain
 const allowedOrigins = [
-  'http://localhost:4567',                      // Local development
+  'http://localhost:4567',                      // Local development (ZAT)
   'http://localhost:8000',
+  'http://localhost:5173',                      // Vite dev server (Ticket IQ rebuild)
   /^https:\/\/\d+\.apps\.zdusercontent\.com$/,  // Matches ANY Zendesk app
   'https://1184027.apps.zdusercontent.com',     // Ticket IQ app
   'https://1179764.apps.zdusercontent.com',     // Agent Assist app
