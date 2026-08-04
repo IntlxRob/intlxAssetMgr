@@ -368,43 +368,124 @@ router.get('/tickets/trends', cacheMiddleware(300), async (req, res) => {
     }
 });
 
-// ============================================================================
-// AGENT PERFORMANCE ENDPOINTS
-// ============================================================================
-
 /**
  * GET /api/analytics/agents/performance
- * Get agent performance metrics
+ *
+ * Per-agent breakdown with human and alarm work separated. Automation accounts
+ * are excluded — see /agents/automation for those.
+ *
+ * SLA percentages cover HUMAN tickets only. Applying a 15-minute response
+ * target to auto-cleared alarms would make every agent look excellent and
+ * measure nothing.
  */
 router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
     try {
         const filters = req.query;
-        const { whereClause, params } = buildWhereClause(filters);
+        const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
 
         const result = await query(`
-            SELECT 
-                t.assignee_id,
-                t.assignee_name,
-                COUNT(t.id) as total_tickets,
-                COUNT(CASE WHEN t.status IN ('solved', 'closed') THEN 1 END) as solved_tickets,
-                COUNT(CASE WHEN t.is_billable THEN 1 END) as billable_tickets,
-                SUM(t.billable_time_minutes) / 60.0 as billable_hours,
-                AVG(tm.first_reply_time_minutes) as avg_first_reply_minutes,
-                AVG(tm.full_resolution_time_minutes) as avg_resolution_minutes,
-                AVG(CASE WHEN tm.sla_resolution_compliant THEN 100.0 ELSE 0.0 END) as sla_compliance_rate
-            FROM tickets t
-            LEFT JOIN ticket_metrics tm ON t.id = tm.ticket_id
-            ${whereClause}
-            GROUP BY t.assignee_id, t.assignee_name
-            HAVING t.assignee_id IS NOT NULL
-            ORDER BY total_tickets DESC
+            WITH scoped AS (
+                SELECT
+                    -- Explicit rather than s.*: tickets_sla predates the
+                    -- billing columns, so a wildcard here silently shadowed
+                    -- t.is_billable and t.billed_minutes with nothing.
+                    s.status,
+                    s.first_reply_minutes,
+                    s.resolution_adjusted_minutes,
+                    s.response_met,
+                    s.resolution_met,
+                    t.assignee_id,
+                    t.assignee_name,
+                    t.billable_time_minutes,
+                    t.billed_minutes,
+                    t.is_billable,
+                    (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm
+                FROM tickets_sla s
+                JOIN tickets_billed t ON t.id = s.id
+                WHERE t.assignee_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM automation_accounts a WHERE a.agent_id = t.assignee_id
+                  )
+                  ${whereClause}
+            )
+            SELECT
+                assignee_id,
+                assignee_name,
+
+                COUNT(*)::int AS total_tickets,
+                COUNT(*) FILTER (WHERE NOT is_alarm)::int AS human_tickets,
+                COUNT(*) FILTER (WHERE is_alarm)::int AS alarm_tickets,
+                COUNT(*) FILTER (WHERE status IN ('solved','closed'))::int AS solved_tickets,
+
+                COUNT(*) FILTER (WHERE is_billable)::int AS billable_tickets,
+                ROUND((SUM(billable_time_minutes) / 60.0)::numeric, 1) AS actual_hours,
+                ROUND((SUM(billed_minutes) / 60.0)::numeric, 1) AS billed_hours,
+
+                -- Hours per HUMAN ticket. Including alarms would flatten this
+                -- toward zero and hide the difference between deep work and
+                -- high-volume triage.
+                ROUND((SUM(billable_time_minutes) FILTER (WHERE NOT is_alarm)
+                       / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm), 0) / 60.0)::numeric, 2)
+                    AS avg_hours_per_human_ticket,
+
+                ROUND(AVG(first_reply_minutes) FILTER (WHERE NOT is_alarm)) AS avg_first_reply_minutes,
+                ROUND(AVG(resolution_adjusted_minutes) FILTER (WHERE NOT is_alarm)) AS avg_resolution_minutes,
+
+                ROUND(100.0 * COUNT(*) FILTER (WHERE NOT is_alarm AND response_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND response_met IS NOT NULL), 0), 1)
+                    AS response_compliance,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE NOT is_alarm AND resolution_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND resolution_met IS NOT NULL), 0), 1)
+                    AS resolution_compliance
+
+            FROM scoped
+            GROUP BY assignee_id, assignee_name
+            ORDER BY SUM(billable_time_minutes) DESC NULLS LAST
             LIMIT 100
         `, params);
 
         res.json({
             agents: result.rows,
-            count: result.rows.length
+            count: result.rows.length,
+            note: 'Automation accounts excluded. SLA figures cover human-originated tickets only.'
         });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/agents/automation
+ *
+ * Throughput for accounts registered in automation_accounts. Volume and
+ * resolution rate only — SLA and hours-per-ticket are not meaningful for a
+ * process that opens and closes its own tickets.
+ */
+router.get('/agents/automation', cacheMiddleware(300), async (req, res) => {
+    try {
+        const filters = req.query;
+        const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
+
+        const result = await query(`
+            SELECT
+                a.agent_id,
+                a.label,
+                t.assignee_name,
+                COUNT(t.id)::int AS tickets,
+                COUNT(*) FILTER (WHERE t.status IN ('solved','closed'))::int AS resolved,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE t.status IN ('solved','closed'))
+                      / NULLIF(COUNT(t.id), 0), 1) AS resolved_pct,
+                ROUND((SUM(t.billable_time_minutes) / 60.0)::numeric, 1) AS hours,
+                ROUND(AVG(t.resolution_minutes)) AS avg_resolution_minutes
+            FROM automation_accounts a
+            JOIN tickets t ON t.assignee_id = a.agent_id
+            WHERE 1=1
+            ${whereClause}
+            GROUP BY a.agent_id, a.label, t.assignee_name
+            ORDER BY tickets DESC
+        `, params);
+
+        res.json({ accounts: result.rows, count: result.rows.length });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
