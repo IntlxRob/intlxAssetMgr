@@ -745,6 +745,88 @@ router.get('/billing/by-organization', cacheMiddleware(300), async (req, res) =>
     }
 });
 
+/**
+ * GET /api/analytics/organizations/summary
+ *
+ * Per-organization view for quarterly reviews: total workload, what share is
+ * billable, and the SLA experience that client actually had.
+ *
+ * SLA figures cover human-originated tickets only. An org whose volume is
+ * mostly alarms would otherwise show near-perfect compliance that reflects
+ * automation rather than the service they experienced.
+ */
+router.get('/organizations/summary', cacheMiddleware(300), async (req, res) => {
+    try {
+        const filters = req.query;
+        const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
+
+        const result = await query(`
+            WITH scoped AS (
+                SELECT
+                    t.organization_id,
+                    t.organization_name,
+                    t.is_billable,
+                    t.billable_time_minutes,
+                    t.billed_minutes,
+                    (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm,
+                    s.status,
+                    s.response_met,
+                    s.resolution_met,
+                    s.first_reply_minutes,
+                    s.resolution_adjusted_minutes
+                FROM tickets_billed t
+                JOIN tickets_sla s ON s.id = t.id
+                WHERE t.organization_id IS NOT NULL
+                ${whereClause}
+            )
+            SELECT
+                organization_id,
+                organization_name,
+
+                COUNT(*)::int AS total_tickets,
+                COUNT(*) FILTER (WHERE NOT is_alarm)::int AS human_tickets,
+                COUNT(*) FILTER (WHERE is_alarm)::int AS alarm_tickets,
+                COUNT(*) FILTER (WHERE status IN ('solved','closed'))::int AS resolved_tickets,
+                COUNT(*) FILTER (WHERE is_billable)::int AS billable_tickets,
+
+                ROUND((SUM(billable_time_minutes) / 60.0)::numeric, 1) AS actual_hours,
+                ROUND((SUM(billed_minutes) / 60.0)::numeric, 1) AS billed_hours,
+
+                -- The share of tracked time that is chargeable. In a QBR this
+                -- is the number that quantifies contract coverage: hours spent
+                -- on the client that the client is not billed for.
+                -- COALESCE the numerator: with no billable tickets the FILTER
+                -- yields null, and null/x is null — which renders as "—" when
+                -- the honest answer is 0%.
+                ROUND((100.0 * COALESCE(SUM(billable_time_minutes) FILTER (WHERE is_billable), 0)
+                       / NULLIF(SUM(billable_time_minutes), 0))::numeric, 1) AS billable_pct,
+
+                ROUND(AVG(first_reply_minutes) FILTER (WHERE NOT is_alarm)) AS avg_first_reply_minutes,
+                ROUND(AVG(resolution_adjusted_minutes) FILTER (WHERE NOT is_alarm)) AS avg_resolution_minutes,
+
+                ROUND(100.0 * COUNT(*) FILTER (WHERE NOT is_alarm AND response_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND response_met IS NOT NULL), 0), 1)
+                    AS response_compliance,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE NOT is_alarm AND resolution_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND resolution_met IS NOT NULL), 0), 1)
+                    AS resolution_compliance
+
+            FROM scoped
+            GROUP BY organization_id, organization_name
+            ORDER BY SUM(billable_time_minutes) DESC NULLS LAST
+            LIMIT 200
+        `, params);
+
+        res.json({
+            organizations: result.rows,
+            count: result.rows.length,
+            note: 'SLA figures cover human-originated tickets only.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ============================================================================
 // CACHE MANAGEMENT ENDPOINTS
 // ============================================================================
