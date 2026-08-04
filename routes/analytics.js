@@ -598,7 +598,11 @@ router.get('/sla/data-quality', cacheMiddleware(300), async (req, res) => {
 
 /**
  * GET /api/analytics/billing/summary
- * Get billing summary
+ *
+ * Both time figures: actual tracked, and billed after the rounding policy.
+ * Reading tickets_billed rather than tickets is what makes billed_minutes
+ * available — it applies each org's increment as of the ticket's creation
+ * date, so a policy change does not retroactively rewrite older periods.
  */
 router.get('/billing/summary', cacheMiddleware(300), async (req, res) => {
     try {
@@ -609,9 +613,14 @@ router.get('/billing/summary', cacheMiddleware(300), async (req, res) => {
             SELECT 
                 COUNT(DISTINCT t.id) as billable_tickets,
                 SUM(t.billable_time_minutes) / 60.0 as total_billable_hours,
+                SUM(t.billed_minutes) / 60.0 as total_billed_hours,
                 COUNT(DISTINCT t.organization_id) as organizations_count,
-                AVG(t.billable_time_minutes) / 60.0 as avg_hours_per_ticket
-            FROM tickets t
+                AVG(t.billable_time_minutes) / 60.0 as avg_hours_per_ticket,
+                (SELECT rounding_increment FROM billing_policies
+                  WHERE organization_id IS NULL
+                    AND effective_from <= CURRENT_DATE
+                  ORDER BY effective_from DESC LIMIT 1) AS rounding_increment
+            FROM tickets_billed t
             WHERE t.is_billable = true
             ${whereClause}
         `, params);
@@ -791,7 +800,7 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         : '';
 
     const countResult = await query(
-      `SELECT COUNT(*)::int AS total FROM tickets t ${whereClause} ${sourceClause}`,
+      `SELECT COUNT(*)::int AS total FROM tickets_billed t ${whereClause} ${sourceClause}`,
       params
     );
     const totalCount = countResult.rows[0].total;
@@ -815,6 +824,8 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
 
         t.is_billable,
         t.billable_time_minutes,
+        t.billed_minutes,
+        t.rounding_increment,
 
         t.request_type_derived,
         t.has_alarmtraq,
@@ -828,7 +839,7 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         cs.agent_label     AS custom_status_label,
         cs.status_category AS custom_status_category
 
-      FROM tickets t
+      FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
       ${whereClause}
       ${sourceClause}
