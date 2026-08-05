@@ -221,7 +221,7 @@ async function syncTickets() {
             await pool.query(`
               INSERT INTO tickets (
     id, subject, description, status, priority, request_type,
-    created_at, updated_at, requester_id, assignee_id,
+    created_at, updated_at, solved_at, requester_id, assignee_id,
     organization_id, group_id, tags, custom_fields,
     metric_set, reply_count, comment_count, reopens,
     first_resolution_time_minutes, full_resolution_time_minutes,
@@ -239,6 +239,7 @@ async function syncTickets() {
     priority = EXCLUDED.priority,
     request_type = EXCLUDED.request_type,
     updated_at = EXCLUDED.updated_at,
+    solved_at = EXCLUDED.solved_at,
     assignee_id = EXCLUDED.assignee_id,
     group_id = EXCLUDED.group_id,
     tags = EXCLUDED.tags,
@@ -273,6 +274,9 @@ async function syncTickets() {
       ticket.type,
       ticket.created_at,
       ticket.updated_at,
+      // Zendesk puts solved_at in the metric set, not on the ticket object.
+      // This is the date invoices are built on.
+      ticket.metric_set?.solved_at ?? null,
       ticket.requester_id,
       ticket.assignee_id,
       ticket.organization_id,

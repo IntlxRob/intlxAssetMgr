@@ -17,7 +17,12 @@ function buildWhereClause(filters = {}, options = {}) {
     let paramIndex = 1;
 
     // Determine which date field to use
-    const dateField = filters.dateFilterType === 'solved' ? 't.updated_at' : 't.created_at';
+    // 'solved' is the billing basis: invoices count tickets resolved in the
+    // period, whenever they were opened. updated_at was the previous proxy and
+    // was wrong for 8.4% of tickets — any comment after resolution moves it
+    // into a later month.
+    const dateField =
+      filters.dateFilterType === 'solved' ? 't.solved_at' : 't.created_at';
 
     // Date range filter
     if (filters.startDate) {
@@ -1214,7 +1219,7 @@ router.get('/tickets/count', async (req, res) => {
     }
 
     // Determine which date field to use
-    const dateField = dateFilterType === 'solved' ? 'updated_at' : 'created_at';
+    const dateField = dateFilterType === 'solved' ? 'solved_at' : 'created_at';
     // Normalize end to exclusive next-day boundary so the full end day is included regardless of time/timezone
     const endExclusive = new Date(new Date(endDate.substring(0, 10) + 'T00:00:00Z').getTime() + 86400000).toISOString();
     let sql = `SELECT COUNT(*) as total FROM tickets WHERE ${dateField} >= $1 AND ${dateField} < $2`;
