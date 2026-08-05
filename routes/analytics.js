@@ -251,8 +251,22 @@ router.get('/tickets/summary', cacheMiddleware(300), async (req, res) => {
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_tickets,
                 COUNT(CASE WHEN status = 'solved' THEN 1 END) as solved_tickets,
                 COUNT(CASE WHEN status = 'closed' THEN 1 END) as closed_tickets,
+
+                -- Alarm volume changes what every other number means: at ~89%
+                -- of tickets, an unsplit total is mostly describing machines.
+                COUNT(*) FILTER (WHERE t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    as alarm_tickets,
+                COUNT(*) FILTER (WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk))
+                    as human_tickets,
+
                 COUNT(CASE WHEN is_billable THEN 1 END) as billable_tickets,
-                SUM(billable_time_minutes) / 60.0 as total_billable_hours
+
+                -- Hours tracked across ALL tickets, and separately the share on
+                -- billable ones. The previous version summed everything and
+                -- called it billable, so it never matched /billing/summary.
+                SUM(t.billable_time_minutes) / 60.0 as total_hours,
+                SUM(t.billable_time_minutes) FILTER (WHERE t.is_billable) / 60.0
+                    as total_billable_hours
             FROM tickets t
             ${whereClause}
         `, params);
