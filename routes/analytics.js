@@ -610,6 +610,140 @@ router.get('/agents/workload', cacheMiddleware(120), async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/open/aging
+ *
+ * Open tickets ranked by how far past their resolution target they are.
+ *
+ * Elapsed since creation, not adjusted for time spent awaiting a customer or
+ * vendor — that history is not synced. ball_with is returned so a ticket at
+ * 300% of target while pending a customer reads differently from one at 300%
+ * that is nobody's move but ours.
+ */
+router.get('/open/aging', cacheMiddleware(120), async (req, res) => {
+    try {
+        const limit = Math.min(200, parseInt(req.query.limit || '50', 10));
+
+        // Default sorts by priority: a P1 fourteen hours late matters more
+        // than a P4 from last year at 24,000% of target, and the unattended
+        // view should lead with what needs acting on. 'overrun' is for a
+        // cleanup pass, where oldest-first is the point.
+        const sortBy = req.query.sort === 'overrun' ? 'overrun' : 'priority';
+
+        const result = await query(`
+            SELECT
+                t.id,
+                t.subject,
+                t.priority,
+                t.organization_name,
+                t.assignee_name,
+                t.created_at,
+                cs.agent_label AS custom_status_label,
+                COALESCE(b.ball_with, 'intlx') AS ball_with,
+                tg.label AS priority_label,
+                tg.resolution_minutes AS resolution_target,
+
+                ROUND(EXTRACT(EPOCH FROM (now() - t.created_at)) / 60)::int
+                    AS elapsed_minutes,
+
+                -- Percentage of target consumed. Over 100 means the published
+                -- resolution window has passed, which is a prompt to look
+                -- rather than a breach on its own.
+                ROUND(100.0 * (EXTRACT(EPOCH FROM (now() - t.created_at)) / 60)
+                      / NULLIF(tg.resolution_minutes, 0))::int
+                    AS pct_of_target,
+
+                (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm
+
+            FROM tickets t
+            LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+            LEFT JOIN sla_category_behaviour b
+                   ON b.status_category = CASE
+                        WHEN t.status IN ('closed', 'deleted') THEN t.status
+                        ELSE COALESCE(cs.status_category, t.status)
+                      END
+            LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority, 'normal')
+            WHERE t.status NOT IN ('solved', 'closed', 'deleted')
+              AND EXTRACT(EPOCH FROM (now() - t.created_at)) / 60 > tg.resolution_minutes
+            ORDER BY
+                ${sortBy === 'priority' ? 'tg.response_minutes ASC,' : ''}
+                (EXTRACT(EPOCH FROM (now() - t.created_at)) / 60)
+                / NULLIF(tg.resolution_minutes, 0) DESC
+            LIMIT $1
+        `, [limit]);
+
+        // Counts by who is blocking, so the headline can distinguish "past
+        // target and ours" from "past target and waiting on someone else".
+        const summary = await query(`
+            SELECT
+                COALESCE(b.ball_with, 'intlx') AS ball_with,
+                COUNT(*)::int AS tickets
+            FROM tickets t
+            LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+            LEFT JOIN sla_category_behaviour b
+                   ON b.status_category = CASE
+                        WHEN t.status IN ('closed', 'deleted') THEN t.status
+                        ELSE COALESCE(cs.status_category, t.status)
+                      END
+            LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority, 'normal')
+            WHERE t.status NOT IN ('solved', 'closed', 'deleted')
+              AND EXTRACT(EPOCH FROM (now() - t.created_at)) / 60 > tg.resolution_minutes
+            GROUP BY 1
+        `);
+
+        res.json({
+            tickets: result.rows,
+            by_blocker: summary.rows,
+            sort: sortBy,
+            as_of: new Date().toISOString(),
+            note: 'Elapsed since creation vs published resolution target. Not adjusted for time awaiting customer or vendor — that history is not synced.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/open/by-organization
+ *
+ * What each client currently has in flight, and how much of it they are
+ * blocking themselves. Useful before a check-in call: "you have nine open,
+ * six are waiting on you" is a different conversation from nine on us.
+ */
+router.get('/open/by-organization', cacheMiddleware(120), async (req, res) => {
+    try {
+        const result = await query(`
+            SELECT
+                t.organization_id,
+                t.organization_name,
+                COUNT(*)::int AS open_tickets,
+                COUNT(*) FILTER (WHERE COALESCE(b.ball_with,'intlx') = 'intlx')::int    AS with_intlx,
+                COUNT(*) FILTER (WHERE b.ball_with = 'customer')::int AS with_customer,
+                COUNT(*) FILTER (WHERE b.ball_with = 'vendor')::int   AS with_vendor,
+                COUNT(*) FILTER (WHERE t.priority IN ('urgent','high'))::int AS urgent_or_high,
+                COUNT(*) FILTER (WHERE t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)::int
+                    AS alarm_tickets,
+                MAX(EXTRACT(DAY FROM now() - t.created_at))::int AS oldest_days
+            FROM tickets t
+            LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+            LEFT JOIN sla_category_behaviour b
+                   ON b.status_category = CASE
+                        WHEN t.status IN ('closed', 'deleted') THEN t.status
+                        ELSE COALESCE(cs.status_category, t.status)
+                      END
+            WHERE t.status NOT IN ('solved', 'closed', 'deleted')
+              AND t.organization_id IS NOT NULL
+            GROUP BY t.organization_id, t.organization_name
+            ORDER BY COUNT(*) FILTER (WHERE COALESCE(b.ball_with,'intlx') = 'intlx') DESC,
+                     COUNT(*) DESC
+        `);
+
+        res.json({ organizations: result.rows, as_of: new Date().toISOString() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * GET /api/analytics/groups/performance
  *
  * The same view as /agents/performance, aggregated by Zendesk group —
