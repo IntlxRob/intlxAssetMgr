@@ -96,79 +96,11 @@ if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
 /**
  * Debug endpoint to search for companies containing specific text
  */
-router.get('/debug-search-companies/:searchText', async (req, res) => {
-    try {
-        const searchText = req.params.searchText.toLowerCase();
-        
-        const matches = companiesCache.companies.filter(company => 
-            company.name?.toLowerCase().includes(searchText)
-        );
-        
-        res.json({
-            success: true,
-            search_text: searchText,
-            total_companies_in_cache: companiesCache.companies.length,
-            matching_companies: matches.map(c => ({
-                id: c.id,
-                name: c.name
-            })),
-            cache_last_updated: companiesCache.lastUpdated
-        });
-    } catch (error) {
-        res.status(500).json({
-            error: 'Failed to search companies',
-            details: error.message
-        });
-    }
-});
 
 /**
  * Debug endpoint to test BILH company discovery
  * GET /api/debug-bilh-companies
  */
-router.get('/debug-bilh-companies', async (req, res) => {
-    try {
-        // Ensure cache is populated
-        if (companiesCache.companies.length === 0) {
-            console.log('[Debug BILH] Cache empty, refreshing...');
-            await refreshCompaniesCache();
-        }
-        
-        // Find all BILH companies
-        const bilhCompanies = companiesCache.companies.filter(company => {
-            const companyName = company.name || '';
-            return companyName.toUpperCase().startsWith('BILH-') || 
-                   companyName.toUpperCase().startsWith('BILH ') ||
-                   companyName.toLowerCase() === 'bilh';
-        });
-        
-        // Format hospital names for display
-        const bilhHospitals = bilhCompanies.map(company => ({
-            id: company.id,
-            full_name: company.name,
-            hospital_name: company.name.replace(/^BILH[-\s]+/i, ''),
-        }));
-        
-        res.json({
-            success: true,
-            summary: {
-                total_companies_in_cache: companiesCache.companies.length,
-                bilh_companies_found: bilhCompanies.length,
-                cache_last_updated: companiesCache.lastUpdated
-            },
-            bilh_hospitals: bilhHospitals.sort((a, b) => 
-                a.hospital_name.localeCompare(b.hospital_name)
-            )
-        });
-        
-    } catch (error) {
-        console.error('[Debug BILH] Error:', error.message);
-        res.status(500).json({
-            error: 'Failed to debug BILH companies',
-            details: error.message
-        });
-    }
-});
 
 /**
  * Cache for SiPortal companies - refreshed periodically
@@ -453,15 +385,6 @@ function levenshteinDistance(str1, str2) {
 /**
  * Endpoint to test the direct connection to the Zendesk API.
  */
-router.get('/test-zendesk', async (req, res) => {
-    try {
-        const data = await zendeskService.testConnection();
-        res.status(200).json({ success: true, message: 'Successfully connected to Zendesk API.', data });
-    } catch (error) {
-        console.error('!!!!!!!! ZENDESK API TEST FAILED !!!!!!!!');
-        res.status(500).json({ success: false, message: 'Failed to connect to Zendesk API.', error: error.message });
-    }
-});
 
 /**
  * Endpoint to fetch the service catalog from Google Sheets.
@@ -1832,104 +1755,11 @@ router.get('/it-portal-assets', async (req, res) => {
 /**
  * Test direct BILH search using nameStartsWith
  */
-router.get('/test-bilh-direct', async (req, res) => {
-    try {
-        console.log('[Test BILH] Searching IT Portal directly with nameStartsWith=bilh');
-        
-        const response = await fetch(`https://www.siportal.net/api/2.0/companies/?nameStartsWith=bilh`, {
-            method: 'GET',
-            headers: {
-                'Authorization': process.env.SIPORTAL_API_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
-        
-        if (response.ok) {
-            const data = await response.json();
-            const companies = data.data?.results || [];
-            
-            console.log(`[Test BILH] Found ${companies.length} BILH companies`);
-            
-            res.json({
-                success: true,
-                companies_found: companies.length,
-                companies: companies.map(c => ({
-                    id: c.id,
-                    name: c.name,
-                    display_name: c.name.replace(/^BILH[-\s]+/i, '')
-                }))
-            });
-        } else {
-            res.status(response.status).json({ 
-                error: `API returned ${response.status}`,
-                statusText: response.statusText 
-            });
-        }
-    } catch (error) {
-        console.error('[Test BILH] Error:', error.message);
-        res.status(500).json({ error: error.message });
-    }
-});
 
 /**
  * Test endpoint to simulate BILH organization fetch
  * GET /api/test-bilh-fetch
  */
-router.get('/test-bilh-fetch', async (req, res) => {
-    try {
-        const testOrgName = req.query.org || 'Beth Israel Lahey Health';
-        
-        console.log(`[Test BILH] Simulating fetch for organization: "${testOrgName}"`);
-        
-        // Simulate the BILH detection logic
-        const lowerOrgName = testOrgName.toLowerCase().trim();
-        const isBILH = lowerOrgName === 'beth israel lahey health' || lowerOrgName.includes('bilh');
-        
-        if (!isBILH) {
-            return res.json({
-                success: false,
-                message: `"${testOrgName}" would not be detected as BILH`,
-                detection_hints: [
-                    'Organization name must be exactly "Beth Israel Lahey Health"',
-                    'Or contain "bilh" (case-insensitive)'
-                ]
-            });
-        }
-        
-        // Ensure cache
-        if (companiesCache.companies.length === 0) {
-            await refreshCompaniesCache();
-        }
-        
-        // Find BILH companies
-        const matchingCompanies = companiesCache.companies.filter(company => {
-            const companyName = company.name || '';
-            return companyName.toUpperCase().startsWith('BILH-') || 
-                   companyName.toUpperCase().startsWith('BILH ') ||
-                   companyName.toLowerCase() === 'bilh';
-        });
-        
-        res.json({
-            success: true,
-            test_organization: testOrgName,
-            is_bilh_detected: true,
-            companies_found: matchingCompanies.length,
-            companies: matchingCompanies.map(c => ({
-                id: c.id,
-                name: c.name,
-                display_name: c.name.replace(/^BILH[-\s]+/i, '')
-            })),
-            next_step: `Use /api/it-portal-assets?user_id=[USER_ID] with a user from "${testOrgName}" to see full results`
-        });
-        
-    } catch (error) {
-        console.error('[Test BILH] Error:', error.message);
-        res.status(500).json({
-            error: 'Failed to test BILH fetch',
-            details: error.message
-        });
-    }
-});
 
 /**
  * SiPortal webhook endpoint
@@ -2438,106 +2268,6 @@ router.put('/organizations/:id', async (req, res) => {
  * Debug endpoint to check SiPortal company by ID
  * GET /api/debug-siportal-company/:id
  */
-router.get('/debug-siportal-company/:id', async (req, res) => {
-    try {
-        const companyId = req.params.id;
-        
-        console.log(`[Debug] Checking SiPortal company ID: ${companyId}`);
-        
-        // Try to fetch devices for this specific company ID with offset pagination
-        let allDevices = [];
-        let offset = 0;
-        const limit = 20;
-        let hasMore = true;
-
-        while (hasMore && offset < 100) {
-            const devicesResponse = await fetch(
-                `https://www.siportal.net/api/2.0/devices?companyId=${companyId}&offset=${offset}&limit=${limit}`,
-                {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': process.env.SIPORTAL_API_KEY,
-                        'Content-Type': 'application/json'
-                    }
-                }
-            );
-
-            if (!devicesResponse.ok) {
-                throw new Error(`SiPortal Devices API returned ${devicesResponse.status}: ${devicesResponse.statusText}`);
-            }
-
-            const devicesData = await devicesResponse.json();
-            const devices = devicesData.data?.results || [];
-            
-            if (devices.length > 0) {
-                const existingIds = new Set(allDevices.map(d => d.id));
-                const newDevices = devices.filter(d => !existingIds.has(d.id));
-                
-                if (newDevices.length > 0) {
-                    allDevices.push(...newDevices);
-                    hasMore = devices.length === limit;
-                    offset += limit;
-                } else {
-                    hasMore = false;
-                }
-            } else {
-                hasMore = false;
-            }
-        }
-        
-        console.log(`[Debug] Company ${companyId} has ${allDevices.length} unique devices`);
-        
-        // Also try to find this company in the companies list
-        let companyInfo = null;
-        let page = 1;
-        let found = false;
-        
-        while (page <= 25 && !found) {
-            const companiesResponse = await fetch(`https://www.siportal.net/api/2.0/companies?page=${page}`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': process.env.SIPORTAL_API_KEY,
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (companiesResponse.ok) {
-                const companiesData = await companiesResponse.json();
-                const companies = companiesData.data?.results || [];
-                
-                if (companies.length === 0) break;
-                
-                companyInfo = companies.find(c => c.id == companyId);
-                if (companyInfo) {
-                    found = true;
-                    console.log(`[Debug] Found company ${companyId} on page ${page}: "${companyInfo.name}"`);
-                }
-                
-                page++;
-            } else {
-                break;
-            }
-        }
-
-        res.json({
-            success: true,
-            company_id: companyId,
-            device_count: allDevices.length,
-            unique_device_ids: [...new Set(allDevices.map(d => d.id))].length,
-            company_info: companyInfo,
-            found_on_page: found ? page - 1 : null,
-            searched_pages: page - 1,
-            sample_devices: allDevices.slice(0, 5)
-        });
-
-    } catch (error) {
-        console.error('[Debug] Error checking SiPortal company:', error.message);
-        res.status(500).json({
-            error: 'Failed to check SiPortal company',
-            details: error.message
-        });
-    }
-});
 
 // Initialize companies cache on startup
 if (process.env.SIPORTAL_API_KEY) {
