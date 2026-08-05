@@ -1758,4 +1758,113 @@ router.post('/backfill', async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/reports/agent-time
+ *
+ * Time logged per agent, from ticket_time_entries — per-event deltas keyed to
+ * the user who made the update, not the ticket's assignee. Two agents working
+ * one ticket are credited separately, which assignee-based attribution cannot
+ * do.
+ *
+ * Filtered on when the time was LOGGED (created_at on the entry), not when the
+ * ticket was created. A timesheet question is "what did we log last week",
+ * regardless of when those tickets opened.
+ *
+ * ?detail=true adds the per-ticket breakdown under each agent.
+ */
+router.get('/reports/agent-time', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { startDate, endDate, agentId, detail } = req.query;
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                error: 'startDate and endDate are required',
+                message: 'A time report without a period is not meaningful.'
+            });
+        }
+
+        // endDate is inclusive of the whole day: a report "to 2026-08-04"
+        // should include time logged that afternoon.
+        const params = [startDate, `${String(endDate).slice(0, 10)}T23:59:59.999Z`];
+        let agentClause = '';
+        if (agentId) {
+            params.push(agentId);
+            agentClause = `AND te.agent_id = $${params.length}`;
+        }
+
+        const summary = await query(`
+            SELECT
+                te.agent_id,
+                COALESCE(a.name, 'Unknown (' || te.agent_id || ')') AS agent_name,
+                COUNT(*)::int AS entries,
+                COUNT(DISTINCT te.ticket_id)::int AS tickets,
+                ROUND((SUM(te.time_seconds) / 3600.0)::numeric, 2) AS hours,
+                ROUND((SUM(te.time_seconds) FILTER (WHERE t.is_billable) / 3600.0)::numeric, 2)
+                    AS billable_hours,
+                MIN(te.created_at)::date AS first_entry,
+                MAX(te.created_at)::date AS last_entry
+            FROM ticket_time_entries te
+            LEFT JOIN agents a ON a.id = te.agent_id
+            LEFT JOIN tickets t ON t.id = te.ticket_id
+            WHERE te.created_at >= $1 AND te.created_at <= $2
+              AND te.agent_id IS NOT NULL
+              ${agentClause}
+            GROUP BY te.agent_id, a.name
+            ORDER BY SUM(te.time_seconds) DESC
+        `, params);
+
+        let tickets = [];
+        if (detail === 'true' || detail === '1') {
+            // One row per agent per ticket. A ticket worked by two people
+            // appears twice, with each person's own time — which is the point.
+            const rows = await query(`
+                SELECT
+                    te.agent_id,
+                    COALESCE(a.name, 'Unknown') AS agent_name,
+                    te.ticket_id,
+                    t.subject,
+                    t.status,
+                    t.organization_name,
+                    t.is_billable,
+                    COUNT(*)::int AS entries,
+                    ROUND((SUM(te.time_seconds) / 3600.0)::numeric, 2) AS hours,
+                    MAX(te.created_at) AS last_logged
+                FROM ticket_time_entries te
+                LEFT JOIN agents a ON a.id = te.agent_id
+                LEFT JOIN tickets t ON t.id = te.ticket_id
+                WHERE te.created_at >= $1 AND te.created_at <= $2
+                  AND te.agent_id IS NOT NULL
+                  ${agentClause}
+                GROUP BY te.agent_id, a.name, te.ticket_id, t.subject, t.status,
+                         t.organization_name, t.is_billable
+                ORDER BY SUM(te.time_seconds) DESC
+                LIMIT 5000
+            `, params);
+            tickets = rows.rows;
+        }
+
+        const totals = summary.rows.reduce((acc, r) => {
+            acc.hours += parseFloat(r.hours || 0);
+            acc.billable_hours += parseFloat(r.billable_hours || 0);
+            acc.entries += r.entries;
+            return acc;
+        }, { hours: 0, billable_hours: 0, entries: 0 });
+
+        res.json({
+            agents: summary.rows,
+            tickets,
+            totals: {
+                agents: summary.rows.length,
+                entries: totals.entries,
+                hours: Math.round(totals.hours * 100) / 100,
+                billable_hours: Math.round(totals.billable_hours * 100) / 100
+            },
+            period: { startDate, endDate },
+            note: 'Time attributed to the agent who logged it, not the ticket assignee.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
