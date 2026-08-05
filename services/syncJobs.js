@@ -14,6 +14,7 @@ const {
 const { computeDerivedFields } = require('./derived');
 const { syncCustomStatuses } = require('./customStatuses');
 const { syncOpenTicketComments } = require('./comments');
+const { syncAudits } = require('./audits');
 
 // ============================================
 // CONFIGURATION
@@ -1114,6 +1115,13 @@ function scheduleSync() {
     console.log('\nRunning scheduled comment sync...');
     syncOpenTicketComments(pool).catch(err =>
       console.error('Scheduled comment sync error:', err));
+  });
+  // Hourly, not nightly. The forward delta is a handful of pages, so this is
+  // cheap enough to keep the "gone quiet" view current rather than showing
+  // yesterday's picture.
+  cron.schedule('15 * * * *', () => {
+    console.log('\nRunning scheduled audit sync...');
+    syncAudits(pool).catch(err => console.error('Scheduled audit sync error:', err));
   });
   cron.schedule('*/15 * * * *', () => {
     console.log('\nRunning current-day analytics refresh...');
