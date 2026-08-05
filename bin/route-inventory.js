@@ -24,12 +24,13 @@ const path = require('path');
 const BY_FILE = process.argv.includes('--by-file');
 
 // Mount points as declared in index.js. Update if you change them there.
+// Must match index.js exactly. A guessed mount makes this tool report URLs
+// the app does not serve - which is worse than no tool, because you act on it.
 const MOUNTS = [
   ['/api',             './routes/api'],
   ['/api/analytics',   './routes/analytics'],
-  ['/api/metrics',     './routes/metrics'],
-  ['/admin/metrics',   './routes/metricsBackfill'],
-  ['/api/auth',        './routes/auth']
+  ['/hooks/metrics',   './routes/metrics'],
+  ['/admin/metrics',   './routes/metricsBackfill']
 ];
 
 function extractRoutes(router) {

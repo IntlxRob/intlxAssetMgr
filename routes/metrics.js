@@ -23,7 +23,6 @@ const getByPath = (o, p) => p.split('.').reduce((a, k) => (a && a[k] !== undefin
 
 // --- quick debug endpoints so the route never "hangs" ---
 router.get('/ping', (_req, res) => res.status(200).send('pong'));
-router.post('/echo', (req, res) => res.status(200).json({ ok: true, headers: req.headers, body: req.body }));
 
 // POST /hooks/metrics/copy
 router.post('/copy', async (req, res) => {
