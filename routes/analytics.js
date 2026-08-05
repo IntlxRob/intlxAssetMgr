@@ -1320,6 +1320,7 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         t.priority,
         t.created_at,
         t.updated_at,
+        t.solved_at,
         t.organization_id,
         t.organization_name,
         t.assignee_id,
@@ -1412,7 +1413,7 @@ router.get('/export/tickets', async (req, res) => {
     }
 
     const sortable = {
-      id: 't.id', created_at: 't.created_at', updated_at: 't.updated_at',
+      id: 't.id', created_at: 't.created_at', updated_at: 't.updated_at', solved_at: 't.solved_at',
       status: 't.status', priority: 't.priority',
       organization: 't.organization_name', assignee: 't.assignee_name',
       time: 't.billable_time_minutes', billable: 't.is_billable',
