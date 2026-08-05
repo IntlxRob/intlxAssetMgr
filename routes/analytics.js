@@ -381,6 +381,12 @@ router.get('/tickets/trends', cacheMiddleware(300), async (req, res) => {
 router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
     try {
         const filters = req.query;
+
+        // One row per agent per group rather than per agent. An agent working
+        // in several groups appears under each, counting only that group's
+        // tickets — so these rows sum to their standalone totals.
+        const byGroup = filters.groupBy === 'group';
+
         const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
 
         const result = await query(`
@@ -396,6 +402,7 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
                     s.resolution_met,
                     t.assignee_id,
                     t.assignee_name,
+                    t.group_id,
                     t.billable_time_minutes,
                     t.billed_minutes,
                     t.is_billable,
@@ -412,6 +419,7 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
             SELECT
                 assignee_id,
                 assignee_name,
+                ${byGroup ? 'group_id,' : 'NULL::bigint AS group_id,'}
 
                 COUNT(*)::int AS total_tickets,
                 COUNT(*) FILTER (WHERE NOT is_alarm)::int AS human_tickets,
@@ -464,9 +472,9 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
                     AS resolution_compliance
 
             FROM scoped
-            GROUP BY assignee_id, assignee_name
+            GROUP BY assignee_id, assignee_name${byGroup ? ', group_id' : ''}
             ORDER BY SUM(billable_time_minutes) DESC NULLS LAST
-            LIMIT 100
+            LIMIT ${byGroup ? 500 : 100}
         `, params);
 
         res.json({
