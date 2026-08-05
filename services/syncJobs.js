@@ -13,6 +13,7 @@ const {
 } = require('./billing');
 const { computeDerivedFields } = require('./derived');
 const { syncCustomStatuses } = require('./customStatuses');
+const { syncOpenTicketComments } = require('./comments');
 
 // ============================================
 // CONFIGURATION
@@ -1105,6 +1106,14 @@ function scheduleSync() {
   cron.schedule('30 1 * * *', () => {
     console.log('\nRunning scheduled daily analytics aggregation...');
     aggregateDailyAnalytics().catch(err => console.error('Scheduled daily aggregation error:', err));
+  });
+  // Overnight, not hourly. The run holds the Zendesk rate limit for ~22
+  // minutes, and "which tickets have gone quiet" is a morning question.
+  // 2am keeps it clear of the 1:30am analytics aggregation above.
+  cron.schedule('0 2 * * *', () => {
+    console.log('\nRunning scheduled comment sync...');
+    syncOpenTicketComments(pool).catch(err =>
+      console.error('Scheduled comment sync error:', err));
   });
   cron.schedule('*/15 * * * *', () => {
     console.log('\nRunning current-day analytics refresh...');
