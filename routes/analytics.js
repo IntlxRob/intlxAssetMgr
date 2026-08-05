@@ -1799,7 +1799,9 @@ router.get('/reports/agent-time', cacheMiddleware(300), async (req, res) => {
                 COUNT(*)::int AS entries,
                 COUNT(DISTINCT te.ticket_id)::int AS tickets,
                 ROUND((SUM(te.time_seconds) / 3600.0)::numeric, 2) AS hours,
-                ROUND((SUM(te.time_seconds) FILTER (WHERE t.is_billable) / 3600.0)::numeric, 2)
+                -- COALESCE so "none of this was billable" reads as 0.00 rather
+                -- than as missing data. Those are different claims.
+                ROUND((COALESCE(SUM(te.time_seconds) FILTER (WHERE t.is_billable), 0) / 3600.0)::numeric, 2)
                     AS billable_hours,
                 MIN(te.created_at)::date AS first_entry,
                 MAX(te.created_at)::date AS last_entry
