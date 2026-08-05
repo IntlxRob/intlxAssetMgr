@@ -2221,4 +2221,155 @@ router.get('/reports/agent-time', cacheMiddleware(300), async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/ops/dashboard
+ *
+ * The Monday operations view: three periods side by side, all groups with an
+ * optional filter.
+ *
+ * Periods are fixed rather than driven by the date filter — this is a screen
+ * to present from, and "last week vs month vs year" is the comparison that
+ * makes a trend visible.
+ *
+ * Compliance is measured on HUMAN tickets against the published targets in
+ * sla_targets. Alarm tickets auto-resolve and would push every figure toward
+ * 100%, describing automation rather than service.
+ */
+router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
+    try {
+        const groupIds = req.query.groupIds
+            ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
+            : null;
+
+        // The intlx work week runs Saturday to Friday, so last week is the
+        // seven days ending on the most recent Friday. Postgres date_trunc
+        // assumes Monday, hence the explicit arithmetic.
+        const periods = `
+            WITH bounds AS (
+                SELECT
+                    -- Most recent Saturday, then back one week.
+                    (CURRENT_DATE - ((EXTRACT(DOW FROM CURRENT_DATE)::int + 1) % 7) - 7) AS last_week_start,
+                    (CURRENT_DATE - ((EXTRACT(DOW FROM CURRENT_DATE)::int + 1) % 7) - 1) AS last_week_end,
+                    date_trunc('month', CURRENT_DATE)::date AS month_start,
+                    date_trunc('year',  CURRENT_DATE)::date AS year_start,
+                    CURRENT_DATE AS today
+            )`;
+
+        const groupClause = groupIds
+            ? `AND t.group_id = ANY($1::bigint[])`
+            : '';
+        const params = groupIds ? [groupIds] : [];
+
+        // One pass per period. Written as a lateral over the three windows so
+        // the period definitions live in one place rather than being repeated.
+        const result = await query(`
+            ${periods},
+            windows AS (
+                SELECT 'last_week' AS period, last_week_start AS from_date, last_week_end AS to_date, 1 AS ord FROM bounds
+                UNION ALL
+                SELECT 'month_to_date', month_start, today, 2 FROM bounds
+                UNION ALL
+                SELECT 'year_to_date',  year_start,  today, 3 FROM bounds
+            )
+            SELECT
+                w.period,
+                w.from_date,
+                w.to_date,
+
+                -- Created in the window, on creation date.
+                (SELECT COUNT(*) FROM tickets t
+                  WHERE t.created_at::date BETWEEN w.from_date AND w.to_date
+                    ${groupClause})::int AS created,
+
+                -- Solved in the window, on solve date — a ticket opened in June
+                -- and closed in July counts toward July.
+                (SELECT COUNT(*) FROM tickets t
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    ${groupClause})::int AS solved,
+
+                -- Human-only compliance against the published targets.
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
+                        / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
+                   FROM tickets t JOIN tickets_sla s ON s.id = t.id
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS response_compliance,
+
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
+                        / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
+                   FROM tickets t JOIN tickets_sla s ON s.id = t.id
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS resolution_compliance,
+
+                -- Both one-touch figures. Including alarms matches the existing
+                -- slide; excluding them describes human work. The gap between
+                -- the two is itself worth seeing.
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count,0) <= 1)
+                        / NULLIF(COUNT(*), 0), 1)
+                   FROM tickets t
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    ${groupClause}) AS one_touch_all,
+
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count,0) <= 1)
+                        / NULLIF(COUNT(*), 0), 1)
+                   FROM tickets t
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS one_touch_human,
+
+                -- Requester wait time against the same targets. Synced already,
+                -- just never reported.
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (
+                          WHERE t.requester_wait_time_minutes <= tg.resolution_minutes)
+                        / NULLIF(COUNT(*) FILTER (WHERE t.requester_wait_time_minutes IS NOT NULL), 0), 1)
+                   FROM tickets t
+                   LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS wait_time_compliance
+
+            FROM windows w
+            ORDER BY w.ord
+        `, params);
+
+        // Backlog is a current-state number, not a per-period one: open tickets
+        // right now, regardless of when they arrived.
+        const backlog = await query(`
+            SELECT COUNT(*)::int AS open_tickets
+              FROM tickets t
+             WHERE t.status NOT IN ('solved','closed','deleted')
+               ${groupClause}
+        `, params);
+
+        const goals = await query(`SELECT metric, target_pct, label FROM ops_goals`);
+
+        const groups = await query(`
+            SELECT g.id, g.name, COUNT(t.id)::int AS tickets
+              FROM groups g
+              LEFT JOIN tickets t ON t.group_id = g.id
+                   AND t.created_at > CURRENT_DATE - INTERVAL '90 days'
+             GROUP BY g.id, g.name
+             ORDER BY COUNT(t.id) DESC
+        `);
+
+        res.json({
+            periods: result.rows,
+            backlog: backlog.rows[0].open_tickets,
+            goals: goals.rows,
+            groups: groups.rows,
+            not_measured: [
+                {
+                    metric: 'periodic_update_time',
+                    label: 'Periodic Update',
+                    reason: 'Needs comment history, which is not synced. Zendesk ticket payloads report every SLA metric as achieved regardless of outcome, so its own data cannot supply this.'
+                }
+            ],
+            as_of: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
