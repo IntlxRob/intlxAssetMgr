@@ -525,6 +525,91 @@ router.get('/agents/automation', cacheMiddleware(300), async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/agents/workload
+ *
+ * Open tickets per agent, as of now. Deliberately ignores the date filter:
+ * a backlog is a current state, not a period measurement, and mixing the two
+ * invites reading one as the other.
+ *
+ * Split by who the ticket is waiting on, from sla_category_behaviour:
+ *   intlx    - new/open, the agent's move
+ *   customer - pending, waiting on a response
+ *   vendor   - hold, waiting on a third party
+ *
+ * That distinction is the point. Ten tickets waiting on customers is not the
+ * same workload as ten in progress.
+ */
+router.get('/agents/workload', cacheMiddleware(120), async (req, res) => {
+    try {
+        const result = await query(`
+            SELECT
+                t.assignee_id,
+                t.assignee_name,
+
+                COUNT(*)::int AS open_tickets,
+                COUNT(*) FILTER (WHERE b.ball_with = 'intlx')::int    AS with_intlx,
+                COUNT(*) FILTER (WHERE b.ball_with = 'customer')::int AS with_customer,
+                COUNT(*) FILTER (WHERE b.ball_with = 'vendor')::int   AS with_vendor,
+
+                COUNT(*) FILTER (WHERE t.priority = 'urgent')::int AS urgent,
+                COUNT(*) FILTER (WHERE t.priority = 'high')::int   AS high,
+
+                -- Age of the oldest open ticket. A backlog of twelve is fine;
+                -- a backlog of twelve where one has been open ninety days is
+                -- a different conversation.
+                MAX(EXTRACT(DAY FROM now() - t.created_at))::int AS oldest_days,
+                ROUND(AVG(EXTRACT(DAY FROM now() - t.created_at)))::int AS avg_age_days,
+
+                COUNT(*) FILTER (WHERE t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)::int
+                    AS alarm_tickets
+
+            FROM tickets t
+            LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+            LEFT JOIN sla_category_behaviour b
+                   ON b.status_category = CASE
+                        WHEN t.status IN ('closed', 'deleted') THEN t.status
+                        ELSE COALESCE(cs.status_category, t.status)
+                      END
+            WHERE t.status NOT IN ('solved', 'closed', 'deleted')
+              AND t.assignee_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM automation_accounts a WHERE a.agent_id = t.assignee_id
+              )
+            GROUP BY t.assignee_id, t.assignee_name
+            ORDER BY COUNT(*) FILTER (WHERE b.ball_with = 'intlx') DESC, COUNT(*) DESC
+        `);
+
+        // Unassigned open tickets belong to nobody and would otherwise vanish
+        // from every view. Reported separately rather than dropped.
+        const unassigned = await query(`
+            SELECT COUNT(*)::int AS open_tickets,
+                   COUNT(*) FILTER (WHERE t.priority IN ('urgent','high'))::int AS urgent_or_high
+              FROM tickets t
+             WHERE t.status NOT IN ('solved', 'closed', 'deleted')
+               AND t.assignee_id IS NULL
+        `);
+
+        const totals = result.rows.reduce((acc, r) => {
+            acc.open_tickets += r.open_tickets;
+            acc.with_intlx += r.with_intlx;
+            acc.with_customer += r.with_customer;
+            acc.with_vendor += r.with_vendor;
+            return acc;
+        }, { open_tickets: 0, with_intlx: 0, with_customer: 0, with_vendor: 0 });
+
+        res.json({
+            agents: result.rows,
+            unassigned: unassigned.rows[0],
+            totals,
+            as_of: new Date().toISOString(),
+            note: 'Current state, not filtered by date. Sorted by tickets awaiting intlx action.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * GET /api/analytics/groups/performance
  *
  * The same view as /agents/performance, aggregated by Zendesk group —
