@@ -762,6 +762,126 @@ router.get('/open/by-organization', cacheMiddleware(120), async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/open/updates
+ *
+ * Open tickets ranked by how long the customer has been waiting to hear
+ * anything, against the update target for the ticket's priority.
+ *
+ * Two clocks: since the last PUBLIC agent comment (what the customer sees) and
+ * since the last agent comment of any kind (whether anyone is working it).
+ * Where they diverge, someone is engaged and the customer does not know it.
+ */
+router.get('/open/updates', cacheMiddleware(120), async (req, res) => {
+    try {
+        const includeAlarms = req.query.includeAlarms === 'true';
+        const includeInternal = req.query.includeInternal === 'true';
+        const limit = Math.min(200, parseInt(req.query.limit || '100', 10));
+
+        // The internal organisation is excluded by default: its tickets are
+        // long-running projects, not customer commitments.
+        const INTERNAL_ORG = '17207780343319';
+
+        const filters = [
+            `t.status NOT IN ('solved','closed','deleted')`,
+            includeAlarms ? null : `NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`,
+            // A ticket with no organisation has no customer waiting on it —
+            // 117541 was internal onboarding that the intlx-org exclusion
+            // missed because the field was empty rather than set.
+            includeInternal ? null : `t.organization_id IS NOT NULL AND t.organization_id <> ${INTERNAL_ORG}`
+        ].filter(Boolean).join(' AND ');
+
+        const rows = await query(`
+            SELECT
+                t.id,
+                t.subject,
+                t.priority,
+                t.organization_name,
+                t.assignee_name,
+                cs.last_public_agent_at,
+                cs.last_agent_at,
+                cs.public_agent_comment_count,
+                tg.update_interval_minutes AS target_minutes,
+                COALESCE(b.ball_with, 'intlx') AS ball_with,
+                cs.synced_at,
+
+                ROUND(EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60)::int
+                    AS minutes_since_public,
+                ROUND(EXTRACT(EPOCH FROM (now() - cs.last_agent_at)) / 60)::int
+                    AS minutes_since_agent,
+
+                -- An internal note more recent than the last public comment
+                -- means the ticket is being worked and the customer has not
+                -- been told. That is a nudge, not neglect.
+                (cs.last_agent_at > cs.last_public_agent_at) AS internal_only_since,
+
+                -- A customer who has heard nothing at all is in a worse
+                -- position than one who heard something a month ago.
+                (cs.last_public_agent_at IS NULL) AS never_updated
+
+            FROM ticket_comment_summary cs
+            JOIN tickets t ON t.id = cs.ticket_id
+            LEFT JOIN custom_statuses cust ON cust.id = t.custom_status_id
+            LEFT JOIN sla_category_behaviour b
+                   ON b.status_category = CASE
+                        WHEN t.status IN ('closed','deleted') THEN t.status
+                        ELSE COALESCE(cust.status_category, t.status)
+                      END
+            LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority, 'normal')
+            WHERE ${filters}
+              AND (
+                cs.last_public_agent_at IS NULL
+                OR EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
+                     > tg.update_interval_minutes
+              )
+            -- Never-updated first, then longest-silent. A customer who has
+            -- heard nothing at all is a worse position than one who heard
+            -- something a month ago, and sorting by timestamp alone buries the
+            -- distinction behind a blank cell.
+            ORDER BY (cs.last_public_agent_at IS NULL) DESC,
+                     cs.last_public_agent_at ASC
+            LIMIT $1
+        `, [limit]);
+
+        const summary = await query(`
+            SELECT
+                COUNT(*)::int AS open_tickets,
+                COUNT(*) FILTER (WHERE cs.last_public_agent_at IS NULL)::int AS never_updated,
+                COUNT(*) FILTER (
+                    WHERE cs.last_public_agent_at IS NULL
+                       OR EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
+                            > tg.update_interval_minutes
+                )::int AS overdue,
+                COUNT(*) FILTER (WHERE cs.last_agent_at > cs.last_public_agent_at)::int
+                    AS internal_only_since,
+                MIN(cs.synced_at) AS oldest_sync
+            FROM ticket_comment_summary cs
+            JOIN tickets t ON t.id = cs.ticket_id
+            LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority, 'normal')
+            WHERE ${filters}
+        `);
+
+        const s = summary.rows[0];
+        res.json({
+            tickets: rows.rows,
+            summary: {
+                ...s,
+                compliance_pct: s.open_tickets > 0
+                    ? Math.round(((s.open_tickets - s.overdue) / s.open_tickets) * 1000) / 10
+                    : null
+            },
+            excluded: {
+                alarms: !includeAlarms,
+                internal: !includeInternal
+            },
+            as_of: new Date().toISOString(),
+            note: 'Open tickets only. Comment history is synced for open tickets, so this is a current view rather than a trend.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * GET /api/analytics/groups/performance
  *
  * The same view as /agents/performance, aggregated by Zendesk group —
