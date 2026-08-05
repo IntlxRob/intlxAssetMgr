@@ -275,10 +275,9 @@ router.get('/tickets/by-organization', cacheMiddleware(300), async (req, res) =>
                 COUNT(CASE WHEN t.status IN ('solved', 'closed') THEN 1 END) as solved_count,
                 COUNT(CASE WHEN t.is_billable THEN 1 END) as billable_count,
                 SUM(t.billable_time_minutes) / 60.0 as billable_hours,
-                AVG(tm.first_reply_time_minutes) as avg_first_reply_minutes,
-                AVG(tm.full_resolution_time_minutes) as avg_resolution_minutes
+                AVG(t.first_reply_minutes) as avg_first_reply_minutes,
+                AVG(t.resolution_minutes) as avg_resolution_minutes
             FROM tickets t
-            LEFT JOIN ticket_metrics tm ON t.id = tm.ticket_id
             ${whereClause}
             GROUP BY t.organization_id, t.organization_name
             ORDER BY ticket_count DESC
@@ -1515,13 +1514,8 @@ router.get('/tickets', cacheMiddleware(60), async (req, res) => {
         
         const result = await query(`
             SELECT 
-                t.*,
-                tm.first_reply_time_minutes,
-                tm.full_resolution_time_minutes,
-                tm.sla_first_reply_compliant,
-                tm.sla_resolution_compliant
+                t.*
             FROM tickets t
-            LEFT JOIN ticket_metrics tm ON t.id = tm.ticket_id
             ${whereClause}
             ORDER BY t.created_at DESC
             ${limitClause}
