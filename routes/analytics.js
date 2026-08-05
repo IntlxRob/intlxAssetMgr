@@ -2295,12 +2295,28 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS response_compliance,
 
+                -- Same metric across every ticket. Alarms auto-resolve and push
+                -- compliance toward 100%, so this figure describes automation
+                -- more than service — but it is what a whole-queue view means,
+                -- and the gap between the two is worth being able to see.
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
+                        / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
+                   FROM tickets t JOIN tickets_sla s ON s.id = t.id
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    ${groupClause}) AS response_compliance_all,
+
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
                    FROM tickets t JOIN tickets_sla s ON s.id = t.id
                   WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS resolution_compliance,
+
+                    (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
+                        / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
+                   FROM tickets t JOIN tickets_sla s ON s.id = t.id
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    ${groupClause}) AS resolution_compliance_all,
 
                 -- Both one-touch figures. Including alarms matches the existing
                 -- slide; excluding them describes human work. The gap between
@@ -2327,7 +2343,15 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                    LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
                   WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
-                    ${groupClause}) AS wait_time_compliance
+                    ${groupClause}) AS wait_time_compliance,
+
+                    (SELECT ROUND(100.0 * COUNT(*) FILTER (
+                          WHERE t.requester_wait_time_minutes <= tg.resolution_minutes)
+                        / NULLIF(COUNT(*) FILTER (WHERE t.requester_wait_time_minutes IS NOT NULL), 0), 1)
+                   FROM tickets t
+                   LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                    ${groupClause}) AS wait_time_compliance_all
 
             FROM windows w
             ORDER BY w.ord
