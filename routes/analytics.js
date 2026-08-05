@@ -399,6 +399,7 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
                     t.billable_time_minutes,
                     t.billed_minutes,
                     t.is_billable,
+                    t.reply_count,
                     (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm
                 FROM tickets_sla s
                 JOIN tickets_billed t ON t.id = s.id
@@ -427,6 +428,30 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
                 ROUND((SUM(billable_time_minutes) FILTER (WHERE NOT is_alarm)
                        / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm), 0) / 60.0)::numeric, 2)
                     AS avg_hours_per_human_ticket,
+
+                    -- Resolution efficiency, on resolved HUMAN tickets only.
+                -- Alarms auto-resolve at one touch, so including them would
+                -- measure queue composition rather than how cleanly an agent
+                -- closes customer work.
+                COUNT(*) FILTER (WHERE NOT is_alarm AND status IN ('solved','closed'))::int
+                    AS resolved_human,
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE NOT is_alarm AND status IN ('solved','closed')
+                          AND COALESCE(reply_count, 0) <= 1)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND status IN ('solved','closed')), 0), 1)
+                    AS one_touch_pct,
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE NOT is_alarm AND status IN ('solved','closed')
+                          AND reply_count = 2)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND status IN ('solved','closed')), 0), 1)
+                    AS two_touch_pct,
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE NOT is_alarm AND status IN ('solved','closed')
+                          AND reply_count >= 3)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND status IN ('solved','closed')), 0), 1)
+                    AS multi_touch_pct,
+                ROUND(AVG(reply_count) FILTER (WHERE NOT is_alarm AND status IN ('solved','closed')), 1)
+                    AS avg_replies,
 
                 ROUND(AVG(first_reply_minutes) FILTER (WHERE NOT is_alarm)) AS avg_first_reply_minutes,
                 ROUND(AVG(resolution_adjusted_minutes) FILTER (WHERE NOT is_alarm)) AS avg_resolution_minutes,
@@ -486,6 +511,92 @@ router.get('/agents/automation', cacheMiddleware(300), async (req, res) => {
         `, params);
 
         res.json({ accounts: result.rows, count: result.rows.length });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/groups/performance
+ *
+ * The same view as /agents/performance, aggregated by Zendesk group —
+ * Triage, Support, Engineering and the rest. Groups do very different work,
+ * so comparing an agent against the company average is less useful than
+ * comparing a team against its own history.
+ *
+ * Automation accounts are excluded here too: a bot's tickets belong to a
+ * group, and including them would inflate whichever team owns alarm triage.
+ */
+router.get('/groups/performance', cacheMiddleware(300), async (req, res) => {
+    try {
+        const filters = req.query;
+        const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
+
+        const result = await query(`
+            WITH scoped AS (
+                SELECT
+                    t.group_id,
+                    t.billable_time_minutes,
+                    t.billed_minutes,
+                    t.is_billable,
+                    t.reply_count,
+                    t.assignee_id,
+                    (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm,
+                    s.status,
+                    s.response_met,
+                    s.resolution_met,
+                    s.first_reply_minutes,
+                    s.resolution_adjusted_minutes
+                FROM tickets_billed t
+                JOIN tickets_sla s ON s.id = t.id
+                WHERE t.group_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM automation_accounts a WHERE a.agent_id = t.assignee_id
+                  )
+                  ${whereClause}
+            )
+            SELECT
+                sc.group_id,
+                COALESCE(g.name, 'Group ' || sc.group_id) AS group_name,
+
+                COUNT(*)::int AS total_tickets,
+                COUNT(*) FILTER (WHERE NOT is_alarm)::int AS human_tickets,
+                COUNT(*) FILTER (WHERE is_alarm)::int AS alarm_tickets,
+                COUNT(DISTINCT assignee_id)::int AS agents,
+                COUNT(*) FILTER (WHERE status IN ('solved','closed'))::int AS resolved_tickets,
+
+                ROUND((SUM(billable_time_minutes) / 60.0)::numeric, 1) AS actual_hours,
+                ROUND((COALESCE(SUM(billed_minutes), 0) / 60.0)::numeric, 1) AS billed_hours,
+
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE NOT is_alarm AND status IN ('solved','closed')
+                          AND COALESCE(reply_count, 0) <= 1)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND status IN ('solved','closed')), 0), 1)
+                    AS one_touch_pct,
+                ROUND(AVG(reply_count) FILTER (WHERE NOT is_alarm AND status IN ('solved','closed')), 1)
+                    AS avg_replies,
+
+                ROUND(AVG(first_reply_minutes) FILTER (WHERE NOT is_alarm)) AS avg_first_reply_minutes,
+                ROUND(AVG(resolution_adjusted_minutes) FILTER (WHERE NOT is_alarm)) AS avg_resolution_minutes,
+
+                ROUND(100.0 * COUNT(*) FILTER (WHERE NOT is_alarm AND response_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND response_met IS NOT NULL), 0), 1)
+                    AS response_compliance,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE NOT is_alarm AND resolution_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE NOT is_alarm AND resolution_met IS NOT NULL), 0), 1)
+                    AS resolution_compliance
+
+            FROM scoped sc
+            LEFT JOIN groups g ON g.id = sc.group_id
+            GROUP BY sc.group_id, g.name
+            ORDER BY COUNT(*) DESC
+        `, params);
+
+        res.json({
+            groups: result.rows,
+            count: result.rows.length,
+            note: 'Automation accounts excluded. Touch and SLA figures cover human-originated tickets only.'
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
