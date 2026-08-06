@@ -2471,7 +2471,63 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                    FROM tickets t
                    LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
                   WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
-                    ${groupClause}) AS wait_time_compliance_all
+                    ${groupClause}) AS wait_time_compliance_all,
+
+                    -- Periodic update: gaps between consecutive PUBLIC agent
+                -- comments against the update target for the ticket's
+                -- priority. Met/(Met+Breached) over intervals, which is the
+                -- same shape Explore uses.
+                --
+                -- Attributed to the month the LATER comment falls in, so an
+                -- interval that closes in July counts toward July regardless
+                -- of when it opened.
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE g.gap_min <= g.target)
+                        / NULLIF(COUNT(*), 0), 1)
+                   FROM (
+                     SELECT EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
+                            tg.update_interval_minutes AS target
+                       FROM (
+                         SELECT ticket_id, created_at,
+                                LAG(created_at) OVER (
+                                  PARTITION BY ticket_id ORDER BY created_at
+                                ) AS prev
+                           FROM ticket_public_comments
+                          WHERE is_public
+                       ) p
+                       JOIN tickets t ON t.id = p.ticket_id
+                       LEFT JOIN sla_targets tg
+                              ON tg.priority = COALESCE(t.priority, 'normal')
+                      WHERE p.prev IS NOT NULL
+                        AND p.created_at::date BETWEEN w.from_date AND w.to_date
+                        AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                        ${groupClause}
+                   ) g) AS update_compliance,
+
+                -- Same metric across every ticket. Alarms receive bulk updates
+                -- that clear the target easily — 79.0% against 67.8% for human
+                -- work last week — so this describes automation more than
+                -- customer communication. Returned so the two can be compared
+                -- rather than conflated.
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE g.gap_min <= g.target)
+                        / NULLIF(COUNT(*), 0), 1)
+                   FROM (
+                     SELECT EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
+                            tg.update_interval_minutes AS target
+                       FROM (
+                         SELECT ticket_id, created_at,
+                                LAG(created_at) OVER (
+                                  PARTITION BY ticket_id ORDER BY created_at
+                                ) AS prev
+                           FROM ticket_public_comments
+                          WHERE is_public
+                       ) p
+                       JOIN tickets t ON t.id = p.ticket_id
+                       LEFT JOIN sla_targets tg
+                              ON tg.priority = COALESCE(t.priority, 'normal')
+                      WHERE p.prev IS NOT NULL
+                        AND p.created_at::date BETWEEN w.from_date AND w.to_date
+                        ${groupClause}
+                   ) g) AS update_compliance_all
 
             FROM windows w
             ORDER BY w.ord
@@ -2502,13 +2558,16 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
             backlog: backlog.rows[0].open_tickets,
             goals: goals.rows,
             groups: groups.rows,
-            not_measured: [
-                {
-                    metric: 'periodic_update_time',
-                    label: 'Periodic Update',
-                    reason: 'Needs comment history, which is not synced. Zendesk ticket payloads report every SLA metric as achieved regardless of outcome, so its own data cannot supply this.'
-                }
-            ],
+            not_measured: [],
+
+            // The audit stream retains about four months in full; before that
+            // it returns a handful of tickets a month. A year-to-date update
+            // figure would blend four solid months with eight sparse ones, so
+            // the UI hides that column rather than showing a number nobody
+            // could defend.
+            data_from: {
+                update_compliance: '2026-04-01'
+            },
             as_of: new Date().toISOString()
         });
     } catch (error) {
