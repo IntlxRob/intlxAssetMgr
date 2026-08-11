@@ -2704,4 +2704,199 @@ router.get('/ops/trend', cacheMiddleware(600), async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/ops/attention
+ *
+ * The Monday list. Each entry is a category with a count, a handful of
+ * examples, and a filter the UI can hand to another tab.
+ *
+ * Deliberately not a single query: these are five unrelated questions and
+ * expressing them as one would need a union that nobody could read or amend.
+ */
+router.get('/ops/attention', cacheMiddleware(120), async (req, res) => {
+    try {
+        const INTERNAL_ORG = '17207780343319';
+        const humanOnly = `NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`;
+        const realCustomer = `t.organization_id IS NOT NULL AND t.organization_id <> ${INTERNAL_ORG}`;
+
+        // Never had a public agent comment. The customer opened a request and
+        // has heard nothing at all, which is worse than going quiet later.
+        const neverUpdated = await query(`
+            SELECT t.id, t.subject, t.organization_name, t.assignee_name,
+                   (CURRENT_DATE - t.created_at::date) AS days_open
+              FROM tickets t
+              JOIN ticket_comment_summary cs ON cs.ticket_id = t.id
+             WHERE t.status NOT IN ('solved','closed','deleted')
+               AND cs.last_public_agent_at IS NULL
+               AND ${humanOnly} AND ${realCustomer}
+             ORDER BY t.created_at
+             LIMIT 10
+        `);
+
+        // Unassigned and urgent: belongs to nobody, and the priority says it
+        // cannot wait for someone to notice.
+        const unassigned = await query(`
+            SELECT t.id, t.subject, t.organization_name, t.priority,
+                   (CURRENT_DATE - t.created_at::date) AS days_open
+              FROM tickets t
+             WHERE t.status NOT IN ('solved','closed','deleted')
+               AND t.assignee_id IS NULL
+               AND t.priority IN ('urgent','high')
+             ORDER BY t.created_at
+             LIMIT 10
+        `);
+
+        // Past resolution target and nobody else is blocking.
+        const overdueOurs = await query(`
+            SELECT t.id, t.subject, t.organization_name, t.assignee_name, t.priority,
+                   ROUND(EXTRACT(EPOCH FROM (now() - t.created_at)) / 3600)::int AS hours_open,
+                   tg.resolution_minutes
+              FROM tickets t
+              LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+              LEFT JOIN sla_category_behaviour b
+                     ON b.status_category = CASE
+                          WHEN t.status IN ('closed','deleted') THEN t.status
+                          ELSE COALESCE(cs.status_category, t.status)
+                        END
+              LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+             WHERE t.status NOT IN ('solved','closed','deleted')
+               AND COALESCE(b.ball_with, 'intlx') = 'intlx'
+               AND t.priority IN ('urgent','high')
+               AND EXTRACT(EPOCH FROM (now() - t.created_at)) / 60 > tg.resolution_minutes
+               AND ${humanOnly}
+             ORDER BY t.created_at
+             LIMIT 10
+        `);
+
+        // Overdue for a customer update. Split out the ones with a recent
+        // internal note — somebody is working those, they just have not said
+        // so, which is a nudge rather than neglect.
+        const staleUpdates = await query(`
+            SELECT COUNT(*)::int AS total,
+                   COUNT(*) FILTER (WHERE cs.last_agent_at > cs.last_public_agent_at)::int
+                     AS internal_only
+              FROM tickets t
+              JOIN ticket_comment_summary cs ON cs.ticket_id = t.id
+              LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+             WHERE t.status NOT IN ('solved','closed','deleted')
+               AND ${humanOnly} AND ${realCustomer}
+               AND cs.last_public_agent_at IS NOT NULL
+               AND EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
+                     > tg.update_interval_minutes
+        `);
+
+        const vendorBlocked = await query(`
+            SELECT COUNT(*)::int AS total
+              FROM tickets t
+              LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+              LEFT JOIN sla_category_behaviour b
+                     ON b.status_category = CASE
+                          WHEN t.status IN ('closed','deleted') THEN t.status
+                          ELSE COALESCE(cs.status_category, t.status)
+                        END
+             WHERE t.status NOT IN ('solved','closed','deleted')
+               AND b.ball_with = 'vendor'
+        `);
+
+        res.json({
+            items: [
+                {
+                    key: 'never_updated',
+                    label: 'Never updated',
+                    detail: 'Customer has heard nothing at all',
+                    severity: 'high',
+                    count: neverUpdated.rowCount,
+                    examples: neverUpdated.rows
+                },
+                {
+                    key: 'unassigned',
+                    label: 'Unassigned & urgent',
+                    detail: 'Nobody owns these',
+                    severity: 'high',
+                    count: unassigned.rowCount,
+                    examples: unassigned.rows
+                },
+                {
+                    key: 'overdue_ours',
+                    label: 'Past resolution target',
+                    detail: 'Urgent or high, awaiting intlx',
+                    severity: 'medium',
+                    count: overdueOurs.rowCount,
+                    examples: overdueOurs.rows
+                },
+                {
+                    key: 'stale_updates',
+                    label: 'Overdue for a customer update',
+                    detail: `${staleUpdates.rows[0].internal_only} have an internal note since — a nudge, not neglect`,
+                    severity: 'medium',
+                    count: staleUpdates.rows[0].total,
+                    examples: []
+                },
+                {
+                    key: 'vendor_blocked',
+                    label: 'Blocked on a vendor',
+                    detail: 'Not ours to move, worth chasing',
+                    severity: 'low',
+                    count: vendorBlocked.rows[0].total,
+                    examples: []
+                }
+            ].filter(i => i.count > 0),
+            as_of: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/ops/distribution
+ *
+ * First reply percentiles per priority, for the box plot.
+ *
+ * The compliance rate alone cannot distinguish "uniformly slow" from "fast
+ * with a bad tail", and those need different responses. Every tier's median
+ * sits inside target while every p90 sits well outside — which points at
+ * alerting rather than staffing.
+ */
+router.get('/ops/distribution', cacheMiddleware(600), async (req, res) => {
+    try {
+        const days = Math.min(365, parseInt(req.query.days || '90', 10));
+        const groupIds = req.query.groupIds
+            ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
+            : null;
+        const params = [days];
+        let groupClause = '';
+        if (groupIds) {
+            params.push(groupIds);
+            groupClause = `AND t.group_id = ANY($${params.length}::bigint[])`;
+        }
+
+        const result = await query(`
+            SELECT
+                COALESCE(t.priority, 'normal') AS priority,
+                tg.label AS priority_label,
+                tg.response_minutes AS target,
+                COUNT(*)::int AS tickets,
+                ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY t.first_reply_minutes))::int AS p25,
+                ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY t.first_reply_minutes))::int AS p50,
+                ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY t.first_reply_minutes))::int AS p75,
+                ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY t.first_reply_minutes))::int AS p90,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE t.first_reply_minutes <= tg.response_minutes)
+                      / NULLIF(COUNT(*), 0), 1) AS compliance
+            FROM tickets t
+            LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority, 'normal')
+            WHERE t.first_reply_minutes IS NOT NULL
+              AND t.solved_at > now() - ($1 || ' days')::interval
+              AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+              ${groupClause}
+            GROUP BY 1, tg.label, tg.response_minutes
+            ORDER BY tg.response_minutes
+        `, params);
+
+        res.json({ priorities: result.rows, days, as_of: new Date().toISOString() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
