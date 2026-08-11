@@ -2576,7 +2576,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
             // the UI hides that column rather than showing a number nobody
             // could defend.
             data_from: {
-                update_compliance: '2026-04-01'
+                update_compliance: '2025-08-01'
             },
             as_of: new Date().toISOString()
         });
