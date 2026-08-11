@@ -2575,4 +2575,133 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/ops/trend
+ *
+ * Twelve months of each headline metric, for sparklines beside the current
+ * figures. A single arrow says "down"; a shape says how far and how steadily.
+ *
+ * Update compliance carries its own coverage floor — the comment history does
+ * not reach as far back as the ticket fields do — so its series starts later
+ * than the others rather than showing a misleading tail.
+ */
+router.get('/ops/trend', cacheMiddleware(600), async (req, res) => {
+    try {
+        const groupIds = req.query.groupIds
+            ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
+            : null;
+        const groupClause = groupIds ? `AND t.group_id = ANY($1::bigint[])` : '';
+        const params = groupIds ? [groupIds] : [];
+
+        const result = await query(`
+            WITH months AS (
+                SELECT generate_series(
+                    date_trunc('month', CURRENT_DATE) - interval '11 months',
+                    date_trunc('month', CURRENT_DATE),
+                    interval '1 month'
+                )::date AS month_start
+            ),
+            windows AS (
+                SELECT month_start,
+                       (month_start + interval '1 month' - interval '1 day')::date AS month_end
+                  FROM months
+            )
+            SELECT
+                to_char(w.month_start, 'YYYY-MM') AS month,
+
+                (SELECT COUNT(*) FROM tickets t
+                  WHERE t.created_at::date BETWEEN w.month_start AND w.month_end
+                    ${groupClause})::int AS created,
+
+                (SELECT COUNT(*) FROM tickets t
+                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                    ${groupClause})::int AS solved,
+
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
+                        / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
+                   FROM tickets t JOIN tickets_sla s ON s.id = t.id
+                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS response_compliance,
+
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
+                        / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
+                   FROM tickets t JOIN tickets_sla s ON s.id = t.id
+                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS resolution_compliance,
+
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (
+                          WHERE t.requester_wait_time_minutes <= tg.resolution_minutes)
+                        / NULLIF(COUNT(*) FILTER (WHERE t.requester_wait_time_minutes IS NOT NULL), 0), 1)
+                   FROM tickets t
+                   LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS wait_time_compliance,
+
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count,0) <= 1)
+                        / NULLIF(COUNT(*), 0), 1)
+                   FROM tickets t
+                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause}) AS one_touch_human,
+
+                (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE g.gap_min <= g.target)
+                        / NULLIF(COUNT(*), 0), 1)
+                   FROM (
+                     SELECT EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
+                            tg.update_interval_minutes AS target
+                       FROM (
+                         SELECT ticket_id, created_at,
+                                LAG(created_at) OVER (
+                                  PARTITION BY ticket_id ORDER BY created_at
+                                ) AS prev
+                           FROM ticket_public_comments WHERE is_public
+                       ) p
+                       JOIN tickets t ON t.id = p.ticket_id
+                       LEFT JOIN sla_targets tg
+                              ON tg.priority = COALESCE(t.priority,'normal')
+                      WHERE p.prev IS NOT NULL
+                        AND p.created_at::date BETWEEN w.month_start AND w.month_end
+                        AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                        ${groupClause}
+                   ) g) AS update_compliance
+
+            FROM windows w
+            ORDER BY w.month_start
+        `, params);
+
+        // The comment history is thinner than the ticket fields, so a month
+        // with a handful of intervals would render as a wild swing in the
+        // sparkline. Below this count the point is dropped rather than drawn.
+        const MIN_INTERVALS = 50;
+        const coverage = await query(`
+            SELECT to_char(created_at, 'YYYY-MM') AS month, COUNT(*)::int AS comments
+              FROM ticket_public_comments
+             WHERE is_public
+               AND created_at >= date_trunc('month', CURRENT_DATE) - interval '11 months'
+             GROUP BY 1
+        `);
+        const thin = new Set(
+            coverage.rows.filter(r => r.comments < MIN_INTERVALS).map(r => r.month)
+        );
+
+        res.json({
+            months: result.rows.map(r => ({
+                ...r,
+                comp_pct: r.created > 0
+                    ? Math.round((r.solved / r.created) * 1000) / 10
+                    : null,
+                // Nulled rather than omitted so the series stays twelve points
+                // long and the sparkline x-axis does not shift under it.
+                update_compliance: thin.has(r.month) ? null : r.update_compliance
+            })),
+            as_of: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
