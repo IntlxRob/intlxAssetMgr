@@ -3025,4 +3025,138 @@ router.get('/sla/by-priority', cacheMiddleware(300), async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/ops/improvements
+ *
+ * The curated "where can we improve" list, with a computed number and last
+ * month's value for each.
+ *
+ * Curated rather than computed because the value is in the diagnosis. A query
+ * can find the worst metric; it cannot work out that resolution compliance is
+ * understated because nobody is recording on-hold time. The wording is
+ * editable in ops_improvements; the numbers are not.
+ */
+router.get('/ops/improvements', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { rows: items } = await query(`
+            SELECT key, title, body, impact, metric_key, severity
+              FROM ops_improvements
+             WHERE active
+             ORDER BY sort_order, key
+        `);
+
+        // Each metric returns { value, unit, detail, previous }. `previous` is
+        // the equivalent figure a month back, so the item can show movement.
+        const metrics = {};
+
+        // Long-running tickets with no on-hold time recorded. Counted against
+        // the resolution target for their priority.
+        const onHold = await query(`
+            SELECT
+                COUNT(*)::int AS value,
+                COUNT(*) FILTER (WHERE t.solved_at < date_trunc('month', CURRENT_DATE))::int
+                    AS previous
+              FROM tickets t
+              LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+             WHERE t.resolution_minutes > tg.resolution_minutes
+               AND COALESCE(t.on_hold_time_minutes, 0) = 0
+               AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+        `);
+        metrics.on_hold_unused = {
+            value: onHold.rows[0].value,
+            unit: 'tickets',
+            detail: 'ran past target with no on-hold time recorded',
+            previous: onHold.rows[0].previous
+        };
+
+        // Update compliance this month against last, plus how many open
+        // tickets are overdue right now and how many of those have a recent
+        // internal note.
+        const upd = await query(`
+            WITH pub AS (
+                SELECT ticket_id, created_at,
+                       LAG(created_at) OVER (
+                         PARTITION BY ticket_id ORDER BY created_at
+                       ) AS prev
+                  FROM ticket_public_comments WHERE is_public
+            ),
+            gaps AS (
+                SELECT p.created_at,
+                       EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
+                       tg.update_interval_minutes AS target
+                  FROM pub p
+                  JOIN tickets t ON t.id = p.ticket_id
+                  LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+                 WHERE p.prev IS NOT NULL
+                   AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+            )
+            SELECT
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE gap_min <= target
+                          AND created_at >= date_trunc('month', CURRENT_DATE))
+                      / NULLIF(COUNT(*) FILTER (
+                        WHERE created_at >= date_trunc('month', CURRENT_DATE)), 0), 1)
+                  AS value,
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE gap_min <= target
+                          AND created_at >= date_trunc('month', CURRENT_DATE) - interval '1 month'
+                          AND created_at <  date_trunc('month', CURRENT_DATE))
+                      / NULLIF(COUNT(*) FILTER (
+                        WHERE created_at >= date_trunc('month', CURRENT_DATE) - interval '1 month'
+                          AND created_at <  date_trunc('month', CURRENT_DATE)), 0), 1)
+                  AS previous
+              FROM gaps
+        `);
+
+        const overdue = await query(`
+            SELECT COUNT(*)::int AS total,
+                   COUNT(*) FILTER (WHERE cs.last_agent_at > cs.last_public_agent_at)::int
+                     AS internal_only
+              FROM tickets t
+              JOIN ticket_comment_summary cs ON cs.ticket_id = t.id
+              LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+             WHERE t.status NOT IN ('solved','closed','deleted')
+               AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+               AND t.organization_id IS NOT NULL
+               AND cs.last_public_agent_at IS NOT NULL
+               AND EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
+                     > tg.update_interval_minutes
+        `);
+        metrics.update_compliance = {
+            value: upd.rows[0].value,
+            unit: '%',
+            detail: `${overdue.rows[0].total} open tickets overdue now, ${overdue.rows[0].internal_only} with a recent internal note`,
+            previous: upd.rows[0].previous,
+            // Higher is better here, unlike the other two.
+            higher_is_better: true
+        };
+
+        // P1 median against p90: the gap is the whole argument that this is an
+        // alerting problem rather than an effort one.
+        const p1 = await query(`
+            SELECT
+                ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY first_reply_minutes))::int AS value,
+                ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY first_reply_minutes))::int AS p90
+              FROM tickets
+             WHERE priority = 'urgent'
+               AND first_reply_minutes IS NOT NULL
+               AND solved_at > now() - interval '90 days'
+               AND NOT (has_alarmtraq OR has_virsae OR has_checkmk)
+        `);
+        metrics.p1_response = {
+            value: p1.rows[0].value,
+            unit: 'm',
+            detail: `median · ${p1.rows[0].p90}m at p90 · 15m target`,
+            previous: null
+        };
+
+        res.json({
+            items: items.map(i => ({ ...i, metric: metrics[i.metric_key] ?? null })),
+            as_of: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
