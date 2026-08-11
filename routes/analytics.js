@@ -3159,4 +3159,134 @@ router.get('/ops/improvements', cacheMiddleware(300), async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/ops/automation
+ *
+ * Alarm platform performance. Deliberately not the human metrics with a
+ * different filter: an alarm that resolves at one touch is automation working,
+ * not service quality, and customer wait time on a machine-generated ticket
+ * means nothing.
+ *
+ * The headline is auto-resolution rate — the share of alarms closed with no
+ * agent reply at all. That is what more automation should raise.
+ */
+router.get('/ops/automation', cacheMiddleware(600), async (req, res) => {
+    try {
+        const days = Math.min(730, parseInt(req.query.days || '90', 10));
+        const isAlarm = `(t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)`;
+
+        // Headline figures for the window, plus the equivalent window before it
+        // so the direction is visible without a second request.
+        const summary = await query(`
+            WITH windows AS (
+                SELECT 'current' AS period,
+                       (now() - ($1 || ' days')::interval) AS from_ts,
+                       now() AS to_ts
+                UNION ALL
+                SELECT 'previous',
+                       (now() - (2 * $1 || ' days')::interval),
+                       (now() - ($1 || ' days')::interval)
+            )
+            SELECT
+                w.period,
+                COUNT(*)::int AS alarms,
+
+                -- Closed with no agent reply: the automation handled it end to
+                -- end. reply_count counts agent replies, so zero means nobody
+                -- typed anything.
+                COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)::int AS auto_resolved,
+                COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) > 0)::int AS escalated,
+
+                ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)
+                      / NULLIF(COUNT(*), 0), 1) AS auto_resolution_rate,
+
+                -- Time to close, split by whether a human got involved. The gap
+                -- between them is the cost of an escalation.
+                ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (
+                        ORDER BY t.resolution_minutes))::int AS median_close_minutes,
+                ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (
+                        ORDER BY t.resolution_minutes))::int AS p90_close_minutes,
+
+                ROUND(AVG(t.resolution_minutes) FILTER (
+                        WHERE COALESCE(t.reply_count, 0) = 0))::int AS avg_auto_minutes,
+                ROUND(AVG(t.resolution_minutes) FILTER (
+                        WHERE COALESCE(t.reply_count, 0) > 0))::int AS avg_escalated_minutes,
+
+                -- Reopens are the failure mode that matters most: an alarm
+                -- closed automatically and then reopened was not really handled.
+                COUNT(*) FILTER (WHERE COALESCE(t.reopens, 0) > 0)::int AS reopened
+
+            FROM windows w
+            JOIN tickets t
+              ON t.solved_at >= w.from_ts AND t.solved_at < w.to_ts
+             AND ${isAlarm}
+            GROUP BY w.period
+        `, [days]);
+
+        // Monthly series for the trend. Twelve points regardless of the window
+        // above, because "is coverage improving" is a longer question than
+        // "how did the last 90 days go".
+        const trend = await query(`
+            WITH months AS (
+                SELECT generate_series(
+                    date_trunc('month', CURRENT_DATE) - interval '11 months',
+                    date_trunc('month', CURRENT_DATE),
+                    interval '1 month'
+                )::date AS month_start
+            )
+            SELECT
+                to_char(m.month_start, 'YYYY-MM') AS month,
+                COUNT(t.id)::int AS alarms,
+                COUNT(t.id) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)::int AS auto_resolved,
+                ROUND(100.0 * COUNT(t.id) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)
+                      / NULLIF(COUNT(t.id), 0), 1) AS auto_resolution_rate
+            FROM months m
+            LEFT JOIN tickets t
+              ON t.solved_at::date >= m.month_start
+             AND t.solved_at::date < (m.month_start + interval '1 month')
+             AND ${isAlarm}
+            GROUP BY m.month_start
+            ORDER BY m.month_start
+        `);
+
+        // By source. Which platform generates the most, and which needs a human
+        // most often — the second is where automation work would pay off.
+        const sources = await query(`
+            SELECT
+                src.name,
+                COUNT(*)::int AS alarms,
+                COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) > 0)::int AS escalated,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)
+                      / NULLIF(COUNT(*), 0), 1) AS auto_resolution_rate,
+                ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (
+                        ORDER BY t.resolution_minutes))::int AS median_close_minutes
+            FROM tickets t
+            CROSS JOIN LATERAL (
+                VALUES
+                  ('Alarmtraq', t.has_alarmtraq),
+                  ('Virsae',    t.has_virsae),
+                  ('CheckMK',   t.has_checkmk)
+            ) AS src(name, flagged)
+            WHERE src.flagged
+              AND t.solved_at > now() - ($1 || ' days')::interval
+            GROUP BY src.name
+            ORDER BY COUNT(*) DESC
+        `, [days]);
+
+        const byPeriod = {};
+        for (const r of summary.rows) byPeriod[r.period] = r;
+
+        res.json({
+            current: byPeriod.current ?? null,
+            previous: byPeriod.previous ?? null,
+            trend: trend.rows,
+            sources: sources.rows,
+            days,
+            as_of: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
