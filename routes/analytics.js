@@ -2919,4 +2919,110 @@ router.get('/ops/distribution', cacheMiddleware(600), async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/sla/by-priority
+ *
+ * Every SLA metric broken out by priority, for the period the dashboard is
+ * showing. An aggregate rate conceals which tier is actually failing.
+ *
+ * Update compliance is computed from comment intervals rather than ticket
+ * fields, so it is a separate subquery joined on priority rather than another
+ * column on the same scan.
+ */
+router.get('/sla/by-priority', cacheMiddleware(300), async (req, res) => {
+    try {
+        const period = req.query.period === 'year' ? 'year'
+                     : req.query.period === 'month' ? 'month'
+                     : 'week';
+        const groupIds = req.query.groupIds
+            ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
+            : null;
+
+        // Same windows the dashboard uses, so the numbers reconcile with the
+        // column the reader just looked at.
+        const bounds = {
+            week:  `(CURRENT_DATE - ((EXTRACT(DOW FROM CURRENT_DATE)::int + 1) % 7) - 7)
+                    AND (CURRENT_DATE - ((EXTRACT(DOW FROM CURRENT_DATE)::int + 1) % 7) - 1)`,
+            month: `date_trunc('month', CURRENT_DATE)::date AND CURRENT_DATE`,
+            year:  `date_trunc('year', CURRENT_DATE)::date AND CURRENT_DATE`
+        }[period];
+
+        const params = [];
+        let groupClause = '';
+        if (groupIds) {
+            params.push(groupIds);
+            groupClause = `AND t.group_id = ANY($${params.length}::bigint[])`;
+        }
+
+        const result = await query(`
+            WITH scoped AS (
+                SELECT t.id, t.priority, t.group_id,
+                       t.requester_wait_time_minutes, t.reply_count,
+                       s.response_met, s.resolution_met
+                  FROM tickets t
+                  JOIN tickets_sla s ON s.id = t.id
+                 WHERE t.solved_at::date BETWEEN ${bounds}
+                   AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                   ${groupClause}
+            ),
+            updates AS (
+                SELECT t.priority,
+                       COUNT(*) FILTER (
+                         WHERE EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60
+                               <= tg.update_interval_minutes
+                       )::int AS met,
+                       COUNT(*)::int AS total
+                  FROM (
+                    SELECT ticket_id, created_at,
+                           LAG(created_at) OVER (
+                             PARTITION BY ticket_id ORDER BY created_at
+                           ) AS prev
+                      FROM ticket_public_comments WHERE is_public
+                  ) p
+                  JOIN tickets t ON t.id = p.ticket_id
+                  LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+                 WHERE p.prev IS NOT NULL
+                   AND p.created_at::date BETWEEN ${bounds}
+                   AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                   ${groupClause}
+                 GROUP BY t.priority
+            )
+            SELECT
+                COALESCE(sc.priority, 'normal') AS priority,
+                tg.label AS priority_label,
+                COUNT(*)::int AS tickets,
+
+                ROUND(100.0 * COUNT(*) FILTER (WHERE sc.response_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE sc.response_met IS NOT NULL), 0), 1)
+                  AS response_compliance,
+
+                ROUND(100.0 * COUNT(*) FILTER (WHERE sc.resolution_met)
+                      / NULLIF(COUNT(*) FILTER (WHERE sc.resolution_met IS NOT NULL), 0), 1)
+                  AS resolution_compliance,
+
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE sc.requester_wait_time_minutes <= tg.resolution_minutes)
+                      / NULLIF(COUNT(*) FILTER (WHERE sc.requester_wait_time_minutes IS NOT NULL), 0), 1)
+                  AS wait_time_compliance,
+
+                ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(sc.reply_count,0) <= 1)
+                      / NULLIF(COUNT(*), 0), 1) AS one_touch,
+
+                MAX(u.met)::int AS update_met,
+                MAX(u.total)::int AS update_total,
+                ROUND(100.0 * MAX(u.met) / NULLIF(MAX(u.total), 0), 1) AS update_compliance
+
+            FROM scoped sc
+            LEFT JOIN sla_targets tg ON tg.priority = COALESCE(sc.priority, 'normal')
+            LEFT JOIN updates u ON u.priority = sc.priority
+            GROUP BY 1, tg.label, tg.response_minutes
+            ORDER BY tg.response_minutes
+        `, params);
+
+        res.json({ priorities: result.rows, period, as_of: new Date().toISOString() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
