@@ -3184,35 +3184,64 @@ router.get('/ops/automation', cacheMiddleware(600), async (req, res) => {
                        now() AS to_ts
                 UNION ALL
                 SELECT 'previous',
-                       (now() - (2 * $1 || ' days')::interval),
+                       (now() - ($1::int * 2 || ' days')::interval),
                        (now() - ($1 || ' days')::interval)
             )
             SELECT
                 w.period,
                 COUNT(*)::int AS alarms,
 
-                -- Closed with no agent reply: the automation handled it end to
-                -- end. reply_count counts agent replies, so zero means nobody
-                -- typed anything.
-                COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)::int AS auto_resolved,
-                COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) > 0)::int AS escalated,
+                -- Alarmtraq raised it and cleared it. The tag is applied by the
+                -- clearing comment, so it is a reliable machine signal where
+                -- reply_count is not: reply_count counts machine comments, and
+                -- Zendesk attributes trigger activity to whoever authored the
+                -- trigger.
+                COUNT(*) FILTER (WHERE t.tags @> '["alarm_cleared"]'::jsonb)::int
+                    AS self_cleared,
 
-                ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)
-                      / NULLIF(COUNT(*), 0), 1) AS auto_resolution_rate,
+                -- Folded into a duplicate. Consolidating alarm noise is the
+                -- platform working, not a human handling something.
+                COUNT(*) FILTER (
+                    WHERE NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                      AND t.tags @> '["closed_by_merge"]'::jsonb
+                )::int AS merged,
 
-                -- Time to close, split by whether a human got involved. The gap
-                -- between them is the cost of an escalation.
+                -- Somebody logged time against it. This is the real human cost
+                -- of alarms, and it appears in no per-agent figure today.
+                COUNT(*) FILTER (
+                    WHERE NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                      AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                      AND COALESCE(t.billable_time_minutes, 0) > 0
+                )::int AS worked,
+
+                -- Neither cleared, merged, nor logged. Somebody closed it
+                -- without recording anything - reported rather than rounded
+                -- into a tidier number.
+                COUNT(*) FILTER (
+                    WHERE NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                      AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                      AND COALESCE(t.billable_time_minutes, 0) = 0
+                )::int AS unexplained,
+
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE t.tags @> '["alarm_cleared"]'::jsonb
+                           OR t.tags @> '["closed_by_merge"]'::jsonb)
+                      / NULLIF(COUNT(*), 0), 1) AS handled_rate,
+
+                ROUND(SUM(t.billable_time_minutes) FILTER (
+                        WHERE NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                          AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                      ) / 60.0, 1) AS human_hours,
+
                 ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (
-                        ORDER BY t.resolution_minutes))::int AS median_close_minutes,
-                ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (
-                        ORDER BY t.resolution_minutes))::int AS p90_close_minutes,
-
-                ROUND(AVG(t.resolution_minutes) FILTER (
-                        WHERE COALESCE(t.reply_count, 0) = 0))::int AS avg_auto_minutes,
-                ROUND(AVG(t.resolution_minutes) FILTER (
-                        WHERE COALESCE(t.reply_count, 0) > 0))::int AS avg_escalated_minutes,
-
-                -- Reopens are the failure mode that matters most: an alarm
+                        ORDER BY t.resolution_minutes) FILTER (
+                        WHERE t.tags @> '["alarm_cleared"]'::jsonb))::int
+                    AS median_cleared_minutes,
+                ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (
+                        ORDER BY t.resolution_minutes) FILTER (
+                        WHERE NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                          AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)))::int
+                    AS median_worked_minutes,
                 -- closed automatically and then reopened was not really handled.
                 COUNT(*) FILTER (WHERE COALESCE(t.reopens, 0) > 0)::int AS reopened
 
@@ -3237,9 +3266,14 @@ router.get('/ops/automation', cacheMiddleware(600), async (req, res) => {
             SELECT
                 to_char(m.month_start, 'YYYY-MM') AS month,
                 COUNT(t.id)::int AS alarms,
-                COUNT(t.id) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)::int AS auto_resolved,
-                ROUND(100.0 * COUNT(t.id) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)
-                      / NULLIF(COUNT(t.id), 0), 1) AS auto_resolution_rate
+                COUNT(t.id) FILTER (
+                    WHERE t.tags @> '["alarm_cleared"]'::jsonb
+                       OR t.tags @> '["closed_by_merge"]'::jsonb
+                )::int AS handled,
+                ROUND(100.0 * COUNT(t.id) FILTER (
+                        WHERE t.tags @> '["alarm_cleared"]'::jsonb
+                           OR t.tags @> '["closed_by_merge"]'::jsonb)
+                      / NULLIF(COUNT(t.id), 0), 1) AS handled_rate
             FROM months m
             LEFT JOIN tickets t
               ON t.solved_at::date >= m.month_start
@@ -3255,9 +3289,14 @@ router.get('/ops/automation', cacheMiddleware(600), async (req, res) => {
             SELECT
                 src.name,
                 COUNT(*)::int AS alarms,
-                COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) > 0)::int AS escalated,
-                ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) = 0)
-                      / NULLIF(COUNT(*), 0), 1) AS auto_resolution_rate,
+                COUNT(*) FILTER (
+                    WHERE NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                      AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                )::int AS needed_a_human,
+                ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE t.tags @> '["alarm_cleared"]'::jsonb
+                           OR t.tags @> '["closed_by_merge"]'::jsonb)
+                      / NULLIF(COUNT(*), 0), 1) AS handled_rate,
                 ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (
                         ORDER BY t.resolution_minutes))::int AS median_close_minutes
             FROM tickets t
