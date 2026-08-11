@@ -2407,6 +2407,16 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                   WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
                     ${groupClause})::int AS solved,
 
+                    (SELECT COUNT(*) FROM tickets t
+                  WHERE t.created_at::date BETWEEN w.from_date AND w.to_date
+                    AND (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause})::int AS created_alarm,
+
+                (SELECT COUNT(*) FROM tickets t
+                  WHERE t.created_at::date BETWEEN w.from_date AND w.to_date
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause})::int AS created_human,
+
                 -- Human-only compliance against the published targets.
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
@@ -2616,6 +2626,16 @@ router.get('/ops/trend', cacheMiddleware(600), async (req, res) => {
                 (SELECT COUNT(*) FROM tickets t
                   WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
                     ${groupClause})::int AS solved,
+
+                    (SELECT COUNT(*) FROM tickets t
+                  WHERE t.created_at::date BETWEEN w.month_start AND w.month_end
+                    AND (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause})::int AS created_alarm,
+
+                (SELECT COUNT(*) FROM tickets t
+                  WHERE t.created_at::date BETWEEN w.month_start AND w.month_end
+                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                    ${groupClause})::int AS created_human,
 
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
