@@ -189,6 +189,9 @@ async function syncTickets() {
     await updateSyncStatus('tickets', 'syncing');
     
     let totalTicketsSynced = 0;
+    // Counted separately from saved: the gap between them is what distinguishes
+    // "nothing changed in Zendesk" from "every insert failed".
+    let totalTicketsFetched = 0;
     let page = 1;
     let hasMore = true;
     let endOfStream = false;
@@ -203,6 +206,7 @@ async function syncTickets() {
       const data = await makeZendeskRequest(url);
 
       if (data.tickets && data.tickets.length > 0) {
+        totalTicketsFetched += data.tickets.length;
         // Extract metric_sets from response and create lookup map
         const metricSetsMap = new Map();
         if (data.metric_sets && data.metric_sets.length > 0) {
@@ -346,6 +350,18 @@ async function syncTickets() {
       }
     }
     
+    // Every INSERT failing is a schema problem, not a bad ticket - and the
+    // per-ticket catch above cannot tell the difference. Advancing the cursor
+    // here is how 2,522 tickets went missing over twelve days in August 2026:
+    // the sync reported success while writing nothing. Leave the cursor where
+    // it is so the next run retries the same window.
+    if (totalTicketsFetched > 0 && totalTicketsSynced === 0) {
+      const msg = `Fetched ${totalTicketsFetched} tickets, saved 0 - cursor not advanced. Check the INSERT column and placeholder counts.`;
+      console.error(`❌ ${msg}`);
+      await updateSyncStatus('tickets', 'error', msg, 0, false);
+      return { synced: 0, failed: true, message: msg };
+    }
+
     // FIXED: Only update timestamp if we reached end_of_stream
     if (endOfStream) {
       await updateSyncStatus('tickets', 'success', null, totalTicketsSynced, true);
