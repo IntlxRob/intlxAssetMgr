@@ -1,5 +1,11 @@
 // db.js - PostgreSQL Connection Helper
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// OID 1114 is TIMESTAMP WITHOUT TIME ZONE. The driver parses those as LOCAL
+// time, so toISOString() then adds the offset - a row stored as
+// 2026-08-17 23:57 came back as 2026-08-18T03:57Z, four hours late and on the
+// wrong day. These columns hold UTC, so parse them as UTC.
+types.setTypeParser(1114, (str) => new Date(str.replace(' ', 'T') + 'Z'));
 
 let pool = null;
 
