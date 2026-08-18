@@ -578,6 +578,59 @@ async function syncGroups() {
   }
 }
 
+/**
+ * Group memberships.
+ *
+ * Replaced wholesale each run rather than reconciled: a few hundred rows, and
+ * a membership removed in Zendesk should disappear here rather than linger.
+ * Wrapped in a transaction so a failure mid-way leaves the previous set intact
+ * instead of an empty table.
+ */
+async function syncGroupMemberships() {
+  console.log('\n\u{1F465} Starting group membership sync...');
+  await updateSyncStatus('group_memberships', 'syncing');
+
+  try {
+    let url = ZENDESK_API_BASE + '/group_memberships.json?per_page=100';
+    const rows = [];
+
+    while (url) {
+      const data = await makeZendeskRequest(url);
+      for (const m of (data.group_memberships || [])) {
+        rows.push([m.id, m.user_id, m.group_id, m.default === true]);
+      }
+      url = data.next_page;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM group_memberships');
+      for (const r of rows) {
+        await client.query(
+          'INSERT INTO group_memberships (id, agent_id, group_id, is_default) ' +
+          'VALUES ($1, $2, $3, $4) ON CONFLICT (agent_id, group_id) DO NOTHING',
+          r
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    console.log('\u2705 Group membership sync completed: ' + rows.length + ' synced');
+    await updateSyncStatus('group_memberships', 'success', null, rows.length, true);
+    return { synced: rows.length };
+  } catch (error) {
+    console.error('Group membership sync failed:', error.message);
+    await updateSyncStatus('group_memberships', 'error', error.message);
+    throw error;
+  }
+}
+
 // ============================================
 // ANALYTICS AGGREGATION FUNCTIONS (NEW)
 // ============================================
@@ -1183,6 +1236,7 @@ module.exports = {
   syncOrganizations,
   syncAgents,
   syncGroups,
+  syncGroupMemberships,
   syncTimeEntries,
   aggregateDailyAnalytics,
   aggregateWeeklyAgentPerformance,
