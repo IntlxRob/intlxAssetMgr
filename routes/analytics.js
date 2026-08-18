@@ -669,6 +669,80 @@ router.get('/agents/workload', cacheMiddleware(120), async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/agents/ticket-time
+ *
+ * Share of a nominal working week spent on tickets, per agent, with logging
+ * coverage beside it.
+ *
+ * The two figures are inseparable. Share alone reads as workload; coverage
+ * alone reads as compliance. Together they say either "this agent is at 19% and
+ * we trust it" or "this agent is at 6% and we do not".
+ */
+router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'startDate and endDate required' });
+        }
+
+        const result = await query(`
+            WITH bounds AS (
+                SELECT $1::date AS from_date, $2::date AS to_date
+            ),
+            working AS (
+                -- Business days times eight. PTO is not visible to us, so this
+                -- is nominal capacity rather than actual availability.
+                SELECT COUNT(*) FILTER (
+                         WHERE EXTRACT(ISODOW FROM d) < 6
+                       )::int * 8 AS available_hours
+                  FROM bounds b,
+                       generate_series(b.from_date, b.to_date, interval '1 day') d
+            ),
+            scoped AS (
+                SELECT t.assignee_id, t.assignee_name, t.group_id,
+                       t.billable_time_minutes
+                  FROM tickets t
+                  JOIN groups g ON g.id = t.group_id
+                  CROSS JOIN bounds b
+                 WHERE t.solved_at >= b.from_date
+                   AND t.solved_at < b.to_date + interval '1 day'
+                   AND t.assignee_id IS NOT NULL
+                   AND g.expects_time_logging
+                   AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM automation_accounts a
+                      WHERE a.agent_id = t.assignee_id
+                   )
+            )
+            SELECT
+                s.assignee_id,
+                s.assignee_name,
+                COUNT(*)::int AS tickets,
+                COUNT(*) FILTER (WHERE COALESCE(s.billable_time_minutes,0) > 0)::int
+                    AS tickets_logged,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(s.billable_time_minutes,0) > 0)
+                      / NULLIF(COUNT(*), 0)) AS coverage_pct,
+                ROUND((SUM(s.billable_time_minutes) / 60.0)::numeric, 1) AS hours_logged,
+                w.available_hours,
+                ROUND(100.0 * (SUM(s.billable_time_minutes) / 60.0)
+                      / NULLIF(w.available_hours, 0), 1) AS ticket_time_pct
+            FROM scoped s, working w
+            GROUP BY s.assignee_id, s.assignee_name, w.available_hours
+            HAVING COUNT(*) >= 5
+            ORDER BY SUM(s.billable_time_minutes) DESC NULLS LAST
+        `, [startDate, endDate]);
+
+        res.json({
+            agents: result.rows,
+            available_hours: result.rows[0]?.available_hours ?? null,
+            note: 'Share of a nominal 40-hour week spent on tickets — not utilization. Project work and meetings are not visible, and PTO is not deducted. Groups that do not track time on tickets are excluded. Read coverage alongside the share: a low share with low coverage means unrecorded work rather than a light week.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * GET /api/analytics/open/aging
  *
  * Open tickets ranked by how far past their resolution target they are.
