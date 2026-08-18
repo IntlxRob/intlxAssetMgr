@@ -30,7 +30,11 @@ function buildWhereClause(filters = {}, options = {}) {
         params.push(filters.startDate);
     }
     if (filters.endDate) {
-        conditions.push(`${dateField} <= $${paramIndex++}`);
+        // Exclusive upper bound at the following midnight. A bare date compared
+        // with <= against a timestamp means midnight, so the last day of every
+        // range was being excluded - a same-day filter matched only tickets
+        // created at exactly 00:00:00, and a month range covered 30 days.
+        conditions.push(`${dateField} < ($${paramIndex++}::date + interval '1 day')`);
         params.push(filters.endDate);
     }
 
