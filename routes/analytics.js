@@ -499,9 +499,46 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
             LIMIT ${byGroup ? 500 : 100}
         `, params);
 
+        let agents = result.rows;
+
+        if (byGroup) {
+            // Membership is a fact about people; activity is not. Without this
+            // an agent who took no tickets vanishes from their own team - and
+            // Engineering has seven such people, which is what a roster should
+            // surface rather than hide.
+            const roster = await query(
+                'SELECT gm.group_id, gm.agent_id, a.name AS assignee_name ' +
+                '  FROM group_memberships gm ' +
+                '  JOIN agents a ON a.id = gm.agent_id ' +
+                ' WHERE NOT EXISTS (SELECT 1 FROM automation_accounts aa ' +
+                '                    WHERE aa.agent_id = gm.agent_id)'
+            );
+
+            const seen = new Set(agents.map(a => a.group_id + ':' + a.assignee_id));
+            for (const r of roster.rows) {
+                if (seen.has(r.group_id + ':' + r.agent_id)) continue;
+                // Counts zero, rates null. An agent with no tickets has no
+                // compliance rate, and 0% would read as failure rather than
+                // absence.
+                agents.push({
+                    group_id: r.group_id,
+                    assignee_id: r.agent_id,
+                    assignee_name: r.assignee_name,
+                    total_tickets: 0, solved_tickets: 0,
+                    human_tickets: 0, alarm_tickets: 0, resolved_human: 0,
+                    actual_hours: '0.0', billed_hours: '0.0',
+                    avg_hours_per_human_ticket: null,
+                    one_touch_pct: null, two_touch_pct: null, multi_touch_pct: null,
+                    avg_replies: null, avg_first_reply_minutes: null,
+                    avg_resolution_minutes: null,
+                    response_compliance: null, resolution_compliance: null
+                });
+            }
+        }
+
         res.json({
-            agents: result.rows,
-            count: result.rows.length,
+            agents,
+            count: agents.length,
             note: 'Automation accounts excluded. SLA figures cover human-originated tickets only.'
         });
     } catch (error) {
@@ -931,7 +968,16 @@ router.get('/groups/performance', cacheMiddleware(300), async (req, res) => {
                 COUNT(*)::int AS total_tickets,
                 COUNT(*) FILTER (WHERE NOT is_alarm)::int AS human_tickets,
                 COUNT(*) FILTER (WHERE is_alarm)::int AS alarm_tickets,
-                COUNT(DISTINCT assignee_id)::int AS agents,
+                -- Roster, not activity: counting distinct assignees reported
+                -- "Support: 1 agent" for a group of eleven, because ten of them
+                -- took no tickets. Membership is the honest denominator.
+                (SELECT COUNT(*)::int FROM group_memberships gm
+                  WHERE gm.group_id = sc.group_id
+                    AND NOT EXISTS (
+                      SELECT 1 FROM automation_accounts aa
+                       WHERE aa.agent_id = gm.agent_id
+                    )) AS agents,
+                COUNT(DISTINCT assignee_id)::int AS agents_active,
                 COUNT(*) FILTER (WHERE status IN ('solved','closed'))::int AS resolved_tickets,
 
                 ROUND((SUM(billable_time_minutes) / 60.0)::numeric, 1) AS actual_hours,
