@@ -1166,7 +1166,9 @@ function scheduleSync() {
 
   cron.schedule(SYNC_CONFIG.schedules.groups, () => {
     console.log('\nRunning scheduled group sync...');
-    syncGroups().catch(err => console.error('Scheduled group sync error:', err));
+    syncGroups()
+      .then(() => syncGroupMemberships())
+      .catch(err => console.error('Scheduled group sync error:', err));
   });
 
   cron.schedule('*/15 * * * *', () => {
@@ -1215,6 +1217,7 @@ function scheduleSync() {
       syncOrganizations(),
       syncAgents(),
       syncGroups(),
+      syncGroupMemberships(),
       syncCustomStatuses(pool)
     ]).then(() => {
       console.log('Initial sync of orgs/agents/groups complete');
