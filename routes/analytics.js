@@ -2398,22 +2398,22 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
 
                 -- Created in the window, on creation date.
                 (SELECT COUNT(*) FROM tickets t
-                  WHERE t.created_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.created_at >= w.from_date AND t.created_at < w.to_date + interval '1 day'
                     ${groupClause})::int AS created,
 
                 -- Solved in the window, on solve date — a ticket opened in June
                 -- and closed in July counts toward July.
                 (SELECT COUNT(*) FROM tickets t
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     ${groupClause})::int AS solved,
 
                     (SELECT COUNT(*) FROM tickets t
-                  WHERE t.created_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.created_at >= w.from_date AND t.created_at < w.to_date + interval '1 day'
                     AND (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause})::int AS created_alarm,
 
                 (SELECT COUNT(*) FROM tickets t
-                  WHERE t.created_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.created_at >= w.from_date AND t.created_at < w.to_date + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause})::int AS created_human,
 
@@ -2421,7 +2421,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
                    FROM tickets t JOIN tickets_sla s ON s.id = t.id
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS response_compliance,
 
@@ -2432,20 +2432,20 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
                    FROM tickets t JOIN tickets_sla s ON s.id = t.id
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     ${groupClause}) AS response_compliance_all,
 
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
                    FROM tickets t JOIN tickets_sla s ON s.id = t.id
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS resolution_compliance,
 
                     (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
                    FROM tickets t JOIN tickets_sla s ON s.id = t.id
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     ${groupClause}) AS resolution_compliance_all,
 
                 -- Both one-touch figures. Including alarms matches the existing
@@ -2454,13 +2454,13 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count,0) <= 1)
                         / NULLIF(COUNT(*), 0), 1)
                    FROM tickets t
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     ${groupClause}) AS one_touch_all,
 
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count,0) <= 1)
                         / NULLIF(COUNT(*), 0), 1)
                    FROM tickets t
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS one_touch_human,
 
@@ -2471,7 +2471,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                         / NULLIF(COUNT(*) FILTER (WHERE t.requester_wait_time_minutes IS NOT NULL), 0), 1)
                    FROM tickets t
                    LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS wait_time_compliance,
 
@@ -2480,7 +2480,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                         / NULLIF(COUNT(*) FILTER (WHERE t.requester_wait_time_minutes IS NOT NULL), 0), 1)
                    FROM tickets t
                    LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
-                  WHERE t.solved_at::date BETWEEN w.from_date AND w.to_date
+                  WHERE t.solved_at >= w.from_date AND t.solved_at < w.to_date + interval '1 day'
                     ${groupClause}) AS wait_time_compliance_all,
 
                     -- Periodic update: gaps between consecutive PUBLIC agent
@@ -2508,7 +2508,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                        LEFT JOIN sla_targets tg
                               ON tg.priority = COALESCE(t.priority, 'normal')
                       WHERE p.prev IS NOT NULL
-                        AND p.created_at::date BETWEEN w.from_date AND w.to_date
+                        AND p.created_at >= w.from_date AND p.created_at < w.to_date + interval '1 day'
                         AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                         ${groupClause}
                    ) g) AS update_compliance,
@@ -2535,7 +2535,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                        LEFT JOIN sla_targets tg
                               ON tg.priority = COALESCE(t.priority, 'normal')
                       WHERE p.prev IS NOT NULL
-                        AND p.created_at::date BETWEEN w.from_date AND w.to_date
+                        AND p.created_at >= w.from_date AND p.created_at < w.to_date + interval '1 day'
                         ${groupClause}
                    ) g) AS update_compliance_all
 
@@ -2620,34 +2620,34 @@ router.get('/ops/trend', cacheMiddleware(600), async (req, res) => {
                 to_char(w.month_start, 'YYYY-MM') AS month,
 
                 (SELECT COUNT(*) FROM tickets t
-                  WHERE t.created_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.created_at >= w.month_start AND t.created_at < w.month_end + interval '1 day'
                     ${groupClause})::int AS created,
 
                 (SELECT COUNT(*) FROM tickets t
-                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.solved_at >= w.month_start AND t.solved_at < w.month_end + interval '1 day'
                     ${groupClause})::int AS solved,
 
                     (SELECT COUNT(*) FROM tickets t
-                  WHERE t.created_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.created_at >= w.month_start AND t.created_at < w.month_end + interval '1 day'
                     AND (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause})::int AS created_alarm,
 
                 (SELECT COUNT(*) FROM tickets t
-                  WHERE t.created_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.created_at >= w.month_start AND t.created_at < w.month_end + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause})::int AS created_human,
 
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.response_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.response_met IS NOT NULL), 0), 1)
                    FROM tickets t JOIN tickets_sla s ON s.id = t.id
-                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.solved_at >= w.month_start AND t.solved_at < w.month_end + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS response_compliance,
 
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE s.resolution_met)
                         / NULLIF(COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL), 0), 1)
                    FROM tickets t JOIN tickets_sla s ON s.id = t.id
-                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.solved_at >= w.month_start AND t.solved_at < w.month_end + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS resolution_compliance,
 
@@ -2656,14 +2656,14 @@ router.get('/ops/trend', cacheMiddleware(600), async (req, res) => {
                         / NULLIF(COUNT(*) FILTER (WHERE t.requester_wait_time_minutes IS NOT NULL), 0), 1)
                    FROM tickets t
                    LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
-                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.solved_at >= w.month_start AND t.solved_at < w.month_end + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS wait_time_compliance,
 
                 (SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(t.reply_count,0) <= 1)
                         / NULLIF(COUNT(*), 0), 1)
                    FROM tickets t
-                  WHERE t.solved_at::date BETWEEN w.month_start AND w.month_end
+                  WHERE t.solved_at >= w.month_start AND t.solved_at < w.month_end + interval '1 day'
                     AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                     ${groupClause}) AS one_touch_human,
 
@@ -2683,7 +2683,7 @@ router.get('/ops/trend', cacheMiddleware(600), async (req, res) => {
                        LEFT JOIN sla_targets tg
                               ON tg.priority = COALESCE(t.priority,'normal')
                       WHERE p.prev IS NOT NULL
-                        AND p.created_at::date BETWEEN w.month_start AND w.month_end
+                        AND p.created_at >= w.month_start AND p.created_at < w.month_end + interval '1 day'
                         AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                         ${groupClause}
                    ) g) AS update_compliance
@@ -3276,8 +3276,8 @@ router.get('/ops/automation', cacheMiddleware(600), async (req, res) => {
                       / NULLIF(COUNT(t.id), 0), 1) AS handled_rate
             FROM months m
             LEFT JOIN tickets t
-              ON t.solved_at::date >= m.month_start
-             AND t.solved_at::date < (m.month_start + interval '1 month')
+              ON t.solved_at >= m.month_start
+             AND t.solved_at < (m.month_start + interval '1 month')
              AND ${isAlarm}
             GROUP BY m.month_start
             ORDER BY m.month_start
