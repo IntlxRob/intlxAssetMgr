@@ -727,17 +727,15 @@ router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
                    AND te.created_at > t.created_at + interval '1 minute'
                  GROUP BY te.agent_id
             ),
-            resolved AS (
+                        resolved AS (
                 -- Human tickets plus alarms that actually reached a person.
                 -- Excluding alarm work entirely made the most active person on
                 -- the team look idle: Greg Garabedian shows 3 human tickets
                 -- against 1,134 handled alarms, 93% of them with logged time.
                 --
                 -- Self-cleared and merged alarms are excluded because nobody
-                -- touched them, and counting those would read as a team-wide
-                -- logging failure rather than as automation working. Alarms
-                -- closed with no time recorded stay in: that is exactly what a
-                -- coverage metric should surface, not define away.
+                -- touched them, and counting them would read as a team-wide
+                -- logging failure rather than as automation working.
                 SELECT t.assignee_id,
                        COUNT(*)::int AS tickets,
                        COUNT(*) FILTER (
@@ -753,6 +751,8 @@ router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
                   JOIN groups g ON g.id = t.group_id
                   CROSS JOIN bounds b
                  WHERE t.solved_at >= b.from_date
+                   COALESCE(r.human_tickets, 0) AS human_tickets,
+                   COALESCE(r.alarm_tickets, 0) AS alarm_tickets,
                    AND t.solved_at < b.to_date + interval '1 day'
                    AND t.assignee_id IS NOT NULL
                    AND g.expects_time_logging
@@ -771,8 +771,6 @@ router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
                 a.name AS assignee_name,
                 COALESCE(r.tickets, 0) AS tickets,
                 COALESCE(r.tickets_logged, 0) AS tickets_logged,
-                COALESCE(r.human_tickets, 0) AS human_tickets,
-                COALESCE(r.alarm_tickets, 0) AS alarm_tickets,
                 CASE WHEN COALESCE(r.tickets, 0) > 0
                      THEN ROUND(100.0 * r.tickets_logged / r.tickets)
                 END AS coverage_pct,
@@ -3509,6 +3507,183 @@ router.get('/ops/automation', cacheMiddleware(600), async (req, res) => {
             days,
             as_of: new Date().toISOString()
         });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/agents/day
+ *
+ * One day per agent, split four ways. Each count carries its own date basis
+ * rather than inheriting one from a filter, because the questions genuinely
+ * differ: "what came in" is a created-date question and "what got finished" is
+ * a solved-date one. Forcing them onto a single basis is what made the period
+ * table contradict itself.
+ *
+ * Hours span all four buckets — they are the day's total, wherever it went.
+ */
+router.get('/agents/day', cacheMiddleware(120), async (req, res) => {
+    try {
+        const day = req.query.date || new Date().toISOString().slice(0, 10);
+        const to = req.query.endDate || day;   // week-to-date uses a range
+
+        const result = await query(`
+            WITH bounds AS (
+                SELECT $1::date AS from_date, $2::date AS to_date
+            ),
+            -- Alarms that reached a person. Same rule as the coverage metric:
+            -- self-cleared and merged alarms are the platform working, not
+            -- someone's day.
+            handled AS (
+                SELECT t.*, b.from_date, b.to_date
+                  FROM tickets t
+                  CROSS JOIN bounds b
+                 WHERE t.assignee_id IS NOT NULL
+                   AND (
+                     NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                     OR (
+                       NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                       AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                       AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                     )
+                   )
+            ),
+            counts AS (
+                SELECT
+                    h.assignee_id,
+
+                    COUNT(*) FILTER (
+                      WHERE h.created_at >= h.from_date
+                        AND h.created_at < h.to_date + interval '1 day'
+                    )::int AS new_assigned,
+
+                    COUNT(*) FILTER (
+                      WHERE h.created_at >= h.from_date
+                        AND h.created_at < h.to_date + interval '1 day'
+                        AND h.solved_at  >= h.from_date
+                        AND h.solved_at  < h.to_date + interval '1 day'
+                    )::int AS solved_same_day,
+
+                    COUNT(*) FILTER (
+                      WHERE h.solved_at >= h.from_date
+                        AND h.solved_at < h.to_date + interval '1 day'
+                        AND h.created_at < h.from_date
+                    )::int AS older_solved
+
+                  FROM handled h
+                 GROUP BY h.assignee_id
+            ),
+            -- Worked but not closed: time logged in the window against a
+            -- ticket that is still open. Nothing else in the app sees this.
+            worked_open AS (
+                SELECT te.agent_id AS assignee_id,
+                       COUNT(DISTINCT te.ticket_id)::int AS worked_still_open
+                  FROM ticket_time_entries te
+                  JOIN tickets t ON t.id = te.ticket_id
+                  CROSS JOIN bounds b
+                 WHERE te.created_at >= b.from_date
+                   AND te.created_at < b.to_date + interval '1 day'
+                   AND te.created_at > t.created_at + interval '1 minute'
+                   AND t.status NOT IN ('solved','closed','deleted')
+                 GROUP BY te.agent_id
+            ),
+            hours AS (
+                SELECT te.agent_id AS assignee_id,
+                       ROUND((SUM(te.time_seconds) / 3600.0)::numeric, 1) AS hours_logged
+                  FROM ticket_time_entries te
+                  JOIN tickets t ON t.id = te.ticket_id
+                  CROSS JOIN bounds b
+                 WHERE te.created_at >= b.from_date
+                   AND te.created_at < b.to_date + interval '1 day'
+                   -- Machine-written entries. See the guard on
+                   -- /agents/ticket-time for why this is a timing test.
+                   AND te.created_at > t.created_at + interval '1 minute'
+                 GROUP BY te.agent_id
+            )
+            SELECT
+                a.id AS assignee_id,
+                a.name AS assignee_name,
+                COALESCE(c.new_assigned, 0)      AS new_assigned,
+                COALESCE(c.solved_same_day, 0)   AS solved_same_day,
+                COALESCE(c.older_solved, 0)      AS older_solved,
+                COALESCE(w.worked_still_open, 0) AS worked_still_open,
+                COALESCE(h.hours_logged, 0)      AS hours_logged
+            FROM agents a
+            LEFT JOIN counts c      ON c.assignee_id = a.id
+            LEFT JOIN worked_open w ON w.assignee_id = a.id
+            LEFT JOIN hours h       ON h.assignee_id = a.id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id
+            )
+              -- Nothing in any bucket means the agent had no day here. Listing
+              -- them as four zeros would imply idleness rather than absence.
+              AND (c.assignee_id IS NOT NULL OR w.assignee_id IS NOT NULL
+                   OR h.assignee_id IS NOT NULL)
+            ORDER BY COALESCE(h.hours_logged, 0) DESC,
+                     COALESCE(c.new_assigned, 0) DESC
+        `, [day, to]);
+
+        res.json({ agents: result.rows, from: day, to, as_of: new Date().toISOString() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/analytics/agents/day/tickets?agentId=&date=&bucket=
+ *
+ * The tickets behind one bucket for one agent. Fetched on expand rather than
+ * bundled into /agents/day, which would carry hundreds of rows nobody opens.
+ */
+router.get('/agents/day/tickets', cacheMiddleware(120), async (req, res) => {
+    try {
+        const { agentId, bucket } = req.query;
+        const day = req.query.date || new Date().toISOString().slice(0, 10);
+        const to = req.query.endDate || day;
+        if (!agentId || !bucket) {
+            return res.status(400).json({ error: 'agentId and bucket required' });
+        }
+
+        const clauses = {
+            new_solved: `t.created_at >= $2 AND t.created_at < $3::date + interval '1 day'
+                         AND t.solved_at >= $2 AND t.solved_at < $3::date + interval '1 day'`,
+            new_open:   `t.created_at >= $2 AND t.created_at < $3::date + interval '1 day'
+                         AND (t.solved_at IS NULL
+                              OR t.solved_at >= $3::date + interval '1 day')`,
+            older_solved: `t.solved_at >= $2 AND t.solved_at < $3::date + interval '1 day'
+                           AND t.created_at < $2`,
+            worked_open: `t.status NOT IN ('solved','closed','deleted')
+                          AND EXISTS (
+                            SELECT 1 FROM ticket_time_entries te
+                             WHERE te.ticket_id = t.id
+                               AND te.agent_id = t.assignee_id
+                               AND te.created_at >= $2
+                               AND te.created_at < $3::date + interval '1 day'
+                               AND te.created_at > t.created_at + interval '1 minute'
+                          )`
+        }[bucket];
+
+        if (!clauses) return res.status(400).json({ error: 'unknown bucket' });
+
+        const result = await query(`
+            SELECT t.id, t.subject, t.status, t.created_at, t.solved_at,
+                   t.organization_name,
+                   (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm,
+                   ROUND((COALESCE((
+                     SELECT SUM(te.time_seconds) FROM ticket_time_entries te
+                      WHERE te.ticket_id = t.id
+                        AND te.created_at >= $2
+                        AND te.created_at < $3::date + interval '1 day'
+                   ), 0) / 3600.0)::numeric, 1) AS hours_today
+              FROM tickets t
+             WHERE t.assignee_id = $1::bigint
+               AND ${clauses}
+             ORDER BY t.solved_at DESC NULLS LAST, t.created_at DESC
+             LIMIT 50
+        `, [agentId, day, to]);
+
+        res.json({ tickets: result.rows, bucket, count: result.rows.length });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
