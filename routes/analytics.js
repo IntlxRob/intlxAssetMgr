@@ -411,6 +411,13 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
 
         const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
 
+        // The open-worked CTE needs the raw dates, which buildWhereClause keeps
+        // inside its generated SQL. Appending them rather than threading them
+        // through leaves the existing query untouched.
+        const dFrom = `$${params.length + 1}`;
+        const dTo   = `$${params.length + 2}`;
+        params.push(filters.startDate || '1970-01-01', filters.endDate || '2999-12-31');
+
         const result = await query(`
             WITH scoped AS (
                 SELECT
@@ -437,6 +444,26 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
                       SELECT 1 FROM automation_accounts a WHERE a.agent_id = t.assignee_id
                   )
                   ${whereClause}
+            ),
+            -- Tickets still open that the agent logged time against in the
+            -- period. The only measure here of effort rather than outcome: an
+            -- agent can spend a day on held tickets and show nothing solved.
+            --
+            -- Keyed on when the time was logged, which is a different basis
+            -- from the rest of the row and unavoidably so - work in progress is
+            -- defined by when the work happened.
+            open_worked AS (
+                SELECT te.agent_id,
+                       COUNT(DISTINCT te.ticket_id)::int AS n
+                  FROM ticket_time_entries te
+                  JOIN tickets t ON t.id = te.ticket_id
+                 WHERE te.created_at >= ${dFrom}::date
+                   AND te.created_at <  ${dTo}::date + interval '1 day'
+                   -- Machine-written entries; see the guard on
+                   -- /agents/ticket-time.
+                   AND te.created_at >  t.created_at + interval '1 minute'
+                   AND t.status NOT IN ('solved','closed','deleted')
+                 GROUP BY te.agent_id
             )
             SELECT
                 assignee_id,
@@ -447,6 +474,9 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
                 COUNT(*) FILTER (WHERE NOT is_alarm)::int AS human_tickets,
                 COUNT(*) FILTER (WHERE is_alarm)::int AS alarm_tickets,
                 COUNT(*) FILTER (WHERE status IN ('solved','closed'))::int AS solved_tickets,
+                -- The other half of the pair: what they are carrying, not
+                -- what they finished.
+                COALESCE(MAX(ow.n), 0)::int AS open_worked,
 
                 COUNT(*) FILTER (WHERE is_billable)::int AS billable_tickets,
                 ROUND((SUM(billable_time_minutes) / 60.0)::numeric, 1) AS actual_hours,
@@ -494,6 +524,7 @@ router.get('/agents/performance', cacheMiddleware(300), async (req, res) => {
                     AS resolution_compliance
 
             FROM scoped
+            LEFT JOIN open_worked ow ON ow.agent_id = scoped.assignee_id
             GROUP BY assignee_id, assignee_name${byGroup ? ', group_id' : ''}
             ORDER BY SUM(billable_time_minutes) DESC NULLS LAST
             LIMIT ${byGroup ? 500 : 100}
