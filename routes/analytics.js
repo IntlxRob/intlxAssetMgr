@@ -674,9 +674,14 @@ router.get('/agents/workload', cacheMiddleware(120), async (req, res) => {
  * Share of a nominal working week spent on tickets, per agent, with logging
  * coverage beside it.
  *
- * The two figures are inseparable. Share alone reads as workload; coverage
- * alone reads as compliance. Together they say either "this agent is at 19% and
- * we trust it" or "this agent is at 6% and we do not".
+ * Hours come from ticket_time_entries rather than the ticket field: entries
+ * carry the date the time was logged and the agent who logged it, so a day
+ * means that day and someone who helps on a colleague's ticket gets the credit.
+ * Summing the ticket field instead would attribute a week's work to whichever
+ * day the ticket happened to close.
+ *
+ * Coverage stays on tickets, because "what share of resolved tickets had time
+ * logged" is a question about tickets.
  */
 router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
     try {
@@ -690,17 +695,60 @@ router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
                 SELECT $1::date AS from_date, $2::date AS to_date
             ),
             working AS (
-                -- Business days times eight. PTO is not visible to us, so this
-                -- is nominal capacity rather than actual availability.
-                SELECT COUNT(*) FILTER (
+                -- Business days times eight. PTO is invisible to us, so this is
+                -- nominal capacity rather than actual availability — and over a
+                -- single day it is simply 8.
+                SELECT GREATEST(COUNT(*) FILTER (
                          WHERE EXTRACT(ISODOW FROM d) < 6
-                       )::int * 8 AS available_hours
+                       ), 1)::int * 8 AS available_hours
                   FROM bounds b,
                        generate_series(b.from_date, b.to_date, interval '1 day') d
             ),
-            scoped AS (
-                SELECT t.assignee_id, t.assignee_name, t.group_id,
-                       t.billable_time_minutes
+            logged AS (
+                -- Keyed on when the entry was made, not when the ticket closed.
+                SELECT te.agent_id,
+                       SUM(te.time_seconds) / 3600.0 AS hours
+                  FROM ticket_time_entries te
+                  JOIN tickets t ON t.id = te.ticket_id
+                  CROSS JOIN bounds b
+                 WHERE te.created_at >= b.from_date
+                   AND te.created_at < b.to_date + interval '1 day'
+                   AND te.agent_id IS NOT NULL
+                   -- Machine-written entries. In August 2026 something wrote
+                   -- 1800 seconds to 238 alarm tickets within six seconds of
+                   -- their creation — 119 hours nobody worked, half of it on
+                   -- alarms that self-cleared. One agent showed 97.6 hours in
+                   -- a day.
+                   --
+                   -- A timing test rather than a value or tag test: those
+                   -- would be brittle, and nobody logs real work within a
+                   -- minute of a ticket existing whatever the value. This
+                   -- catches the next occurrence too.
+                   AND te.created_at > t.created_at + interval '1 minute'
+                 GROUP BY te.agent_id
+            ),
+            resolved AS (
+                -- Human tickets plus alarms that actually reached a person.
+                -- Excluding alarm work entirely made the most active person on
+                -- the team look idle: Greg Garabedian shows 3 human tickets
+                -- against 1,134 handled alarms, 93% of them with logged time.
+                --
+                -- Self-cleared and merged alarms are excluded because nobody
+                -- touched them, and counting those would read as a team-wide
+                -- logging failure rather than as automation working. Alarms
+                -- closed with no time recorded stay in: that is exactly what a
+                -- coverage metric should surface, not define away.
+                SELECT t.assignee_id,
+                       COUNT(*)::int AS tickets,
+                       COUNT(*) FILTER (
+                         WHERE COALESCE(t.billable_time_minutes, 0) > 0
+                       )::int AS tickets_logged,
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS human_tickets,
+                       COUNT(*) FILTER (
+                         WHERE (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS alarm_tickets
                   FROM tickets t
                   JOIN groups g ON g.id = t.group_id
                   CROSS JOIN bounds b
@@ -708,34 +756,48 @@ router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
                    AND t.solved_at < b.to_date + interval '1 day'
                    AND t.assignee_id IS NOT NULL
                    AND g.expects_time_logging
-                   AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
-                   AND NOT EXISTS (
-                     SELECT 1 FROM automation_accounts a
-                      WHERE a.agent_id = t.assignee_id
+                   AND (
+                     NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                     OR (
+                       NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                       AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                       AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                     )
                    )
+                 GROUP BY t.assignee_id
             )
             SELECT
-                s.assignee_id,
-                s.assignee_name,
-                COUNT(*)::int AS tickets,
-                COUNT(*) FILTER (WHERE COALESCE(s.billable_time_minutes,0) > 0)::int
-                    AS tickets_logged,
-                ROUND(100.0 * COUNT(*) FILTER (WHERE COALESCE(s.billable_time_minutes,0) > 0)
-                      / NULLIF(COUNT(*), 0)) AS coverage_pct,
-                ROUND((SUM(s.billable_time_minutes) / 60.0)::numeric, 1) AS hours_logged,
+                a.id AS assignee_id,
+                a.name AS assignee_name,
+                COALESCE(r.tickets, 0) AS tickets,
+                COALESCE(r.tickets_logged, 0) AS tickets_logged,
+                COALESCE(r.human_tickets, 0) AS human_tickets,
+                COALESCE(r.alarm_tickets, 0) AS alarm_tickets,
+                CASE WHEN COALESCE(r.tickets, 0) > 0
+                     THEN ROUND(100.0 * r.tickets_logged / r.tickets)
+                END AS coverage_pct,
+                ROUND(COALESCE(l.hours, 0)::numeric, 1) AS hours_logged,
                 w.available_hours,
-                ROUND(100.0 * (SUM(s.billable_time_minutes) / 60.0)
-                      / NULLIF(w.available_hours, 0), 1) AS ticket_time_pct
-            FROM scoped s, working w
-            GROUP BY s.assignee_id, s.assignee_name, w.available_hours
-            HAVING COUNT(*) >= 5
-            ORDER BY SUM(s.billable_time_minutes) DESC NULLS LAST
+                ROUND(100.0 * COALESCE(l.hours, 0) / NULLIF(w.available_hours, 0), 1)
+                    AS ticket_time_pct
+            FROM agents a
+            CROSS JOIN working w
+            LEFT JOIN logged l ON l.agent_id = a.id
+            LEFT JOIN resolved r ON r.assignee_id = a.id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id
+            )
+              -- Someone with neither logged time nor resolved tickets in the
+              -- window has nothing to report; listing them as 0% would imply
+              -- they were idle rather than absent from this data.
+              AND (l.hours IS NOT NULL OR r.tickets IS NOT NULL)
+            ORDER BY COALESCE(l.hours, 0) DESC
         `, [startDate, endDate]);
 
         res.json({
             agents: result.rows,
             available_hours: result.rows[0]?.available_hours ?? null,
-            note: 'Share of a nominal 40-hour week spent on tickets — not utilization. Project work and meetings are not visible, and PTO is not deducted. Groups that do not track time on tickets are excluded. Read coverage alongside the share: a low share with low coverage means unrecorded work rather than a light week.'
+            note: 'Hours are time entries logged in the period, so a day means that day. Share of a nominal working week — not utilization: project work and meetings are invisible and PTO is not deducted. Coverage is the share of resolved tickets with any time logged, in groups where logging is expected. A low share with low coverage means unrecorded work rather than a light week.'
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
