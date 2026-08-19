@@ -3720,4 +3720,71 @@ router.get('/agents/day/tickets', cacheMiddleware(120), async (req, res) => {
     }
 });
 
+/**
+ * GET /api/analytics/agents/:agentId/tickets?startDate=&endDate=
+ *
+ * One agent's tickets for the period, for the expanded row: the ones they
+ * solved, and the ones still open that they logged time against. Those are
+ * exactly what the Solved and Open-worked columns count, so the drill-down
+ * reconciles with the row above it.
+ *
+ * Registered last because the :agentId parameter would otherwise capture
+ * /agents/performance and its siblings.
+ */
+router.get('/agents/:agentId/tickets', cacheMiddleware(120), async (req, res) => {
+    try {
+        const { agentId } = req.params;
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'startDate and endDate required' });
+        }
+
+        const result = await query(`
+            SELECT t.id, t.subject, t.status, t.created_at, t.solved_at,
+                   t.organization_name,
+                   (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm,
+                   ROUND((COALESCE((
+                     SELECT SUM(te.time_seconds) FROM ticket_time_entries te
+                      WHERE te.ticket_id = t.id
+                        AND te.agent_id = $1::bigint
+                        AND te.created_at >= $2::date
+                        AND te.created_at <  $3::date + interval '1 day'
+                   ), 0) / 3600.0)::numeric, 1) AS hours_in_period,
+                   (t.status NOT IN ('solved','closed','deleted')) AS still_open,
+                   -- Helping on a colleague's ticket is real effort and worth
+                   -- showing, but the row needs to say whose it is.
+                   CASE WHEN t.assignee_id <> $1::bigint THEN t.assignee_name END
+                     AS other_assignee
+              FROM tickets t
+             WHERE (
+                 -- Solved in the period, whenever it opened...
+                 (t.assignee_id = $1::bigint
+                  AND t.solved_at >= $2::date
+                  AND t.solved_at < $3::date + interval '1 day')
+                 -- ...or still open with time logged against it in the period.
+                 OR (
+                   t.status NOT IN ('solved','closed','deleted')
+                   AND EXISTS (
+                     SELECT 1 FROM ticket_time_entries te
+                      WHERE te.ticket_id = t.id
+                        AND te.agent_id = $1::bigint
+                        AND te.created_at >= $2::date
+                        AND te.created_at <  $3::date + interval '1 day'
+                        -- Machine-written entries; see the guard on
+                        -- /agents/ticket-time for why this is a timing test.
+                        AND te.created_at >  t.created_at + interval '1 minute'
+                   )
+                 )
+               )
+             -- Open first: those are the ones needing a decision.
+             ORDER BY still_open DESC, t.solved_at DESC NULLS LAST
+             LIMIT 100
+        `, [agentId, startDate, endDate]);
+
+        res.json({ tickets: result.rows, count: result.rows.length });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
