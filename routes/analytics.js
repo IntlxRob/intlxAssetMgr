@@ -3785,6 +3785,16 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                          WHERE (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                        )::int AS alarm_solved,
 
+                       -- Handling time per customer ticket. Three hours on one
+                       -- and thirty minutes on six are the same total and very
+                       -- different weeks — without this the touch bands cannot
+                       -- tell them apart.
+                       ROUND((SUM(t.billable_time_minutes) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       ) / NULLIF(COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       ), 0) / 60.0)::numeric, 2) AS hours_per_human,
+
                        -- Human tickets plus alarms a person actually handled.
                        -- Self-cleared and merged alarms are excluded: counting
                        -- them would push one-touch toward 100% for anyone doing
@@ -3922,6 +3932,25 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
             ),
 
             -- Open longer than the threshold and still ours to move.
+            -- Time logged in the period against a ticket that has not
+            -- closed. The only measure here of effort rather than outcome:
+            -- Michael Kellogg logged 3.3 hours on one held ticket in a week
+            -- the table credited with 1 solved.
+            open_worked AS (
+                SELECT te.agent_id AS assignee_id,
+                       COUNT(DISTINCT te.ticket_id)::int AS n
+                  FROM ticket_time_entries te
+                  JOIN tickets t ON t.id = te.ticket_id
+                  CROSS JOIN bounds b
+                 WHERE te.created_at >= b.from_date
+                   AND te.created_at <  b.to_date + interval '1 day'
+                   -- Machine-written entries; see the guard on
+                   -- /agents/ticket-time for why this is a timing test.
+                   AND te.created_at >  t.created_at + interval '1 minute'
+                   AND t.status NOT IN ('solved','closed','deleted')
+                 GROUP BY te.agent_id
+            ),
+
             aging AS (
                 SELECT t.assignee_id,
                        COUNT(*)::int AS n,
@@ -3989,6 +4018,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
 
                 COALESCE(bo.n, 0)              AS backlog_opening,
                 COALESCE(bc.n, 0)              AS backlog_closing,
+                COALESCE(ow.n, 0)              AS open_worked,
                 COALESCE(ag.n, 0)              AS backlog_aging,
                 COALESCE(ag.n_extended, 0)     AS backlog_aging_extended,
 
@@ -3997,6 +4027,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 -- which explains every other figure in his row.
                 CASE WHEN COALESCE(s.solved, 0) > 0
                      THEN ROUND(100.0 * s.human_solved / s.solved) END AS human_share,
+                s.hours_per_human,
 
                 -- Rates carry their base so a reader can see what a percentage
                 -- is worth: 100% of two tickets is not a pattern.
@@ -4031,6 +4062,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
             LEFT JOIN backlog_open bo  ON bo.assignee_id = a.id
             LEFT JOIN backlog_close bc ON bc.assignee_id = a.id
             LEFT JOIN aging ag         ON ag.assignee_id = a.id
+            LEFT JOIN open_worked ow   ON ow.assignee_id = a.id
             LEFT JOIN updates u        ON u.assignee_id  = a.id
             WHERE NOT EXISTS (
               SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id
@@ -4057,7 +4089,8 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         const medianKeys = [
             'assigned','assigned_human','assigned_alarm',
             'solved','human_solved','alarm_solved','human_share',
-            'backlog_opening','backlog_closing','backlog_aging','backlog_aging_extended',
+            'backlog_opening','backlog_closing','open_worked',
+            'backlog_aging','backlog_aging_extended','hours_per_human',
             'one_touch_pct','two_touch_pct','multi_touch_pct',
             'median_first_reply','median_resolution','median_requester_wait',
             'response_compliance','resolution_compliance','update_compliance'
