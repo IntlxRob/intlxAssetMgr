@@ -3731,6 +3731,299 @@ router.get('/agents/day/tickets', cacheMiddleware(120), async (req, res) => {
  * Registered last because the :agentId parameter would otherwise capture
  * /agents/performance and its siblings.
  */
+/**
+ * GET /api/analytics/agents/scorecard
+ *
+ * What each agent did in a period, and how well.
+ *
+ * Every count states its own date basis rather than inheriting one, because the
+ * questions differ: assigned is a created-date question, solved is a
+ * solved-date one, and backlog is a position rather than a flow. Conflating
+ * them is what made a ticket created at 23:52 and solved the next morning
+ * appear as solved on the wrong day.
+ *
+ * Backlog opening and closing are reconstructed from ticket history, so the
+ * movement between them says whether someone gained or lost ground.
+ * Approximate for reassigned tickets: Zendesk's assignment history is not
+ * synced, so a ticket counts under whoever holds it now.
+ */
+router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'startDate and endDate required' });
+        }
+        const groupIds = req.query.groupIds
+            ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
+            : null;
+
+        const params = [startDate, endDate];
+        let groupClause = '';
+        if (groupIds) {
+            params.push(groupIds);
+            groupClause = `AND t.group_id = ANY($${params.length}::bigint[])`;
+        }
+
+        const result = await query(`
+            WITH bounds AS (
+                SELECT $1::date AS from_date,
+                       $2::date AS to_date,
+                       COALESCE((SELECT value FROM ops_settings WHERE key = 'aging_days'), 7)::int
+                         AS aging_days
+            ),
+
+            -- Everything solved in the window. Solved-date basis: this is the
+            -- work that finished, whenever it happened to open.
+            solved AS (
+                SELECT t.assignee_id,
+                       COUNT(*)::int AS solved,
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS human_solved,
+                       COUNT(*) FILTER (
+                         WHERE (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS alarm_solved,
+
+                       -- Touch counts on human tickets only. Alarms resolve at
+                       -- one touch by design, so including them would measure
+                       -- queue composition rather than how cleanly someone
+                       -- closes customer work.
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           AND COALESCE(t.reply_count, 0) <= 1
+                       )::int AS one_touch,
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           AND COALESCE(t.reply_count, 0) = 2
+                       )::int AS two_touch,
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           AND COALESCE(t.reply_count, 0) > 2
+                       )::int AS multi_touch,
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS touch_base,
+
+                       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                         ORDER BY t.first_reply_minutes))::int AS median_first_reply,
+                       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                         ORDER BY t.resolution_minutes))::int AS median_resolution,
+                       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                         ORDER BY t.requester_wait_time_minutes))::int AS median_requester_wait,
+
+                       -- Human tickets only, like the touch rates above.
+                       -- Alarm first-reply measures how long an alert sat
+                       -- before acknowledgement, which is a real signal but
+                       -- not service quality: it put Richard Maguire at 48.9%
+                       -- while every one of his eight customer tickets met
+                       -- target.
+                       COUNT(*) FILTER (
+                         WHERE s.response_met
+                           AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS response_met,
+                       COUNT(*) FILTER (
+                         WHERE s.response_met IS NOT NULL
+                           AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS response_base,
+                       COUNT(*) FILTER (
+                         WHERE s.resolution_met
+                           AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS resolution_met,
+                       COUNT(*) FILTER (
+                         WHERE s.resolution_met IS NOT NULL
+                           AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS resolution_base
+
+                  FROM tickets t
+                  JOIN tickets_sla s ON s.id = t.id
+                  CROSS JOIN bounds b
+                 WHERE t.solved_at >= b.from_date
+                   AND t.solved_at <  b.to_date + interval '1 day'
+                   AND t.assignee_id IS NOT NULL
+                   ${groupClause}
+                 GROUP BY t.assignee_id
+            ),
+
+            -- Created-date basis: what arrived in their name during the window.
+            assigned AS (
+                SELECT t.assignee_id, COUNT(*)::int AS assigned
+                  FROM tickets t
+                  CROSS JOIN bounds b
+                 WHERE t.created_at >= b.from_date
+                   AND t.created_at <  b.to_date + interval '1 day'
+                   AND t.assignee_id IS NOT NULL
+                   ${groupClause}
+                 GROUP BY t.assignee_id
+            ),
+
+            -- A position, not a flow. Open at the period start means created
+            -- before it and either solved after it or still open now.
+            backlog_open AS (
+                SELECT t.assignee_id, COUNT(*)::int AS n
+                  FROM tickets t
+                  CROSS JOIN bounds b
+                 WHERE t.created_at < b.from_date
+                   AND (t.solved_at IS NULL OR t.solved_at >= b.from_date)
+                   AND t.assignee_id IS NOT NULL
+                   ${groupClause}
+                 GROUP BY t.assignee_id
+            ),
+
+            backlog_close AS (
+                SELECT t.assignee_id, COUNT(*)::int AS n
+                  FROM tickets t
+                  CROSS JOIN bounds b
+                 WHERE t.created_at < b.to_date + interval '1 day'
+                   AND (t.solved_at IS NULL OR t.solved_at >= b.to_date + interval '1 day')
+                   AND t.assignee_id IS NOT NULL
+                   ${groupClause}
+                 GROUP BY t.assignee_id
+            ),
+
+            -- Open longer than the threshold and still ours to move.
+            aging AS (
+                SELECT t.assignee_id, COUNT(*)::int AS n
+                  FROM tickets t
+                  LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+                  LEFT JOIN sla_category_behaviour b
+                         ON b.status_category = CASE
+                              WHEN t.status IN ('closed', 'deleted') THEN t.status
+                              ELSE COALESCE(cs.status_category, t.status)
+                            END
+                  CROSS JOIN bounds bn
+                 WHERE t.status NOT IN ('solved','closed','deleted')
+                   AND t.created_at < now() - (bn.aging_days || ' days')::interval
+                   AND t.assignee_id IS NOT NULL
+                   -- Same rule /agents/workload uses. A ticket awaiting a
+                   -- customer or vendor sits in their queue but is not theirs
+                   -- to move, and counting it as aging would read as neglect.
+                   AND b.ball_with = 'intlx'
+                   ${groupClause}
+                 GROUP BY t.assignee_id
+            ),
+
+            -- Update compliance from the comment stream, per agent. Same rule
+            -- as the ops dashboard's team figure, keyed on who owns the ticket.
+            updates AS (
+                SELECT t.assignee_id,
+                       COUNT(*) FILTER (
+                         WHERE EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60
+                               <= tg.update_interval_minutes
+                       )::int AS met,
+                       COUNT(*)::int AS total
+                  FROM (
+                    SELECT ticket_id, created_at,
+                           LAG(created_at) OVER (
+                             PARTITION BY ticket_id ORDER BY created_at
+                           ) AS prev
+                      FROM ticket_public_comments WHERE is_public
+                  ) p
+                  JOIN tickets t ON t.id = p.ticket_id
+                  LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+                  CROSS JOIN bounds b
+                 WHERE p.prev IS NOT NULL
+                   AND p.created_at >= b.from_date
+                   AND p.created_at <  b.to_date + interval '1 day'
+                   AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                   AND t.assignee_id IS NOT NULL
+                   ${groupClause}
+                 GROUP BY t.assignee_id
+            )
+
+            SELECT
+                a.id AS assignee_id,
+                a.name AS assignee_name,
+
+                COALESCE(asg.assigned, 0)      AS assigned,
+                COALESCE(s.solved, 0)          AS solved,
+                COALESCE(s.human_solved, 0)    AS human_solved,
+                COALESCE(s.alarm_solved, 0)    AS alarm_solved,
+
+                COALESCE(bo.n, 0)              AS backlog_opening,
+                COALESCE(bc.n, 0)              AS backlog_closing,
+                COALESCE(ag.n, 0)              AS backlog_aging,
+
+                -- Rates carry their base so a reader can see what a percentage
+                -- is worth: 100% of two tickets is not a pattern.
+                CASE WHEN s.touch_base > 0
+                     THEN ROUND(100.0 * s.one_touch / s.touch_base) END AS one_touch_pct,
+                CASE WHEN s.touch_base > 0
+                     THEN ROUND(100.0 * s.two_touch / s.touch_base) END AS two_touch_pct,
+                CASE WHEN s.touch_base > 0
+                     THEN ROUND(100.0 * s.multi_touch / s.touch_base) END AS multi_touch_pct,
+                COALESCE(s.touch_base, 0)      AS touch_base,
+
+                s.median_first_reply,
+                s.median_resolution,
+                s.median_requester_wait,
+
+                CASE WHEN s.response_base > 0
+                     THEN ROUND(100.0 * s.response_met / s.response_base, 1) END
+                  AS response_compliance,
+                COALESCE(s.response_base, 0)   AS response_base,
+                CASE WHEN s.resolution_base > 0
+                     THEN ROUND(100.0 * s.resolution_met / s.resolution_base, 1) END
+                  AS resolution_compliance,
+                COALESCE(s.resolution_base, 0) AS resolution_base,
+
+                CASE WHEN u.total > 0
+                     THEN ROUND(100.0 * u.met / u.total, 1) END AS update_compliance,
+                COALESCE(u.total, 0)           AS update_base
+
+            FROM agents a
+            LEFT JOIN solved s         ON s.assignee_id  = a.id
+            LEFT JOIN assigned asg     ON asg.assignee_id = a.id
+            LEFT JOIN backlog_open bo  ON bo.assignee_id = a.id
+            LEFT JOIN backlog_close bc ON bc.assignee_id = a.id
+            LEFT JOIN aging ag         ON ag.assignee_id = a.id
+            LEFT JOIN updates u        ON u.assignee_id  = a.id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id
+            )
+              -- Nothing in any bucket means they had no period here. Listing
+              -- them as zeros would imply idleness rather than absence.
+              AND (s.assignee_id IS NOT NULL OR asg.assignee_id IS NOT NULL
+                   OR bc.assignee_id IS NOT NULL)
+            ORDER BY COALESCE(s.solved, 0) DESC
+        `, params);
+
+        // Median rather than mean: one agent closing 298 alarms would drag an
+        // average far above anything a person would recognise as normal.
+        const median = (key) => {
+            const vals = result.rows
+                .map(r => r[key] === null || r[key] === undefined ? null : Number(r[key]))
+                .filter(v => v !== null && !Number.isNaN(v))
+                .sort((x, y) => x - y);
+            if (!vals.length) return null;
+            const mid = Math.floor(vals.length / 2);
+            return vals.length % 2 ? vals[mid] : Math.round((vals[mid - 1] + vals[mid]) / 2);
+        };
+
+        const medianKeys = [
+            'assigned','solved','human_solved','alarm_solved',
+            'backlog_opening','backlog_closing','backlog_aging',
+            'one_touch_pct','two_touch_pct','multi_touch_pct',
+            'median_first_reply','median_resolution','median_requester_wait',
+            'response_compliance','resolution_compliance','update_compliance'
+        ];
+        const teamMedian = {};
+        for (const k of medianKeys) teamMedian[k] = median(k);
+
+        const agingSetting = await query(
+            `SELECT value FROM ops_settings WHERE key = 'aging_days'`
+        );
+
+        res.json({
+            agents: result.rows,
+            team_median: teamMedian,
+            aging_days: Number(agingSetting.rows[0]?.value ?? 7),
+            note: 'Assigned counts by creation date, solved by resolution date, backlog by position. Aging is open longer than the threshold and not awaiting a customer or vendor. Touch and update rates cover human tickets only.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 router.get('/agents/:agentId/tickets', cacheMiddleware(120), async (req, res) => {
     try {
         const { agentId } = req.params;
