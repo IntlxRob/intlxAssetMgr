@@ -782,8 +782,6 @@ router.get('/agents/ticket-time', cacheMiddleware(300), async (req, res) => {
                   JOIN groups g ON g.id = t.group_id
                   CROSS JOIN bounds b
                  WHERE t.solved_at >= b.from_date
-                   COALESCE(r.human_tickets, 0) AS human_tickets,
-                   COALESCE(r.alarm_tickets, 0) AS alarm_tickets,
                    AND t.solved_at < b.to_date + interval '1 day'
                    AND t.assignee_id IS NOT NULL
                    AND g.expects_time_logging
