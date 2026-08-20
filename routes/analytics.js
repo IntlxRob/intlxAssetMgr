@@ -3769,7 +3769,10 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 SELECT $1::date AS from_date,
                        $2::date AS to_date,
                        COALESCE((SELECT value FROM ops_settings WHERE key = 'aging_days'), 7)::int
-                         AS aging_days
+                         AS aging_days,
+                       COALESCE((SELECT value FROM ops_settings
+                                  WHERE key = 'aging_days_extended'), 14)::int
+                         AS aging_days_extended
             ),
 
             -- Everything solved in the window. Solved-date basis: this is the
@@ -3846,7 +3849,17 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
 
             -- Created-date basis: what arrived in their name during the window.
             assigned AS (
-                SELECT t.assignee_id, COUNT(*)::int AS assigned
+                -- Split like Solved is: an agent handed 300 alarms and 3
+                -- customer tickets had a very different week from one handed
+                -- 30 of each, and a single count cannot say so.
+                SELECT t.assignee_id,
+                       COUNT(*)::int AS assigned,
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS assigned_human,
+                       COUNT(*) FILTER (
+                         WHERE (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS assigned_alarm
                   FROM tickets t
                   CROSS JOIN bounds b
                  WHERE t.created_at >= b.from_date
@@ -3882,7 +3895,12 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
 
             -- Open longer than the threshold and still ours to move.
             aging AS (
-                SELECT t.assignee_id, COUNT(*)::int AS n
+                SELECT t.assignee_id,
+                       COUNT(*)::int AS n,
+                       COUNT(*) FILTER (
+                         WHERE t.created_at
+                               < now() - (bn.aging_days_extended || ' days')::interval
+                       )::int AS n_extended
                   FROM tickets t
                   LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
                   LEFT JOIN sla_category_behaviour b
@@ -3934,7 +3952,9 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 a.id AS assignee_id,
                 a.name AS assignee_name,
 
-                COALESCE(asg.assigned, 0)      AS assigned,
+                COALESCE(asg.assigned, 0)        AS assigned,
+                COALESCE(asg.assigned_human, 0)  AS assigned_human,
+                COALESCE(asg.assigned_alarm, 0)  AS assigned_alarm,
                 COALESCE(s.solved, 0)          AS solved,
                 COALESCE(s.human_solved, 0)    AS human_solved,
                 COALESCE(s.alarm_solved, 0)    AS alarm_solved,
@@ -3942,6 +3962,13 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 COALESCE(bo.n, 0)              AS backlog_opening,
                 COALESCE(bc.n, 0)              AS backlog_closing,
                 COALESCE(ag.n, 0)              AS backlog_aging,
+                COALESCE(ag.n_extended, 0)     AS backlog_aging_extended,
+
+                -- What proportion of their output was customer work. The
+                -- single most clarifying number here: Adrien Baracco reads 1%,
+                -- which explains every other figure in his row.
+                CASE WHEN COALESCE(s.solved, 0) > 0
+                     THEN ROUND(100.0 * s.human_solved / s.solved) END AS human_share,
 
                 -- Rates carry their base so a reader can see what a percentage
                 -- is worth: 100% of two tickets is not a pattern.
@@ -4000,8 +4027,9 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         };
 
         const medianKeys = [
-            'assigned','solved','human_solved','alarm_solved',
-            'backlog_opening','backlog_closing','backlog_aging',
+            'assigned','assigned_human','assigned_alarm',
+            'solved','human_solved','alarm_solved','human_share',
+            'backlog_opening','backlog_closing','backlog_aging','backlog_aging_extended',
             'one_touch_pct','two_touch_pct','multi_touch_pct',
             'median_first_reply','median_resolution','median_requester_wait',
             'response_compliance','resolution_compliance','update_compliance'
@@ -4009,14 +4037,18 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         const teamMedian = {};
         for (const k of medianKeys) teamMedian[k] = median(k);
 
-        const agingSetting = await query(
-            `SELECT value FROM ops_settings WHERE key = 'aging_days'`
+        const settings = await query(
+            `SELECT key, value FROM ops_settings
+              WHERE key IN ('aging_days', 'aging_days_extended')`
         );
+        const setting = (k, d) =>
+            Number(settings.rows.find(r => r.key === k)?.value ?? d);
 
         res.json({
             agents: result.rows,
             team_median: teamMedian,
-            aging_days: Number(agingSetting.rows[0]?.value ?? 7),
+            aging_days: setting('aging_days', 7),
+            aging_days_extended: setting('aging_days_extended', 14),
             note: 'Assigned counts by creation date, solved by resolution date, backlog by position. Aging is open longer than the threshold and not awaiting a customer or vendor. Touch and update rates cover human tickets only.'
         });
     } catch (error) {
