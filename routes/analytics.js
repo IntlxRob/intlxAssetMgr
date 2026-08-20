@@ -3787,24 +3787,54 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                          WHERE (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                        )::int AS alarm_solved,
 
-                       -- Touch counts on human tickets only. Alarms resolve at
-                       -- one touch by design, so including them would measure
-                       -- queue composition rather than how cleanly someone
-                       -- closes customer work.
+                       -- Human tickets plus alarms a person actually handled.
+                       -- Self-cleared and merged alarms are excluded: counting
+                       -- them would push one-touch toward 100% for anyone doing
+                       -- volume and measure the platform rather than the agent.
+                       -- Excluding alarm work altogether left the highest-volume
+                       -- handler on the team with an empty Efficiency group.
                        COUNT(*) FILTER (
-                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                         WHERE (
+                           NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           OR (
+                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                             AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                             AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                           )
+                         )
                            AND COALESCE(t.reply_count, 0) <= 1
                        )::int AS one_touch,
                        COUNT(*) FILTER (
-                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                         WHERE (
+                           NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           OR (
+                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                             AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                             AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                           )
+                         )
                            AND COALESCE(t.reply_count, 0) = 2
                        )::int AS two_touch,
                        COUNT(*) FILTER (
-                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                         WHERE (
+                           NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           OR (
+                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                             AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                             AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                           )
+                         )
                            AND COALESCE(t.reply_count, 0) > 2
                        )::int AS multi_touch,
                        COUNT(*) FILTER (
-                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                         WHERE (
+                           NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           OR (
+                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                             AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                             AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                           )
+                         )
                        )::int AS touch_base,
 
                        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
