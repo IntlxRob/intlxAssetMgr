@@ -3962,7 +3962,14 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 -- Split like Solved is: an agent handed 300 alarms and 3
                 -- customer tickets had a very different week from one handed
                 -- 30 of each, and a single count cannot say so.
-                SELECT t.assignee_id, COUNT(*)::int AS assigned
+                SELECT t.assignee_id,
+                       COUNT(*)::int AS assigned,
+                       COUNT(*) FILTER (
+                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS assigned_human,
+                       COUNT(*) FILTER (
+                         WHERE (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                       )::int AS assigned_alarm
                   FROM tickets t
                   CROSS JOIN bounds b
                  WHERE t.created_at >= b.from_date
@@ -4085,6 +4092,8 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 a.name AS assignee_name,
 
                 COALESCE(asg.assigned, 0)        AS assigned,
+                COALESCE(asg.assigned_human, 0)  AS assigned_human,
+                COALESCE(asg.assigned_alarm, 0)  AS assigned_alarm,
                 COALESCE(s.solved, 0)          AS solved,
                 COALESCE(s.human_solved, 0)    AS human_solved,
                 COALESCE(s.alarm_solved, 0)    AS alarm_solved,
@@ -4160,7 +4169,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         };
 
         const medianKeys = [
-            'assigned',
+            'assigned','assigned_human','assigned_alarm',
             'solved','human_solved','alarm_solved','human_share',
             'backlog_opening','backlog_closing','open_worked',
             'backlog_aging','backlog_aging_extended','hours_per_human',
