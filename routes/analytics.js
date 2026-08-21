@@ -3755,6 +3755,18 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
             ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
             : null;
 
+        // all | human | alarm. Narrowing lets every column describe one
+        // population, which the mixed bases could not do — the same row was
+        // reporting compliance on human tickets and touch counts on handled
+        // alarms.
+        const source = ['human', 'alarm'].includes(req.query.source)
+            ? req.query.source : 'all';
+        const isAlarm = '(t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)';
+        const sourceClause =
+            source === 'human' ? `AND NOT ${isAlarm}`
+          : source === 'alarm' ? `AND ${isAlarm}`
+          : '';
+
         const params = [startDate, endDate];
         let groupClause = '';
         if (groupIds) {
@@ -3845,12 +3857,47 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                          )
                        )::int AS touch_base,
 
+                       -- Same base as the touch bands: human tickets plus
+                       -- alarms someone actually handled. Measuring across
+                       -- everything let self-cleared alarms dominate, and
+                       -- requester wait read 0m for the entire team because an
+                       -- alarm's requester never waits.
                        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
-                         ORDER BY t.first_reply_minutes))::int AS median_first_reply,
+                         ORDER BY t.first_reply_minutes)
+                         FILTER (WHERE (
+                           NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           OR (
+                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                             AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                             AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                           )
+                         ))
+                       )::int AS median_first_reply,
                        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
-                         ORDER BY t.resolution_minutes))::int AS median_resolution,
+                         ORDER BY t.resolution_minutes)
+                         FILTER (WHERE (
+                           NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           OR (
+                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                             AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                             AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                           )
+                         ))
+                       )::int AS median_resolution,
+                       -- Human tickets only, unlike the two medians above:
+                       -- an alarm has no requester waiting, so including them
+                       -- held this at zero for every high-volume agent.
                        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
-                         ORDER BY t.requester_wait_time_minutes))::int AS median_requester_wait,
+                         ORDER BY t.requester_wait_time_minutes)
+                         FILTER (WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AND (
+                           NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                           OR (
+                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                             AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                             AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)
+                           )
+                         ))
+                       )::int AS median_requester_wait,
 
                        -- Human tickets only, like the touch rates above.
                        -- Alarm first-reply measures how long an alert sat
@@ -3882,6 +3929,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND t.solved_at <  b.to_date + interval '1 day'
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
+                   ${sourceClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -3890,20 +3938,14 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 -- Split like Solved is: an agent handed 300 alarms and 3
                 -- customer tickets had a very different week from one handed
                 -- 30 of each, and a single count cannot say so.
-                SELECT t.assignee_id,
-                       COUNT(*)::int AS assigned,
-                       COUNT(*) FILTER (
-                         WHERE NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
-                       )::int AS assigned_human,
-                       COUNT(*) FILTER (
-                         WHERE (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
-                       )::int AS assigned_alarm
+                SELECT t.assignee_id, COUNT(*)::int AS assigned
                   FROM tickets t
                   CROSS JOIN bounds b
                  WHERE t.created_at >= b.from_date
                    AND t.created_at <  b.to_date + interval '1 day'
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
+                   ${sourceClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -3917,6 +3959,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND (t.solved_at IS NULL OR t.solved_at >= b.from_date)
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
+                   ${sourceClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -3928,6 +3971,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND (t.solved_at IS NULL OR t.solved_at >= b.to_date + interval '1 day')
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
+                   ${sourceClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -3974,6 +4018,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    -- to move, and counting it as aging would read as neglect.
                    AND b.ball_with = 'intlx'
                    ${groupClause}
+                   ${sourceClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -4002,6 +4047,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
+                   ${sourceClause}
                  GROUP BY t.assignee_id
             )
 
@@ -4010,8 +4056,6 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 a.name AS assignee_name,
 
                 COALESCE(asg.assigned, 0)        AS assigned,
-                COALESCE(asg.assigned_human, 0)  AS assigned_human,
-                COALESCE(asg.assigned_alarm, 0)  AS assigned_alarm,
                 COALESCE(s.solved, 0)          AS solved,
                 COALESCE(s.human_solved, 0)    AS human_solved,
                 COALESCE(s.alarm_solved, 0)    AS alarm_solved,
@@ -4087,7 +4131,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         };
 
         const medianKeys = [
-            'assigned','assigned_human','assigned_alarm',
+            'assigned',
             'solved','human_solved','alarm_solved','human_share',
             'backlog_opening','backlog_closing','open_worked',
             'backlog_aging','backlog_aging_extended','hours_per_human',
@@ -4108,6 +4152,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         res.json({
             agents: result.rows,
             team_median: teamMedian,
+            source,
             aging_days: setting('aging_days', 7),
             aging_days_extended: setting('aging_days_extended', 14),
             note: 'Assigned counts by creation date, solved by resolution date, backlog by position. Aging is open longer than the threshold and not awaiting a customer or vendor. Touch and update rates cover human tickets only.'
