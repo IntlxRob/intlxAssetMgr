@@ -3762,6 +3762,15 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         const source = ['human', 'alarm'].includes(req.query.source)
             ? req.query.source : 'all';
         const isAlarm = '(t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)';
+        const HANDLED = `(NOT ${isAlarm} OR (
+                            NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                        AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                        AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)))`;
+        // Applied to every ticket-scoped CTE so the whole row describes one
+        // population. Self-cleared and merged alarms are excluded in all three
+        // filter modes: nobody handled them, so their response times belong to
+        // the platform rather than to a person.
+        const handledClause = `AND ${HANDLED}`;
         const sourceClause =
             source === 'human' ? `AND NOT ${isAlarm}`
           : source === 'alarm' ? `AND ${isAlarm}`
@@ -3907,15 +3916,12 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                        -- target.
                        COUNT(*) FILTER (
                          WHERE s.response_met
-                           AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                        )::int AS response_met,
                        COUNT(*) FILTER (
                          WHERE s.response_met IS NOT NULL
-                           AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                        )::int AS response_base,
                        COUNT(*) FILTER (
                          WHERE s.resolution_met
-                           AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
                        )::int AS resolution_met,
                        COUNT(*) FILTER (
                          WHERE s.resolution_met IS NOT NULL
@@ -3928,6 +3934,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                  WHERE t.solved_at >= b.from_date
                    AND t.solved_at <  b.to_date + interval '1 day'
                    AND t.assignee_id IS NOT NULL
+                   ${handledClause}
                    ${groupClause}
                    ${sourceClause}
                  GROUP BY t.assignee_id
