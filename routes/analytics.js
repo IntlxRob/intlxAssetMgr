@@ -3751,6 +3751,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         if (!startDate || !endDate) {
             return res.status(400).json({ error: 'startDate and endDate required' });
         }
+        const params = [startDate, endDate];
         const groupIds = req.query.groupIds
             ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
             : null;
@@ -3761,6 +3762,22 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         // alarms.
         const source = ['human', 'alarm'].includes(req.query.source)
             ? req.query.source : 'all';
+
+        // Organization answers "how are we doing for this customer"; priority
+        // answers "how are we doing on the urgent work". Both narrow every
+        // column, backlog included — a position computed over a different
+        // population from the flows beside it would not reconcile.
+        let orgClause = '';
+        if (req.query.organizationId) {
+            params.push(req.query.organizationId);
+            orgClause = `AND t.organization_id = $${params.length}::bigint`;
+        }
+        let priorityClause = '';
+        if (req.query.priority) {
+            params.push(req.query.priority);
+            priorityClause = `AND t.priority = $${params.length}`;
+        }
+        const scopeClause = `${orgClause} ${priorityClause}`;
         const isAlarm = '(t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)';
         const HANDLED = `(NOT ${isAlarm} OR (
                             NOT (t.tags @> '["alarm_cleared"]'::jsonb)
@@ -3776,7 +3793,6 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
           : source === 'alarm' ? `AND ${isAlarm}`
           : '';
 
-        const params = [startDate, endDate];
         let groupClause = '';
         if (groupIds) {
             params.push(groupIds);
@@ -3937,6 +3953,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    ${handledClause}
                    ${groupClause}
                    ${sourceClause}
+                   ${scopeClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -3953,6 +3970,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
                    ${sourceClause}
+                   ${scopeClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -3967,6 +3985,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
                    ${sourceClause}
+                   ${scopeClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -3979,6 +3998,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
                    ${sourceClause}
+                   ${scopeClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -4026,6 +4046,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND b.ball_with = 'intlx'
                    ${groupClause}
                    ${sourceClause}
+                   ${scopeClause}
                  GROUP BY t.assignee_id
             ),
 
@@ -4055,6 +4076,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND t.assignee_id IS NOT NULL
                    ${groupClause}
                    ${sourceClause}
+                   ${scopeClause}
                  GROUP BY t.assignee_id
             )
 
@@ -4160,6 +4182,8 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
             agents: result.rows,
             team_median: teamMedian,
             source,
+            organization_id: req.query.organizationId ?? null,
+            priority: req.query.priority ?? null,
             aging_days: setting('aging_days', 7),
             aging_days_extended: setting('aging_days_extended', 14),
             note: 'Assigned counts by creation date, solved by resolution date, backlog by position. Aging is open longer than the threshold and not awaiting a customer or vendor. Touch and update rates cover human tickets only.'
