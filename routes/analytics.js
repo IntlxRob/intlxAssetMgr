@@ -1907,12 +1907,17 @@ router.get('/filters', cacheMiddleware(300), async (req, res) => {
             ORDER BY assignee_name
         `);
         
-        // Get all groups
+        // Get all groups. Names come from the groups table, not from
+        // tickets: the ticket sync writes group_id and never group_name,
+        // so that column is null on every row. The scorecard's subjects
+        // CTE has always read from groups - this brings the filter list
+        // into line with it.
         const groups = await query(`
-            SELECT DISTINCT group_id as id, group_name as name
-            FROM tickets
-            WHERE group_id IS NOT NULL
-            ORDER BY group_name
+            SELECT g.id::text as id, g.name
+            FROM groups g
+            WHERE g.deleted IS NOT TRUE
+              AND EXISTS (SELECT 1 FROM tickets t WHERE t.group_id = g.id)
+            ORDER BY g.name
         `);
         
         // Get unique statuses
