@@ -3987,7 +3987,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                       WHERE NOT EXISTS (
                         SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id)
                      UNION ALL
-                     SELECT 0::bigint AS id, 'Unassigned' AS name`}
+                     SELECT 0::bigint AS id, 'No Agent' AS name`}
             )
 
             SELECT
