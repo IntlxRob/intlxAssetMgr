@@ -4050,7 +4050,10 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
             LEFT JOIN open_worked ow   ON ow.id = sub.id
             LEFT JOIN updates u        ON u.id  = sub.id
             WHERE s.id IS NOT NULL OR asg.id IS NOT NULL OR bc.id IS NOT NULL
-            ORDER BY COALESCE(s.solved, 0) DESC
+            -- The No Agent row sorts last rather than by volume: it is not a
+            -- peer of the agent rows, and ranking it among them implies a
+            -- comparison that does not hold.
+            ORDER BY (sub.id = 0) , COALESCE(s.solved, 0) DESC
         `, params);
 
         // Median rather than mean: one row closing 298 alarms would drag an
