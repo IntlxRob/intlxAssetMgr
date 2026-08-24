@@ -3748,8 +3748,16 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         const byGroup = req.query.groupBy === 'group';
         // Everything downstream keys on this, so the CTEs are identical either
         // way and only the column changes.
-        const idCol = byGroup ? 't.group_id' : 't.assignee_id';
+        // Unassigned tickets belong to a group but to no person, so in agent
+        // mode they collapse onto a sentinel rather than being dropped. Every
+        // LEFT JOIN downstream then matches it the same way it matches a real
+        // agent. Group mode keeps t.group_id: a ticket with no group is a
+        // different question and is still excluded.
+        const idCol = byGroup ? 't.group_id' : 'COALESCE(t.assignee_id, 0)';
         const idAs = byGroup ? 'group_id' : 'assignee_id';
+        // Where the sentinel must not reach: the null test that used to drop
+        // these rows, and anything counting people.
+        const idNotNull = byGroup ? 'AND t.group_id IS NOT NULL' : '';
 
         const params = [startDate, endDate];
 
@@ -3836,14 +3844,16 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                        COUNT(*) FILTER (WHERE s.resolution_met)::int AS resolution_met,
                        COUNT(*) FILTER (WHERE s.resolution_met IS NOT NULL)::int AS resolution_base,
 
-                       COUNT(DISTINCT t.assignee_id)::int AS agents_active
+                       -- Not the sentinel: an unassigned pile is not a person.
+                       COUNT(DISTINCT t.assignee_id)
+                         FILTER (WHERE t.assignee_id IS NOT NULL)::int AS agents_active
 
                   FROM tickets t
                   JOIN tickets_sla s ON s.id = t.id
                   CROSS JOIN bounds b
                  WHERE t.solved_at >= b.from_date
                    AND t.solved_at <  b.to_date + interval '1 day'
-                   AND ${idCol} IS NOT NULL
+                   ${idNotNull}
                    ${handledClause}
                    ${notAutomation}
                    ${groupClause}
@@ -3861,7 +3871,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                   CROSS JOIN bounds b
                  WHERE t.created_at >= b.from_date
                    AND t.created_at <  b.to_date + interval '1 day'
-                   AND ${idCol} IS NOT NULL
+                   ${idNotNull}
                    ${notAutomation}
                    ${groupClause}
                    ${sourceClause}
@@ -3875,7 +3885,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                   CROSS JOIN bounds b
                  WHERE t.created_at < b.from_date
                    AND (t.solved_at IS NULL OR t.solved_at >= b.from_date)
-                   AND ${idCol} IS NOT NULL
+                   ${idNotNull}
                    ${notAutomation}
                    ${groupClause}
                    ${sourceClause}
@@ -3889,7 +3899,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                   CROSS JOIN bounds b
                  WHERE t.created_at < b.to_date + interval '1 day'
                    AND (t.solved_at IS NULL OR t.solved_at >= b.to_date + interval '1 day')
-                   AND ${idCol} IS NOT NULL
+                   ${idNotNull}
                    ${notAutomation}
                    ${groupClause}
                    ${sourceClause}
@@ -3932,7 +3942,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                   CROSS JOIN bounds bn
                  WHERE t.status NOT IN ('solved','closed','deleted')
                    AND t.created_at < now() - (bn.aging_days || ' days')::interval
-                   AND ${idCol} IS NOT NULL
+                   ${idNotNull}
                    AND bh.ball_with = 'intlx'
                    ${notAutomation}
                    ${groupClause}
@@ -3962,7 +3972,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    AND p.created_at >= b.from_date
                    AND p.created_at <  b.to_date + interval '1 day'
                    AND NOT ${isAlarm}
-                   AND ${idCol} IS NOT NULL
+                   ${idNotNull}
                    ${notAutomation}
                    ${groupClause}
                    ${scopeClause}
@@ -3975,7 +3985,9 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                   ? `SELECT g.id, g.name FROM groups g`
                   : `SELECT a.id, a.name FROM agents a
                       WHERE NOT EXISTS (
-                        SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id)`}
+                        SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id)
+                     UNION ALL
+                     SELECT 0::bigint AS id, 'Unassigned' AS name`}
             )
 
             SELECT
@@ -4043,8 +4055,13 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
 
         // Median rather than mean: one row closing 298 alarms would drag an
         // average far above anything recognisable as normal.
+        // The median describes a typical agent, so the unassigned pile is not
+        // one of the values. On a single group's expansion it would be one row
+        // in eight, with no human behaviour behind any of its rates.
+        const medianRows = result.rows.filter(r => String(r[idAs]) !== '0');
+
         const median = (key) => {
-            const vals = result.rows
+            const vals = medianRows
                 .map(r => r[key] === null || r[key] === undefined ? null : Number(r[key]))
                 .filter(v => v !== null && !Number.isNaN(v))
                 .sort((x, y) => x - y);
