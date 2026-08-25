@@ -4108,4 +4108,143 @@ router.get('/agents/:agentId/tickets', cacheMiddleware(120), async (req, res) =>
     }
 });
 
+
+/**
+ * GET /api/analytics/agents/:agentId/trend
+ *
+ * A weekly series for one agent, for the single-agent view. The scorecard says
+ * how a period went; this says which way it has been moving.
+ *
+ * Shares IS_ALARM, HANDLED, NOT_AUTOMATION and sourceClauseFor with the
+ * scorecard, so a point here and the table's figure for the same week are the
+ * same number computed once.
+ *
+ * Buckets are clipped to the requested range rather than snapped to whole
+ * weeks: snapping would pull in days the table does not count. Each row
+ * carries `days` so a partial bucket at either end can be drawn as one.
+ */
+router.get('/agents/:agentId/trend', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { agentId } = req.params;
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'startDate and endDate required' });
+        }
+
+        const params = [startDate, endDate, agentId];
+
+        const groupIds = req.query.groupIds
+            ? String(req.query.groupIds).split(',').map(g => g.trim()).filter(Boolean)
+            : null;
+        let groupClause = '';
+        if (groupIds && groupIds.length) {
+            params.push(groupIds);
+            groupClause = `AND t.group_id = ANY($${params.length}::bigint[])`;
+        }
+
+        const source = ['human', 'alarm'].includes(req.query.source)
+            ? req.query.source : 'all';
+        const sourceClause = sourceClauseFor(source);
+
+        let orgClause = '';
+        if (req.query.organizationId) {
+            params.push(req.query.organizationId);
+            orgClause = `AND t.organization_id = $${params.length}::bigint`;
+        }
+        let priorityClause = '';
+        if (req.query.priority) {
+            params.push(req.query.priority);
+            priorityClause = `AND t.priority = $${params.length}`;
+        }
+        const scopeClause = `${orgClause} ${priorityClause}`;
+
+        // The agent match. 0 is the No Agent sentinel the scorecard uses, so
+        // the trend can be asked for the unassigned pile on the same terms.
+        const agentMatch = String(agentId) === '0'
+            ? 't.assignee_id IS NULL'
+            : `t.assignee_id = $3::bigint`;
+
+        const result = await query(`
+            WITH bounds AS (
+                SELECT $1::date AS from_date, $2::date AS to_date
+            ),
+            weeks AS (
+                SELECT generate_series(
+                         date_trunc('week', (SELECT from_date FROM bounds)),
+                         date_trunc('week', (SELECT to_date   FROM bounds)),
+                         interval '1 week'
+                       )::date AS week_start
+            ),
+            windows AS (
+                SELECT
+                    -- Clipped, not snapped: the first and last buckets stop at
+                    -- the range rather than reaching outside it.
+                    GREATEST(w.week_start, b.from_date)                       AS from_day,
+                    LEAST(w.week_start + interval '6 days', b.to_date)::date  AS to_day,
+                    w.week_start
+                  FROM weeks w CROSS JOIN bounds b
+            ),
+            solved AS (
+                SELECT date_trunc('week', t.solved_at)::date AS week_start,
+                       COUNT(*)::int AS solved,
+                       COUNT(*) FILTER (WHERE COALESCE(t.reply_count, 0) <= 1)::int AS one_touch,
+                       COUNT(*)::int AS touch_base,
+                       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                         ORDER BY t.resolution_minutes))::int AS median_resolution,
+                       COUNT(*) FILTER (WHERE s.response_met)::int AS response_met,
+                       COUNT(*) FILTER (WHERE s.response_met IS NOT NULL)::int AS response_base
+                  FROM tickets t
+                  JOIN tickets_sla s ON s.id = t.id
+                  CROSS JOIN bounds b
+                 WHERE t.solved_at >= b.from_date
+                   AND t.solved_at <  b.to_date + interval '1 day'
+                   AND ${agentMatch}
+                   AND ${HANDLED}
+                   ${NOT_AUTOMATION}
+                   ${groupClause}
+                   ${sourceClause}
+                   ${scopeClause}
+                 GROUP BY 1
+            )
+            SELECT
+                to_char(w.week_start, 'YYYY-MM-DD')            AS week,
+                to_char(w.from_day,  'YYYY-MM-DD')             AS from_day,
+                to_char(w.to_day,    'YYYY-MM-DD')             AS to_day,
+                (w.to_day - w.from_day + 1)::int               AS days,
+                COALESCE(s.solved, 0)                          AS solved,
+                CASE WHEN s.touch_base > 0
+                     THEN ROUND(100.0 * s.one_touch / s.touch_base) END AS one_touch_pct,
+                COALESCE(s.touch_base, 0)                      AS touch_base,
+                s.median_resolution,
+                CASE WHEN s.response_base > 0
+                     THEN ROUND(100.0 * s.response_met / s.response_base, 1) END
+                  AS response_compliance,
+                COALESCE(s.response_base, 0)                   AS response_base,
+                -- Positional, so it cannot ride along in the pass above: open
+                -- at the end of this bucket, whenever it was created.
+                (SELECT COUNT(*)::int
+                   FROM tickets t
+                  WHERE t.created_at < w.to_day + interval '1 day'
+                    AND (t.solved_at IS NULL OR t.solved_at >= w.to_day + interval '1 day')
+                    AND ${agentMatch}
+                    ${NOT_AUTOMATION}
+                    ${groupClause}
+                    ${sourceClause}
+                    ${scopeClause})                            AS backlog_closing
+              FROM windows w
+              LEFT JOIN solved s ON s.week_start = w.week_start
+             ORDER BY w.week_start
+        `, params);
+
+        res.json({
+            agent_id: String(agentId),
+            weeks: result.rows,
+            source,
+            note: 'Weekly buckets clipped to the requested range; `days` is 7 for a full week and less at either end. Solved, touch and responsiveness count tickets resolved in the bucket; backlog is the position at the end of it.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
