@@ -11,6 +11,48 @@ const { cacheMiddleware, clearCache, getCacheStats } = require('../middleware/ca
 /**
  * Build WHERE clause from query filters
  */
+/**
+ * A ticket originated by one of the alarm platforms.
+ *
+ * Assumes the tickets table is aliased `t`. This same expression is written
+ * out in 47 other places in this file; they are equivalent, and consolidating
+ * them is a separate job. Anything sharing a definition with the scorecard —
+ * currently the scorecard itself and the agent trend — uses this one, because
+ * a trend point that disagrees with the table for the same week is worse than
+ * no trend at all.
+ *
+ * Not to be confused with buildWhereClause's alarmFilter branches, which are
+ * deliberately narrower: those exclude one platform at a time.
+ */
+const IS_ALARM = '(t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)';
+
+/**
+ * A ticket a person actually dealt with.
+ *
+ * Human tickets always count. An alarm counts only if it was not cleared by
+ * the platform and not swept up in a merge — nobody touched those, so their
+ * response times belong to the platform rather than to an agent.
+ */
+const HANDLED = `(NOT ${IS_ALARM} OR (
+                    NOT (t.tags @> '["alarm_cleared"]'::jsonb)
+                AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
+                AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)))`;
+
+/**
+ * Excluded per ticket rather than per row: in group mode there is no agent row
+ * to filter out, but a bot's tickets would still land in whichever group they
+ * were routed to.
+ */
+const NOT_AUTOMATION = `AND NOT EXISTS (
+                   SELECT 1 FROM automation_accounts aa
+                    WHERE aa.agent_id = t.assignee_id)`;
+
+/** `AND` fragment restricting to one population, or '' for both. */
+const sourceClauseFor = (source) =>
+    source === 'human' ? `AND NOT ${IS_ALARM}`
+  : source === 'alarm' ? `AND ${IS_ALARM}`
+  : '';
+
 function buildWhereClause(filters = {}, options = {}) {
     const conditions = [];
     const params = [];
@@ -3678,16 +3720,10 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
 
         const source = ['human', 'alarm'].includes(req.query.source)
             ? req.query.source : 'all';
-        const isAlarm = '(t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)';
-        const HANDLED = `(NOT ${isAlarm} OR (
-                            NOT (t.tags @> '["alarm_cleared"]'::jsonb)
-                        AND NOT (t.tags @> '["merged_duplicate"]'::jsonb)
-                        AND NOT (t.tags @> '["closed_by_merge"]'::jsonb)))`;
+        // Shared with the agent trend; see IS_ALARM at the top of the file.
+        const isAlarm = IS_ALARM;
         const handledClause = `AND ${HANDLED}`;
-        const sourceClause =
-            source === 'human' ? `AND NOT ${isAlarm}`
-          : source === 'alarm' ? `AND ${isAlarm}`
-          : '';
+        const sourceClause = sourceClauseFor(source);
 
         let orgClause = '';
         if (req.query.organizationId) {
@@ -3701,12 +3737,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         }
         const scopeClause = `${orgClause} ${priorityClause}`;
 
-        // Automation accounts are excluded per ticket rather than per row: in
-        // group mode there is no agent row to filter out, but Alarmtraq's
-        // tickets would still land in whichever group they were routed to.
-        const notAutomation = `AND NOT EXISTS (
-                       SELECT 1 FROM automation_accounts aa
-                        WHERE aa.agent_id = t.assignee_id)`;
+        const notAutomation = NOT_AUTOMATION;
 
         const result = await query(`
             WITH bounds AS (
