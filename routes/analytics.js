@@ -115,10 +115,18 @@ function buildWhereClause(filters = {}, options = {}) {
         params.push(filters.priority);
     }
 
-    // Group filter
-    if (filters.groupId) {
-        conditions.push(`t.group_id = $${paramIndex++}`);
-        params.push(filters.groupId);
+    // Group filter. `groupIds` is the multi-select in the filter bar, sent
+    // comma-joined by toQuery; `groupId` is the older singular, still used by
+    // several routes. Both land here so a caller cannot silently pick the
+    // spelling this function ignores - which is what made the ticket count
+    // read 6,857 with a single group selected, against a scorecard total of
+    // 956 for the same scope.
+    const groupIdList = filters.groupIds
+        ? String(filters.groupIds).split(',').map(g => g.trim()).filter(Boolean)
+        : (filters.groupId ? [String(filters.groupId)] : null);
+    if (groupIdList && groupIdList.length) {
+        conditions.push(`t.group_id = ANY($${paramIndex++}::bigint[])`);
+        params.push(groupIdList);
     }
 
     // Assignee filter
@@ -1801,6 +1809,7 @@ router.get('/tickets', cacheMiddleware(60), async (req, res) => {
             status: req.query.status,
             priority: req.query.priority,
             groupId: req.query.groupId,
+            groupIds: req.query.groupIds,
             assigneeId: req.query.assigneeId
         };
         
@@ -1909,6 +1918,7 @@ router.get('/count', cacheMiddleware(60), async (req, res) => {
             status: req.query.status,
             priority: req.query.priority,
             groupId: req.query.groupId,
+            groupIds: req.query.groupIds,
             assigneeId: req.query.assigneeId
         };
         
