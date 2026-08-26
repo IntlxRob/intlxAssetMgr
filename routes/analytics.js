@@ -4305,7 +4305,9 @@ router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => 
             -- coverage below — the two are shown together and must describe the
             -- same population.
             logged AS (
-                SELECT COALESCE(SUM(te.time_seconds), 0) / 3600.0 AS hours
+                SELECT COALESCE(SUM(te.time_seconds), 0) / 3600.0 AS hours,
+                       COALESCE(SUM(te.time_seconds) FILTER (WHERE NOT ${IS_ALARM}), 0) / 3600.0 AS hours_human,
+                       COALESCE(SUM(te.time_seconds) FILTER (WHERE ${IS_ALARM}), 0) / 3600.0 AS hours_alarm
                   FROM ticket_time_entries te
                   JOIN tickets t ON t.id = te.ticket_id
                   JOIN groups g ON g.id = t.group_id AND g.expects_time_logging
@@ -4331,6 +4333,16 @@ router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => 
                    AND t.solved_at >= b.from_date
                    AND t.solved_at <  b.to_date + interval '1 day'
                    AND ${HANDLED}
+            ),
+            -- Their standing position, not a figure about the week. Human
+            -- tickets only: an alarm queue is not a personal backlog, and
+            -- counting them would drown the number the header is for.
+            standing AS (
+                SELECT COUNT(*) FILTER (WHERE NOT ${IS_ALARM})::int AS open_human,
+                       COUNT(*) FILTER (WHERE ${IS_ALARM})::int AS open_alarm
+                  FROM tickets t
+                 WHERE t.assignee_id = $1::bigint
+                   AND t.status NOT IN ('solved','closed','deleted')
             )
             SELECT a.total AS assigned, a.human AS assigned_human, a.alarm AS assigned_alarm,
                    s.total AS solved, s.human AS solved_human, s.alarm AS solved_alarm,
@@ -4338,9 +4350,12 @@ router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => 
                    CASE WHEN a.human  > 0 THEN ROUND(100.0 * s.human  / a.human)  END AS solved_vs_assigned_human,
                    CASE WHEN a.alarm  > 0 THEN ROUND(100.0 * s.alarm  / a.alarm)  END AS solved_vs_assigned_alarm,
                    ROUND(l.hours::numeric, 1) AS hours_logged,
+                   ROUND(l.hours_human::numeric, 1) AS hours_human,
+                   ROUND(l.hours_alarm::numeric, 1) AS hours_alarm,
                    CASE WHEN c.resolved > 0
-                        THEN ROUND(100.0 * c.with_time / c.resolved) END AS coverage_pct
-              FROM assigned a, solved s, logged l, coverage c
+                        THEN ROUND(100.0 * c.with_time / c.resolved) END AS coverage_pct,
+                   st.open_human, st.open_alarm
+              FROM assigned a, solved s, logged l, coverage c, standing st
         `, [agentId, weekStart]);
 
         // --- what they logged time against ------------------------------------
@@ -4355,6 +4370,15 @@ router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => 
             )
             SELECT t.id, t.subject, t.status, t.organization_name,
                    (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm,
+                   -- Alarm subjects are 200-character machine strings; the code
+                   -- and the organization carry the meaning, the hostnames and
+                   -- equipment ids do not. Falls back to a truncated subject
+                   -- when the pattern does not match.
+                   CASE WHEN (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+                        THEN COALESCE(
+                               substring(t.subject from '([A-Za-z][A-Za-z0-9_]{4,}) @'),
+                               left(t.subject, 60))
+                        ELSE t.subject END AS label,
                    ROUND((SUM(te.time_seconds) / 3600.0)::numeric, 2) AS hours,
                    CASE WHEN t.assignee_id IS DISTINCT FROM $1::bigint
                         THEN t.assignee_name END AS other_assignee
@@ -4368,7 +4392,9 @@ router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => 
              GROUP BY t.id, t.subject, t.status, t.organization_name,
                       t.has_alarmtraq, t.has_virsae, t.has_checkmk,
                       t.assignee_id, t.assignee_name
-             ORDER BY hours DESC
+             -- Human tickets first, then alarms; hours descending within
+             -- each. An agent reads their own work before the queue.
+             ORDER BY (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk), hours DESC
         `, [agentId, weekStart]);
 
         // --- past their communication objective -------------------------------
