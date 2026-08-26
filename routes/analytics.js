@@ -4247,4 +4247,220 @@ router.get('/agents/:agentId/trend', cacheMiddleware(300), async (req, res) => {
     }
 });
 
+
+/**
+ * GET /api/analytics/agents/:agentId/weekly?weekStart=YYYY-MM-DD
+ *
+ * One agent's week, for the Monday summary. weekStart is the Saturday; the
+ * window runs to the following Friday inclusive, matching the filter bar's
+ * "Last week (Sat-Fri)" preset so the app and the email agree on what last
+ * week means.
+ *
+ * A work record rather than a performance report: no comparison against
+ * previous weeks and none against the team. The lists are the substance and
+ * the counts are the header.
+ */
+router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { agentId } = req.params;
+        const { weekStart } = req.query;
+        if (!weekStart) {
+            return res.status(400).json({ error: 'weekStart required (the Saturday)' });
+        }
+
+        // --- the week's counts ------------------------------------------------
+        //
+        // Assigned by creation date, solved by resolution date — each states its
+        // own basis, as everywhere else. So solved-vs-assigned covers two
+        // populations and can exceed 100%, which is information rather than a
+        // fault: over 100% means clearing backlog.
+        const counts = await query(`
+            WITH bounds AS (
+                SELECT $2::date AS from_date, $2::date + 6 AS to_date
+            ),
+            assigned AS (
+                SELECT COUNT(*)::int AS total,
+                       COUNT(*) FILTER (WHERE NOT ${IS_ALARM})::int AS human,
+                       COUNT(*) FILTER (WHERE ${IS_ALARM})::int AS alarm
+                  FROM tickets t CROSS JOIN bounds b
+                 WHERE t.assignee_id = $1::bigint
+                   AND t.created_at >= b.from_date
+                   AND t.created_at <  b.to_date + interval '1 day'
+                   -- No HANDLED here, unlike solved below: assigned counts what
+                   -- landed on them, including alarms that cleared themselves.
+                   -- The scorecard's assigned CTE makes the same distinction.
+            ),
+            solved AS (
+                SELECT COUNT(*)::int AS total,
+                       COUNT(*) FILTER (WHERE NOT ${IS_ALARM})::int AS human,
+                       COUNT(*) FILTER (WHERE ${IS_ALARM})::int AS alarm
+                  FROM tickets t CROSS JOIN bounds b
+                 WHERE t.assignee_id = $1::bigint
+                   AND t.solved_at >= b.from_date
+                   AND t.solved_at <  b.to_date + interval '1 day'
+                   AND ${HANDLED}
+            ),
+            -- Hours are keyed on who logged them, so helping on a colleague's
+            -- ticket counts. Restricted to groups that expect logging, to match
+            -- coverage below — the two are shown together and must describe the
+            -- same population.
+            logged AS (
+                SELECT COALESCE(SUM(te.time_seconds), 0) / 3600.0 AS hours
+                  FROM ticket_time_entries te
+                  JOIN tickets t ON t.id = te.ticket_id
+                  JOIN groups g ON g.id = t.group_id AND g.expects_time_logging
+                  CROSS JOIN bounds b
+                 WHERE te.agent_id = $1::bigint
+                   AND te.created_at >= b.from_date
+                   AND te.created_at <  b.to_date + interval '1 day'
+                   -- Machine-written entries; see the guard on
+                   -- /agents/ticket-time. Kept because a report showing
+                   -- fabricated hours to the person they describe would be
+                   -- worse than most bugs.
+                   AND te.created_at > t.created_at + interval '1 minute'
+            ),
+            coverage AS (
+                SELECT COUNT(*)::int AS resolved,
+                       COUNT(*) FILTER (
+                         WHERE COALESCE(t.billable_time_minutes, 0) > 0
+                       )::int AS with_time
+                  FROM tickets t
+                  JOIN groups g ON g.id = t.group_id AND g.expects_time_logging
+                  CROSS JOIN bounds b
+                 WHERE t.assignee_id = $1::bigint
+                   AND t.solved_at >= b.from_date
+                   AND t.solved_at <  b.to_date + interval '1 day'
+                   AND ${HANDLED}
+            )
+            SELECT a.total AS assigned, a.human AS assigned_human, a.alarm AS assigned_alarm,
+                   s.total AS solved, s.human AS solved_human, s.alarm AS solved_alarm,
+                   CASE WHEN a.total  > 0 THEN ROUND(100.0 * s.total  / a.total)  END AS solved_vs_assigned,
+                   CASE WHEN a.human  > 0 THEN ROUND(100.0 * s.human  / a.human)  END AS solved_vs_assigned_human,
+                   CASE WHEN a.alarm  > 0 THEN ROUND(100.0 * s.alarm  / a.alarm)  END AS solved_vs_assigned_alarm,
+                   ROUND(l.hours::numeric, 1) AS hours_logged,
+                   CASE WHEN c.resolved > 0
+                        THEN ROUND(100.0 * c.with_time / c.resolved) END AS coverage_pct
+              FROM assigned a, solved s, logged l, coverage c
+        `, [agentId, weekStart]);
+
+        // --- what they logged time against ------------------------------------
+        //
+        // Any status: the question is what they worked on, not what closed.
+        // other_assignee names whose ticket it was when it was not theirs —
+        // helping on a colleague's ticket is real effort and the row should say
+        // so.
+        const logged = await query(`
+            WITH bounds AS (
+                SELECT $2::date AS from_date, $2::date + 6 AS to_date
+            )
+            SELECT t.id, t.subject, t.status, t.organization_name,
+                   (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm,
+                   ROUND((SUM(te.time_seconds) / 3600.0)::numeric, 2) AS hours,
+                   CASE WHEN t.assignee_id IS DISTINCT FROM $1::bigint
+                        THEN t.assignee_name END AS other_assignee
+              FROM ticket_time_entries te
+              JOIN tickets t ON t.id = te.ticket_id
+              CROSS JOIN bounds b
+             WHERE te.agent_id = $1::bigint
+               AND te.created_at >= b.from_date
+               AND te.created_at <  b.to_date + interval '1 day'
+               AND te.created_at > t.created_at + interval '1 minute'
+             GROUP BY t.id, t.subject, t.status, t.organization_name,
+                      t.has_alarmtraq, t.has_virsae, t.has_checkmk,
+                      t.assignee_id, t.assignee_name
+             ORDER BY hours DESC
+        `, [agentId, weekStart]);
+
+        // --- past their communication objective -------------------------------
+        //
+        // A live position rather than a period rate: which of their open tickets
+        // are past the objective *now*. The objective never pauses — the status
+        // reference is explicit about that — so customer-side and vendor-side
+        // tickets are on one list, with ball_with saying what kind of update to
+        // send rather than implying a softer obligation.
+        //
+        // Measured from the last public comment, because a public comment is the
+        // update. A ticket with none measures from creation: never updated since
+        // it arrived is the worst case, not one to skip.
+        const updates = await query(`
+            WITH last_comment AS (
+                SELECT DISTINCT ON (ticket_id) ticket_id, created_at
+                  FROM ticket_public_comments
+                 WHERE is_public
+                 ORDER BY ticket_id, created_at DESC
+            )
+            SELECT t.id, t.subject, t.priority, t.organization_name,
+                   COALESCE(cs.agent_label, t.status) AS status,
+                   bh.ball_with,
+                   tg.comm_objective_minutes AS objective_minutes,
+                   ROUND(EXTRACT(EPOCH FROM (
+                     now() - COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC')
+                   )) / 60)::int AS minutes_since_update,
+                   ROUND(EXTRACT(EPOCH FROM (
+                     now() - COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC')
+                   )) / 60)::int - tg.comm_objective_minutes AS minutes_over
+              FROM tickets t
+              LEFT JOIN last_comment lc ON lc.ticket_id = t.id
+              LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+              LEFT JOIN sla_category_behaviour bh
+                     ON bh.status_category = COALESCE(cs.status_category, t.status)
+              JOIN sla_targets tg ON tg.priority = COALESCE(t.priority, 'normal')
+             WHERE t.assignee_id = $1::bigint
+               AND t.status NOT IN ('solved','closed','deleted')
+               AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+               AND EXTRACT(EPOCH FROM (
+                     now() - COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC')
+                   )) / 60 > tg.comm_objective_minutes
+               -- Anything quiet for 30+ days is counted in the stale section
+               -- instead.
+               -- Listing it here too put year-old internal projects at the top
+               -- of the list and recent slippage out of sight below them.
+               AND COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC')
+                     >= now() - interval '30 days'
+             ORDER BY minutes_over DESC
+        `, [agentId]);
+
+        // --- and the ones that have been sitting -------------------------------
+        //
+        // A count and a date rather than a list. Thirty days without a public
+        // comment is a sentence an agent understands without knowing the
+        // objective table, and sixty rows they scroll past every Monday teaches
+        // them to skip the section.
+        const stale = await query(`
+            WITH last_comment AS (
+                SELECT DISTINCT ON (ticket_id) ticket_id, created_at
+                  FROM ticket_public_comments
+                 WHERE is_public
+                 ORDER BY ticket_id, created_at DESC
+            )
+            SELECT COUNT(*)::int AS tickets,
+                   MIN(COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC'))::date
+                     AS oldest_update
+              FROM tickets t
+              LEFT JOIN last_comment lc ON lc.ticket_id = t.id
+             WHERE t.assignee_id = $1::bigint
+               AND t.status NOT IN ('solved','closed','deleted')
+               AND NOT (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk)
+               AND COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC')
+                     < now() - interval '30 days'
+        `, [agentId]);
+
+        const agent = await query(
+            `SELECT id, name FROM agents WHERE id = $1::bigint`, [agentId]
+        );
+
+        res.json({
+            agent: agent.rows[0] ?? { id: String(agentId), name: null },
+            week_start: weekStart,
+            week: counts.rows[0],
+            logged: logged.rows,
+            updates: updates.rows,
+            stale: stale.rows[0],
+            note: 'Saturday to Friday. Assigned counts by creation date, solved by resolution date, so solved vs assigned covers two populations and can exceed 100% — over 100% means clearing backlog. Hours and coverage cover groups where time logging is expected. The update list is a live position, not a rate: the communication objective never pauses, so tickets waiting on a customer or vendor appear too, with ball_with saying what kind of update to send.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
