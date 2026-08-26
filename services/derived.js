@@ -64,9 +64,13 @@ function computeAlarmFlags(ticket) {
  */
 function computeFirstReplyMinutes(ticket) {
   if (ticket.metric_set) {
-    const minutes = ticket.metric_set.reply_time_in_minutes?.business ||
-                    ticket.metric_set.reply_time_in_minutes?.calendar;
-    if (minutes) return Math.round(minutes);
+    // Calendar, not business: every target in the Zendesk SLA policy is
+    // business_hours: false, because coverage is continuous. `??` not `||` —
+    // a calendar time of zero is a real value, and `||` would fall through to
+    // business on precisely the fastest tickets.
+    const minutes = ticket.metric_set.reply_time_in_minutes?.calendar ??
+                    ticket.metric_set.reply_time_in_minutes?.business;
+    if (minutes != null) return Math.round(minutes);
   }
 
   const field = findField(ticket.custom_fields, FIRST_REPLY_FIELD_ID);
@@ -82,9 +86,13 @@ function computeFirstReplyMinutes(ticket) {
 
 function computeResolutionMinutes(ticket) {
   if (ticket.metric_set) {
-    const minutes = ticket.metric_set.full_resolution_time_in_minutes?.business ||
-                    ticket.metric_set.full_resolution_time_in_minutes?.calendar;
-    if (minutes) return Math.round(minutes);
+    // Calendar, not business: every target in the Zendesk SLA policy is
+    // business_hours: false, because coverage is continuous. `??` not `||` —
+    // a calendar time of zero is a real value, and `||` would fall through to
+    // business on precisely the fastest tickets.
+    const minutes = ticket.metric_set.full_resolution_time_in_minutes?.calendar ??
+                    ticket.metric_set.full_resolution_time_in_minutes?.business;
+    if (minutes != null) return Math.round(minutes);
   }
 
   const field = findField(ticket.custom_fields, RESOLUTION_FIELD_ID);
