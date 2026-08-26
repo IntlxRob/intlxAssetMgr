@@ -294,10 +294,14 @@ async function syncTickets() {
       ticket.metric_set?.replies ?? null,
       ticket.metric_set?.comments ?? null,                                    // FIXED: was full_resolution_time
       ticket.metric_set?.reopens ?? 0,
-      ticket.metric_set?.first_resolution_time_in_minutes?.business ?? null,  // FIXED: was reply_time
-      ticket.metric_set?.full_resolution_time_in_minutes?.business ?? null,
-      ticket.metric_set?.agent_wait_time_in_minutes?.business ?? null,
-      ticket.metric_set?.requester_wait_time_in_minutes?.business ?? null,
+      ticket.metric_set?.first_resolution_time_in_minutes?.calendar ?? null,  // FIXED: was reply_time
+      ticket.metric_set?.full_resolution_time_in_minutes?.calendar ?? null,
+      ticket.metric_set?.agent_wait_time_in_minutes?.calendar ?? null,
+      ticket.metric_set?.requester_wait_time_in_minutes?.calendar ?? null,
+      // Still business hours, unlike the four above. tickets_sla subtracts
+      // this from a calendar resolution time, so it under-credits vendor
+      // delays — but switching it raises compliance and interacts with the
+      // `on_hold >= resolution THEN NULL` clause. Its own change.
       ticket.metric_set?.on_hold_time_in_minutes?.business ?? null,
       // Billing
       billing.is_billable,
