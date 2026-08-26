@@ -4463,4 +4463,218 @@ router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => 
     }
 });
 
+
+/**
+ * Who should receive a weekly report.
+ *
+ * Chosen by behaviour rather than group membership: agents work from several
+ * queues and some sit in a group for visibility only, so expects_time_logging
+ * on a group says nothing about whether the person does ticket work. Anyone
+ * who solved something, logged time, or is holding an open ticket.
+ *
+ * The last clause matters as much as the first two. Someone who did nothing
+ * this week but is carrying open tickets is exactly who a reminder is for.
+ */
+router.get('/reports/weekly/recipients', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { weekStart } = req.query;
+        if (!weekStart) {
+            return res.status(400).json({ error: 'weekStart required (the Saturday)' });
+        }
+
+        const result = await query(`
+            WITH bounds AS (
+                SELECT $1::date AS from_date, $1::date + 6 AS to_date
+            ),
+            activity AS (
+                SELECT a.id, a.name,
+                    (SELECT COUNT(*)::int FROM tickets t CROSS JOIN bounds b
+                      WHERE t.assignee_id = a.id
+                        AND t.solved_at >= b.from_date
+                        AND t.solved_at <  b.to_date + interval '1 day') AS solved,
+                    (SELECT COUNT(*)::int FROM ticket_time_entries te CROSS JOIN bounds b
+                      WHERE te.agent_id = a.id
+                        AND te.created_at >= b.from_date
+                        AND te.created_at <  b.to_date + interval '1 day') AS time_entries,
+                    (SELECT COUNT(*)::int FROM tickets t
+                      WHERE t.assignee_id = a.id
+                        AND t.status NOT IN ('solved','closed','deleted')) AS open_now
+                  FROM agents a
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id)
+            )
+            SELECT id::text AS agent_id, name, solved, time_entries, open_now,
+                   (solved = 0 AND time_entries = 0) AS quiet_this_week
+              FROM activity
+             WHERE solved > 0 OR time_entries > 0 OR open_now > 0
+             ORDER BY name
+        `, [weekStart]);
+
+        res.json({
+            week_start: weekStart,
+            recipients: result.rows,
+            count: result.rows.length,
+            note: 'Anyone who solved a ticket, logged time, or is holding one open. Not scoped by group membership: agents work from several queues and some are in a group for visibility only.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * The manager view of the same week.
+ *
+ * Returns the full roster and a flagged subset. A table of everyone read every
+ * week becomes wallpaper; a short list of who needs attention gets read. Both
+ * are here so the formatting can decide what leads.
+ *
+ * Flags are relative to the team where a comparison makes sense, so they stay
+ * meaningful as volumes change. The exception is stale, which is absolute:
+ * thirty days without a word is thirty days regardless of what anyone else is
+ * doing.
+ *
+ * Coverage is deliberately not flagged. Alarm logging splits bimodally across
+ * the team and that is an unsettled policy question rather than a performance
+ * failure.
+ */
+router.get('/reports/weekly/manager', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { weekStart } = req.query;
+        if (!weekStart) {
+            return res.status(400).json({ error: 'weekStart required (the Saturday)' });
+        }
+
+        const result = await query(`
+            WITH bounds AS (
+                SELECT $1::date AS from_date, $1::date + 6 AS to_date
+            ),
+            last_comment AS (
+                SELECT DISTINCT ON (ticket_id) ticket_id, created_at
+                  FROM ticket_public_comments
+                 WHERE is_public
+                 ORDER BY ticket_id, created_at DESC
+            ),
+            people AS (
+                SELECT a.id, a.name
+                  FROM agents a
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM automation_accounts aa WHERE aa.agent_id = a.id)
+            ),
+            rows AS (
+                SELECT p.id, p.name,
+                    (SELECT COUNT(*)::int FROM tickets t CROSS JOIN bounds b
+                      WHERE t.assignee_id = p.id
+                        AND t.created_at >= b.from_date
+                        AND t.created_at <  b.to_date + interval '1 day') AS assigned,
+                    (SELECT COUNT(*)::int FROM tickets t CROSS JOIN bounds b
+                      WHERE t.assignee_id = p.id
+                        AND t.created_at >= b.from_date
+                        AND t.created_at <  b.to_date + interval '1 day'
+                        AND NOT ${IS_ALARM}) AS assigned_human,
+                    (SELECT COUNT(*)::int FROM tickets t CROSS JOIN bounds b
+                      WHERE t.assignee_id = p.id
+                        AND t.solved_at >= b.from_date
+                        AND t.solved_at <  b.to_date + interval '1 day'
+                        AND ${HANDLED}) AS solved,
+                    (SELECT COUNT(*)::int FROM tickets t CROSS JOIN bounds b
+                      WHERE t.assignee_id = p.id
+                        AND t.solved_at >= b.from_date
+                        AND t.solved_at <  b.to_date + interval '1 day'
+                        AND NOT ${IS_ALARM}
+                        AND ${HANDLED}) AS solved_human,
+                    (SELECT ROUND((COALESCE(SUM(te.time_seconds),0) / 3600.0)::numeric, 1)
+                       FROM ticket_time_entries te
+                       JOIN tickets t ON t.id = te.ticket_id
+                       JOIN groups g ON g.id = t.group_id AND g.expects_time_logging
+                       CROSS JOIN bounds b
+                      WHERE te.agent_id = p.id
+                        AND te.created_at >= b.from_date
+                        AND te.created_at <  b.to_date + interval '1 day'
+                        AND te.created_at > t.created_at + interval '1 minute') AS hours_logged,
+                    (SELECT COUNT(*)::int FROM tickets t
+                      WHERE t.assignee_id = p.id
+                        AND t.status NOT IN ('solved','closed','deleted')) AS open_now,
+                    -- Past the objective and commented within 30 days: the
+                    -- actionable list, matching the per-agent report.
+                    (SELECT COUNT(*)::int
+                       FROM tickets t
+                       LEFT JOIN last_comment lc ON lc.ticket_id = t.id
+                       JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
+                      WHERE t.assignee_id = p.id
+                        AND t.status NOT IN ('solved','closed','deleted')
+                        AND NOT ${IS_ALARM}
+                        AND EXTRACT(EPOCH FROM (now() - COALESCE(lc.created_at,
+                              t.created_at AT TIME ZONE 'UTC'))) / 60
+                            > tg.comm_objective_minutes
+                        AND COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC')
+                            >= now() - interval '30 days') AS overdue,
+                    (SELECT COUNT(*)::int
+                       FROM tickets t
+                       LEFT JOIN last_comment lc ON lc.ticket_id = t.id
+                      WHERE t.assignee_id = p.id
+                        AND t.status NOT IN ('solved','closed','deleted')
+                        AND NOT ${IS_ALARM}
+                        AND COALESCE(lc.created_at, t.created_at AT TIME ZONE 'UTC')
+                            < now() - interval '30 days') AS stale
+                  FROM people p
+            )
+            SELECT id::text AS agent_id, name,
+                   assigned, assigned_human, solved, solved_human,
+                   hours_logged, open_now, overdue, stale,
+                   CASE WHEN assigned > 0 THEN ROUND(100.0 * solved / assigned) END
+                     AS solved_vs_assigned,
+                   CASE WHEN assigned_human > 0
+                        THEN ROUND(100.0 * solved_human / assigned_human) END
+                     AS solved_vs_assigned_human
+              FROM rows
+             WHERE assigned > 0 OR solved > 0 OR open_now > 0 OR hours_logged > 0
+             ORDER BY name
+        `, [weekStart]);
+
+        const agents = result.rows;
+
+        // Median over the people who have any, so a team of mostly-zero does not
+        // set the bar at zero and flag everyone.
+        const med = (vals) => {
+            const v = vals.filter((x) => x != null).sort((a, b) => a - b);
+            if (!v.length) return 0;
+            const m = Math.floor(v.length / 2);
+            return v.length % 2 ? v[m] : Math.round((v[m - 1] + v[m]) / 2);
+        };
+        const overdueMedian = med(agents.map((a) => a.overdue));
+
+        const flags = [];
+        for (const a of agents) {
+            const reasons = [];
+            // Absolute, and three rather than one: everyone accumulates the
+            // odd quiet ticket, and flagging that made 9 of 27 appear.
+            if (a.stale >= 3) {
+                reasons.push(`${a.stale} tickets with no update in 30+ days`);
+            }
+            // Triple the median with a floor of six. The team median is
+            // typically 1, so a doubling rule fired at 3 and caught half the
+            // team; the floor is what does the work at these volumes.
+            if (a.overdue >= Math.max(6, overdueMedian * 3)) {
+                reasons.push(`${a.overdue} past their communication objective, team median ${overdueMedian}`);
+            }
+            // Backlog genuinely growing, not merely a ticket arriving on a
+            // Friday. Solving 16 of 17 is a good week and was being flagged.
+            if (a.assigned_human >= 5 && a.solved_human * 2 < a.assigned_human) {
+                reasons.push(`solved ${a.solved_human} of ${a.assigned_human} human tickets assigned`);
+            }
+            if (reasons.length) flags.push({ agent_id: a.agent_id, name: a.name, reasons });
+        }
+
+        res.json({
+            week_start: weekStart,
+            agents,
+            flagged: flags,
+            team: { overdue_median: overdueMedian, agents: agents.length },
+            note: 'Assigned counts by creation date, solved by resolution date. Overdue is a live position: open human tickets past their communication objective, commented within 30 days. Anything quieter than that is counted as stale instead. Coverage is not flagged - alarm logging splits bimodally across the team and that is a policy question rather than a performance one.'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
