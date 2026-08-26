@@ -4456,7 +4456,7 @@ router.get('/agents/:agentId/weekly', cacheMiddleware(300), async (req, res) => 
             logged: logged.rows,
             updates: updates.rows,
             stale: stale.rows[0],
-            note: 'Saturday to Friday. Assigned counts by creation date, solved by resolution date, so solved vs assigned covers two populations and can exceed 100% — over 100% means clearing backlog. Hours and coverage cover groups where time logging is expected. The update list is a live position, not a rate: the communication objective never pauses, so tickets waiting on a customer or vendor appear too, with ball_with saying what kind of update to send.'
+            note: 'Saturday to Friday for the counts and the time logged; the update list and stale count are the position RIGHT NOW and do not change with weekStart. Assigned counts by creation date, solved by resolution date, so solved vs assigned covers two populations and can exceed 100% — over 100% means clearing backlog. Hours and coverage cover groups where time logging is expected. The update list is a live position, not a rate: the communication objective never pauses, so tickets waiting on a customer or vendor appear too, with ball_with saying what kind of update to send.'
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -4670,7 +4670,7 @@ router.get('/reports/weekly/manager', cacheMiddleware(300), async (req, res) => 
             agents,
             flagged: flags,
             team: { overdue_median: overdueMedian, agents: agents.length },
-            note: 'Assigned counts by creation date, solved by resolution date. Overdue is a live position: open human tickets past their communication objective, commented within 30 days. Anything quieter than that is counted as stale instead. Coverage is not flagged - alarm logging splits bimodally across the team and that is a policy question rather than a performance one.'
+            note: 'MIXED BASIS: assigned, solved and hours cover the week requested; overdue, stale and open counts are the position RIGHT NOW and do not change with weekStart. Assigned counts by creation date, solved by resolution date. Overdue is open human tickets past their communication objective, commented within 30 days. Anything quieter than that is counted as stale instead. Coverage is not flagged - alarm logging splits bimodally across the team and that is a policy question rather than a performance one.'
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
