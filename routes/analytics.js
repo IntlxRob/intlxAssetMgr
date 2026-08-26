@@ -1054,7 +1054,7 @@ router.get('/open/updates', cacheMiddleware(120), async (req, res) => {
                 cs.last_public_agent_at,
                 cs.last_agent_at,
                 cs.public_agent_comment_count,
-                tg.update_interval_minutes AS target_minutes,
+                tg.comm_objective_minutes AS target_minutes,
                 COALESCE(b.ball_with, 'intlx') AS ball_with,
                 cs.synced_at,
 
@@ -1085,7 +1085,7 @@ router.get('/open/updates', cacheMiddleware(120), async (req, res) => {
               AND (
                 cs.last_public_agent_at IS NULL
                 OR EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
-                     > tg.update_interval_minutes
+                     > tg.comm_objective_minutes
               )
             -- Never-updated first, then longest-silent. A customer who has
             -- heard nothing at all is a worse position than one who heard
@@ -1103,7 +1103,7 @@ router.get('/open/updates', cacheMiddleware(120), async (req, res) => {
                 COUNT(*) FILTER (
                     WHERE cs.last_public_agent_at IS NULL
                        OR EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
-                            > tg.update_interval_minutes
+                            > tg.comm_objective_minutes
                 )::int AS overdue,
                 COUNT(*) FILTER (WHERE cs.last_agent_at > cs.last_public_agent_at)::int
                     AS internal_only_since,
@@ -1250,7 +1250,7 @@ router.get('/sla/targets', cacheMiddleware(3600), async (req, res) => {
     try {
         const result = await query(`
             SELECT priority, label, response_minutes, resolution_minutes,
-                   escalation_minutes, comm_objective_minutes, resolution_is_business
+                   escalation_minutes, comm_objective_minutes
             FROM sla_targets
             ORDER BY response_minutes
         `);
@@ -2671,7 +2671,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                         / NULLIF(COUNT(*), 0), 1)
                    FROM (
                      SELECT EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
-                            tg.update_interval_minutes AS target
+                            tg.comm_objective_minutes AS target
                        FROM (
                          SELECT ticket_id, created_at,
                                 LAG(created_at) OVER (
@@ -2698,7 +2698,7 @@ router.get('/ops/dashboard', cacheMiddleware(300), async (req, res) => {
                         / NULLIF(COUNT(*), 0), 1)
                    FROM (
                      SELECT EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
-                            tg.update_interval_minutes AS target
+                            tg.comm_objective_minutes AS target
                        FROM (
                          SELECT ticket_id, created_at,
                                 LAG(created_at) OVER (
@@ -2847,7 +2847,7 @@ router.get('/ops/trend', cacheMiddleware(600), async (req, res) => {
                         / NULLIF(COUNT(*), 0), 1)
                    FROM (
                      SELECT EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
-                            tg.update_interval_minutes AS target
+                            tg.comm_objective_minutes AS target
                        FROM (
                          SELECT ticket_id, created_at,
                                 LAG(created_at) OVER (
@@ -2978,7 +2978,7 @@ router.get('/ops/attention', cacheMiddleware(120), async (req, res) => {
                AND ${humanOnly} AND ${realCustomer}
                AND cs.last_public_agent_at IS NOT NULL
                AND EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
-                     > tg.update_interval_minutes
+                     > tg.comm_objective_minutes
         `);
 
         const vendorBlocked = await query(`
@@ -3145,7 +3145,7 @@ router.get('/sla/by-priority', cacheMiddleware(300), async (req, res) => {
                 SELECT t.priority,
                        COUNT(*) FILTER (
                          WHERE EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60
-                               <= tg.update_interval_minutes
+                               <= tg.comm_objective_minutes
                        )::int AS met,
                        COUNT(*)::int AS total
                   FROM (
@@ -3259,7 +3259,7 @@ router.get('/ops/improvements', cacheMiddleware(300), async (req, res) => {
             gaps AS (
                 SELECT p.created_at,
                        EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60 AS gap_min,
-                       tg.update_interval_minutes AS target
+                       tg.comm_objective_minutes AS target
                   FROM pub p
                   JOIN tickets t ON t.id = p.ticket_id
                   LEFT JOIN sla_targets tg ON tg.priority = COALESCE(t.priority,'normal')
@@ -3296,7 +3296,7 @@ router.get('/ops/improvements', cacheMiddleware(300), async (req, res) => {
                AND t.organization_id IS NOT NULL
                AND cs.last_public_agent_at IS NOT NULL
                AND EXTRACT(EPOCH FROM (now() - cs.last_public_agent_at)) / 60
-                     > tg.update_interval_minutes
+                     > tg.comm_objective_minutes
         `);
         metrics.update_compliance = {
             value: upd.rows[0].value,
@@ -3902,7 +3902,7 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 SELECT ${idCol} AS id,
                        COUNT(*) FILTER (
                          WHERE EXTRACT(EPOCH FROM (p.created_at - p.prev)) / 60
-                               <= tg.update_interval_minutes
+                               <= tg.comm_objective_minutes
                        )::int AS met,
                        COUNT(*)::int AS total
                   FROM (
