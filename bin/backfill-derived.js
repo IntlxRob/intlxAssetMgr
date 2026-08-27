@@ -122,7 +122,7 @@ async function backfill() {
   while (true) {
     const { rows } = await pool.query(
       `SELECT id, tags, custom_fields, metric_set,
-              request_type_derived, has_alarmtraq, has_virsae, has_checkmk,
+              request_type_derived, ast_type, has_alarmtraq, has_virsae, has_checkmk,
               first_reply_minutes, resolution_minutes
          FROM tickets
         WHERE id > $1 ${ALL ? '' : 'AND derived_computed_at IS NULL'}
@@ -131,7 +131,7 @@ async function backfill() {
     );
     if (rows.length === 0) break;
 
-    const ids = [], types = [], at = [], vs = [], ck = [], fr = [], rs = [];
+    const ids = [], types = [], ast = [], at = [], vs = [], ck = [], fr = [], rs = [];
 
     for (const row of rows) {
       const ticket = {
@@ -142,6 +142,7 @@ async function backfill() {
       const d = derived.computeDerivedFields(ticket);
 
       if (row.request_type_derived !== d.request_type_derived ||
+          row.ast_type !== d.ast_type ||
           row.has_alarmtraq !== d.has_alarmtraq ||
           row.has_virsae !== d.has_virsae ||
           row.has_checkmk !== d.has_checkmk ||
@@ -153,6 +154,7 @@ async function backfill() {
 
       ids.push(row.id);
       types.push(d.request_type_derived);
+      ast.push(d.ast_type);
       at.push(d.has_alarmtraq); vs.push(d.has_virsae); ck.push(d.has_checkmk);
       fr.push(d.first_reply_minutes); rs.push(d.resolution_minutes);
       lastId = row.id;
@@ -162,18 +164,20 @@ async function backfill() {
       await pool.query(
         `UPDATE tickets AS t
             SET request_type_derived = v.rt,
+                ast_type = v.ast,
                 has_alarmtraq = v.at, has_virsae = v.vs, has_checkmk = v.ck,
                 first_reply_minutes = v.fr, resolution_minutes = v.rs,
                 derived_computed_at = now()
            FROM (SELECT unnest($1::bigint[])  AS id,
                         unnest($2::text[])    AS rt,
+                        unnest($8::text[])    AS ast,
                         unnest($3::boolean[]) AS at,
                         unnest($4::boolean[]) AS vs,
                         unnest($5::boolean[]) AS ck,
                         unnest($6::int[])     AS fr,
                         unnest($7::int[])     AS rs) AS v
           WHERE t.id = v.id`,
-        [ids, types, at, vs, ck, fr, rs]
+        [ids, types, at, vs, ck, fr, rs, ast]
       );
     }
 

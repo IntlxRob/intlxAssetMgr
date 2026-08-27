@@ -19,6 +19,12 @@ const FIRST_REPLY_FIELD_ID = process.env.FIRST_REPLY_FIELD_ID
   ? parseInt(process.env.FIRST_REPLY_FIELD_ID, 10) : 35345064770327;
 const RESOLUTION_FIELD_ID = process.env.RESOLUTION_FIELD_ID
   ? parseInt(process.env.RESOLUTION_FIELD_ID, 10) : 35345460512663;
+// AST Type: which kind of Advanced Services request this is. A work-type
+// vocabulary - advanced_troubleshooting, certificate_management,
+// license_management, software_release_management, escalation_request - not a
+// severity. Present on most tickets and populated on few, so expect nulls.
+const AST_TYPE_FIELD_ID = process.env.AST_TYPE_FIELD_ID
+  ? parseInt(process.env.AST_TYPE_FIELD_ID, 10) : 41174484217751;
 
 const DERIVED_LOGIC_VERSION = 1;
 
@@ -106,10 +112,25 @@ function computeResolutionMinutes(ticket) {
   return null;
 }
 
+/**
+ * The Advanced Services work type, or null.
+ *
+ * The field sits on the form for every ticket, so the key is usually present
+ * and the value usually empty. Empty is normalised to null so that "not set"
+ * is one thing rather than two when the breakdown is grouped.
+ */
+function computeAstType(ticket) {
+  const field = findField(ticket.custom_fields, AST_TYPE_FIELD_ID);
+  if (!field || field.value === null || field.value === undefined) return null;
+  const v = String(field.value).trim();
+  return v === '' ? null : v;
+}
+
 /** Everything the sync writes, in one call. */
 function computeDerivedFields(ticket) {
   return {
     request_type_derived: computeRequestType(ticket),
+    ast_type: computeAstType(ticket),
     first_reply_minutes: computeFirstReplyMinutes(ticket),
     resolution_minutes: computeResolutionMinutes(ticket),
     derived_computed_at: new Date(),
@@ -119,6 +140,8 @@ function computeDerivedFields(ticket) {
 
 module.exports = {
   REQUEST_TYPE_FIELD_ID,
+  AST_TYPE_FIELD_ID,
+  computeAstType,
   FIRST_REPLY_FIELD_ID,
   RESOLUTION_FIELD_ID,
   DERIVED_LOGIC_VERSION,
