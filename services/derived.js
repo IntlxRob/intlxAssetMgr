@@ -25,6 +25,12 @@ const RESOLUTION_FIELD_ID = process.env.RESOLUTION_FIELD_ID
 // severity. Present on most tickets and populated on few, so expect nulls.
 const AST_TYPE_FIELD_ID = process.env.AST_TYPE_FIELD_ID
   ? parseInt(process.env.AST_TYPE_FIELD_ID, 10) : 41174484217751;
+// Starling only. Both are cost codes on their backing report, so the raw slug
+// is the useful value - 1210_wethersfield_suite_103 is what they match on.
+const STARLING_LOCATION_FIELD_ID = process.env.STARLING_LOCATION_FIELD_ID
+  ? parseInt(process.env.STARLING_LOCATION_FIELD_ID, 10) : 24086888738455;
+const STARLING_DEPARTMENT_FIELD_ID = process.env.STARLING_DEPARTMENT_FIELD_ID
+  ? parseInt(process.env.STARLING_DEPARTMENT_FIELD_ID, 10) : 24087305679511;
 
 const DERIVED_LOGIC_VERSION = 1;
 
@@ -126,11 +132,21 @@ function computeAstType(ticket) {
   return v === '' ? null : v;
 }
 
+/** A custom field's value as a trimmed string, or null when unset. */
+function textField(ticket, fieldId) {
+  const field = findField(ticket.custom_fields, fieldId);
+  if (!field || field.value === null || field.value === undefined) return null;
+  const v = String(field.value).trim();
+  return v === '' ? null : v;
+}
+
 /** Everything the sync writes, in one call. */
 function computeDerivedFields(ticket) {
   return {
     request_type_derived: computeRequestType(ticket),
     ast_type: computeAstType(ticket),
+    starling_location: textField(ticket, STARLING_LOCATION_FIELD_ID),
+    starling_department: textField(ticket, STARLING_DEPARTMENT_FIELD_ID),
     first_reply_minutes: computeFirstReplyMinutes(ticket),
     resolution_minutes: computeResolutionMinutes(ticket),
     derived_computed_at: new Date(),
@@ -141,6 +157,8 @@ function computeDerivedFields(ticket) {
 module.exports = {
   REQUEST_TYPE_FIELD_ID,
   AST_TYPE_FIELD_ID,
+  STARLING_LOCATION_FIELD_ID,
+  STARLING_DEPARTMENT_FIELD_ID,
   computeAstType,
   FIRST_REPLY_FIELD_ID,
   RESOLUTION_FIELD_ID,
