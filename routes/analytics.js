@@ -1637,6 +1637,9 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         t.rounding_increment,
 
         t.request_type_derived,
+        t.ast_type,
+        t.starling_location,
+        t.starling_department,
         t.has_alarmtraq,
         t.has_virsae,
         t.has_checkmk,
@@ -1745,6 +1748,9 @@ router.get('/export/tickets', async (req, res) => {
         t.rounding_increment,
 
         t.request_type_derived,
+        t.ast_type,
+        t.starling_location,
+        t.starling_department,
         t.has_alarmtraq,
         t.has_virsae,
         t.has_checkmk,
