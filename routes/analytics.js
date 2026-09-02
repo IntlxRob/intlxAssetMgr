@@ -115,6 +115,24 @@ function buildWhereClause(filters = {}, options = {}) {
         params.push(filters.priority);
     }
 
+    // Support level. A property of the customer rather than the ticket, so it
+    // joins to organizations. The 'none' value covers untiered organizations
+    // and tickets with no organization at all - without that second half those
+    // tickets are unreachable by any value of this filter.
+    if (filters.visualizeTier) {
+        if (filters.visualizeTier === 'none') {
+            conditions.push(`(t.organization_id IS NULL OR EXISTS (
+                SELECT 1 FROM organizations o
+                 WHERE o.id = t.organization_id AND o.visualize_tier IS NULL))`);
+        } else {
+            params.push(filters.visualizeTier);
+            conditions.push(`EXISTS (
+                SELECT 1 FROM organizations o
+                 WHERE o.id = t.organization_id
+                   AND o.visualize_tier = $${paramIndex++})`);
+        }
+    }
+
     // Group filter. `groupIds` is the multi-select in the filter bar, sent
     // comma-joined by toQuery; `groupId` is the older singular, still used by
     // several routes. Both land here so a caller cannot silently pick the
@@ -1816,6 +1834,7 @@ router.get('/tickets', cacheMiddleware(60), async (req, res) => {
             priority: req.query.priority,
             groupId: req.query.groupId,
             groupIds: req.query.groupIds,
+            visualizeTier: req.query.visualizeTier,
             assigneeId: req.query.assigneeId
         };
         
@@ -1925,6 +1944,7 @@ router.get('/count', cacheMiddleware(60), async (req, res) => {
             priority: req.query.priority,
             groupId: req.query.groupId,
             groupIds: req.query.groupIds,
+            visualizeTier: req.query.visualizeTier,
             assigneeId: req.query.assigneeId
         };
         

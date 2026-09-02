@@ -394,6 +394,24 @@ async function syncTickets() {
 // ORGANIZATION SYNC
 // ============================================
 
+/**
+ * Support level from an organization's tags. Same rules as migration 017,
+ * highest first - the old implementation checked bare 'basic' first and
+ * resolved "Basic Support, Visualize Premium" to basic, which is the
+ * precedence bug migration 002 refused to freeze into a column.
+ *
+ * visualze-premium is one real organization in Zendesk, misspelt. Matched here
+ * rather than dropped.
+ */
+function detectVisualizeTier(tags) {
+  if (!Array.isArray(tags)) return null;
+  const t = tags.map((x) => String(x).toLowerCase());
+  if (t.includes('visualize-premium') || t.includes('visualze-premium')) return 'premium';
+  if (t.includes('visualize-plus') || t.includes('visualize_plus')) return 'plus';
+  if (t.includes('visualize-basic')) return 'basic';
+  return null;
+}
+
 async function syncOrganizations() {
   console.log('\n🏢 Starting organization sync...');
   
@@ -423,15 +441,17 @@ async function syncOrganizations() {
         try {
           await pool.query(`
             INSERT INTO organizations (
-              id, name, created_at, updated_at, domain_names, details, notes, tags
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              id, name, created_at, updated_at, domain_names, details, notes, tags,
+              visualize_tier
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (id) DO UPDATE SET
               name = EXCLUDED.name,
               updated_at = EXCLUDED.updated_at,
               domain_names = EXCLUDED.domain_names,
               details = EXCLUDED.details,
               notes = EXCLUDED.notes,
-              tags = EXCLUDED.tags
+              tags = EXCLUDED.tags,
+              visualize_tier = EXCLUDED.visualize_tier
           `, [
             org.id,
             org.name,
@@ -440,7 +460,8 @@ async function syncOrganizations() {
             JSON.stringify(org.domain_names),
             org.details,
             org.notes,
-            JSON.stringify(org.tags)
+            JSON.stringify(org.tags),
+            detectVisualizeTier(org.tags)
           ]);
         } catch (err) {
           console.error(`Error upserting organization ${org.id}:`, err.message);
