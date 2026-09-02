@@ -1423,6 +1423,16 @@ router.get('/organizations/summary', cacheMiddleware(300), async (req, res) => {
         const filters = req.query;
         const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
 
+        // Source is not a buildWhereClause filter - it is a column condition,
+        // handled inline here as it is in /tickets/paginated and
+        // /export/tickets. Without it the tab ignored the Source control
+        // entirely: the chip said "No alarm tickets" while every organization
+        // and every count came back unfiltered.
+        const sourceClause =
+          filters.source === 'alarm'  ? `AND ${IS_ALARM}`
+        : filters.source === 'human'  ? `AND NOT ${IS_ALARM}`
+        : '';
+
         const result = await query(`
             WITH scoped AS (
                 SELECT
@@ -1441,6 +1451,7 @@ router.get('/organizations/summary', cacheMiddleware(300), async (req, res) => {
                 JOIN tickets_sla s ON s.id = t.id
                 WHERE t.organization_id IS NOT NULL
                 ${whereClause}
+                ${sourceClause}
             )
             SELECT
                 organization_id,
@@ -1842,6 +1853,7 @@ router.get('/tickets', cacheMiddleware(60), async (req, res) => {
         const offset = parseInt(req.query.offset) || 0;
         
         const { whereClause, params } = buildWhereClause(filters);
+
         
         // Add limit and offset to params
         params.push(limit, offset);
@@ -1936,17 +1948,19 @@ router.get('/filters', cacheMiddleware(300), async (req, res) => {
  */
 router.get('/count', cacheMiddleware(60), async (req, res) => {
     try {
-        const filters = {
-            startDate: req.query.startDate,
-            endDate: req.query.endDate,
-            organizationId: req.query.organizationId,
-            status: req.query.status,
-            priority: req.query.priority,
-            groupId: req.query.groupId,
-            groupIds: req.query.groupIds,
-            visualizeTier: req.query.visualizeTier,
-            assigneeId: req.query.assigneeId
-        };
+        // req.query wholesale, as every other handler does. Picking fields by
+        // hand meant any filter not on the list was silently discarded - the
+        // group filter, then support level, then source, each found only when
+        // a number looked wrong. buildWhereClause reads named fields, so extra
+        // params are ignored rather than dangerous.
+        const filters = req.query;
+
+        // Source is a column condition rather than a buildWhereClause filter,
+        // so it is applied separately here as in the other handlers.
+        const sourceClause =
+          filters.source === 'alarm'  ? `AND ${IS_ALARM}`
+        : filters.source === 'human'  ? `AND NOT ${IS_ALARM}`
+        : '';
         
         const { whereClause, params } = buildWhereClause(filters);
         
@@ -1954,6 +1968,7 @@ router.get('/count', cacheMiddleware(60), async (req, res) => {
             SELECT COUNT(*) as count
             FROM tickets t
             ${whereClause}
+            ${whereClause ? sourceClause : sourceClause.replace(/^AND /, 'WHERE ')}
         `, params);
 
         res.json({ count: parseInt(result.rows[0].count) });
