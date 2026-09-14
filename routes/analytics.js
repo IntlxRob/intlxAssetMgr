@@ -1766,6 +1766,7 @@ router.get('/export/tickets', async (req, res) => {
         t.priority,
         t.created_at,
         t.updated_at,
+        t.solved_at,
         t.organization_id,
         t.organization_name,
         t.assignee_name,
