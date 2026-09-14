@@ -549,6 +549,51 @@ async function syncAgents() {
   }
 }
 
+/**
+ * All Zendesk users, for requester names.
+ *
+ * syncAgents already fetches the agent and admin subset; this is everyone,
+ * because a requester is by definition not in that subset and there is no
+ * cheap way to ask for "the users who have raised tickets". At four thousand
+ * rows the overlap with agents costs nothing.
+ */
+async function syncUsers() {
+  console.log('\n👤 Starting user sync...');
+  await updateSyncStatus('users', 'syncing');
+
+  try {
+    let url = `${ZENDESK_API_BASE}/users.json?per_page=100`;
+    let total = 0;
+
+    while (url) {
+      const data = await makeZendeskRequest(url);
+      for (const u of (data.users || [])) {
+        await pool.query(
+          `INSERT INTO users (id, name, email, role, organization_id, synced_at)
+           VALUES ($1, $2, $3, $4, $5, now())
+           ON CONFLICT (id) DO UPDATE SET
+             name = EXCLUDED.name,
+             email = EXCLUDED.email,
+             role = EXCLUDED.role,
+             organization_id = EXCLUDED.organization_id,
+             synced_at = now()`,
+          [u.id, u.name, u.email, u.role, u.organization_id]
+        );
+        total++;
+      }
+      url = data.next_page;
+    }
+
+    console.log(`✅ User sync completed: ${total} synced`);
+    await updateSyncStatus('users', 'success', null, total, true);
+    return { synced: total };
+  } catch (error) {
+    console.error('User sync failed:', error.message);
+    await updateSyncStatus('users', 'error', error.message);
+    throw error;
+  }
+}
+
 // ============================================
 // GROUP SYNC
 // ============================================
@@ -1270,6 +1315,7 @@ module.exports = {
   syncTickets,
   syncOrganizations,
   syncAgents,
+  syncUsers,
   syncGroups,
   syncGroupMemberships,
   syncTimeEntries,

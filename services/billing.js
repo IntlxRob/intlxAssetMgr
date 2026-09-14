@@ -125,8 +125,23 @@ async function refreshDenormalisedNames(pool) {
     console.warn('[billing] assignee_name refresh skipped:', err.message);
   }
 
+  let requester = { rowCount: 0 };
+  try {
+    requester = await pool.query(`
+      UPDATE tickets t
+         SET requester_name = u.name
+        FROM users u
+       WHERE t.requester_id = u.id
+         AND (t.requester_name IS DISTINCT FROM u.name)
+    `);
+  } catch (err) {
+    // Same reasoning as the agents block: an older database may have no users
+    // table, and a missing requester name should not fail a sync.
+    console.warn('[billing] requester_name refresh skipped:', err.message);
+  }
+
   console.log(`[billing] names refreshed — orgs: ${org.rowCount}, agents: ${agent.rowCount}`);
-  return { organizations: org.rowCount, agents: agent.rowCount };
+  return { organizations: org.rowCount, agents: agent.rowCount, requesters: requester.rowCount };
 }
 
 module.exports = {

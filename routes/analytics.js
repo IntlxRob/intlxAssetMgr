@@ -1615,8 +1615,10 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
       updated_at: 't.updated_at',
       status: 't.status',
       priority: 't.priority',
+      solved_at: 't.solved_at',
       organization: 't.organization_name',
       assignee: 't.assignee_name',
+      requester: 't.requester_name',
       time: 't.billable_time_minutes',
       billable: 't.is_billable',
       first_reply: 't.first_reply_minutes',
@@ -1656,6 +1658,7 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         t.organization_id,
         t.organization_name,
         t.assignee_id,
+        t.requester_name,
         t.assignee_name,
         t.group_id,
         t.tags,
@@ -1751,6 +1754,7 @@ router.get('/export/tickets', async (req, res) => {
       id: 't.id', created_at: 't.created_at', updated_at: 't.updated_at', solved_at: 't.solved_at',
       status: 't.status', priority: 't.priority',
       organization: 't.organization_name', assignee: 't.assignee_name',
+      requester: 't.requester_name',
       time: 't.billable_time_minutes', billable: 't.is_billable',
       first_reply: 't.first_reply_minutes', resolution: 't.resolution_minutes'
     };
@@ -1769,6 +1773,7 @@ router.get('/export/tickets', async (req, res) => {
         t.solved_at,
         t.organization_id,
         t.organization_name,
+        t.requester_name,
         t.assignee_name,
         t.tags,
 
