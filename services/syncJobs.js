@@ -1238,7 +1238,9 @@ function scheduleSync() {
 
   cron.schedule(SYNC_CONFIG.schedules.agents, () => {
     console.log('\nRunning scheduled agent sync...');
-    syncAgents().catch(err => console.error('Scheduled agent sync error:', err));
+    syncAgents()
+      .then(() => syncUsers())
+      .catch(err => console.error('Scheduled agent sync error:', err));
   });
 
   cron.schedule(SYNC_CONFIG.schedules.groups, () => {
@@ -1293,6 +1295,7 @@ function scheduleSync() {
     Promise.all([
       syncOrganizations(),
       syncAgents(),
+      syncUsers(),
       syncGroups(),
       syncGroupMemberships(),
       syncCustomStatuses(pool)
