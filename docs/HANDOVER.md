@@ -156,3 +156,13 @@ The column headers are generated from the values, so changing one is an UPDATE.
   it records an error and leaves the cursor alone. Before that guard, a
   placeholder-count mismatch lost twelve days of tickets while reporting
   success.
+
+## Export drift
+
+`/export/tickets` maintains its own SELECT list, separate from
+`/tickets/paginated`. In September 2026 `solved_at` was missing from it for
+weeks: the column rendered on screen and exported blank, and because the
+endpoint's `sortable` map did list `solved_at`, sorting by it appeared to work.
+
+`group_id` and `reply_count` are still absent there. Worth comparing the two
+lists when adding a column to either.
