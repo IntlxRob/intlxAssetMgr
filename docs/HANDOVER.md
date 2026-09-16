@@ -166,3 +166,22 @@ endpoint's `sortable` map did list `solved_at`, sorting by it appeared to work.
 
 `group_id` and `reply_count` are still absent there. Worth comparing the two
 lists when adding a column to either.
+
+## Cursor bugs
+
+Two now, both from the sync's account of where it had reached being wrong.
+
+**August 2026** - a placeholder-count mismatch failed every INSERT while the
+sync reported success and advanced its cursor. Twelve days, 2,522 tickets. The
+guard added afterwards fails the run when tickets are fetched and none save.
+
+**September 2026** - the end-of-stream branch stamped `last_sync_at = NOW()`
+instead of Zendesk's `end_time`, discarding every ticket updated while the run
+was still writing. A slow trickle from June 2025 onward: 222 tickets reading
+open that Zendesk had solved, inflating every backlog and aging figure and
+depressing solved counts. Fixed by using the `end_time` the loop already holds;
+`bin/refresh-stale-statuses.js` corrected the accumulated rows.
+
+The guard did not catch the second, because writes were succeeding - just not
+for the tickets that were skipped. A staleness check comparing our newest
+`updated_at` against Zendesk's would have.
