@@ -373,10 +373,18 @@ async function syncTickets() {
       return { synced: 0, failed: true, message: msg };
     }
 
-    // FIXED: Only update timestamp if we reached end_of_stream
+    // Zendesk's end_time, not NOW(). The stream ends at the moment Zendesk
+    // built the response, and the run then spends time writing rows - stamping
+    // NOW() discards every ticket updated during that window. A slow trickle,
+    // permanently lost: by September 2026 it had left 191 tickets reading open
+    // that Zendesk had long since solved.
+    //
+    // Re-reading the final second on the next run is harmless, the upsert
+    // being idempotent. An overlap is always preferable to a gap.
     if (endOfStream) {
-      await updateSyncStatus('tickets', 'success', null, totalTicketsSynced, true);
-      console.log('✅ Ticket sync completed (end of stream reached)');
+      const streamEnd = new Date(currentStartTime * 1000).toISOString();
+      await updateSyncStatus('tickets', 'success', null, totalTicketsSynced, false, streamEnd);
+      console.log(`✅ Ticket sync completed (end of stream at ${streamEnd})`);
     } else {
       // Save the cursor position for next sync but don't update to NOW()
       const newTimestamp = new Date(currentStartTime * 1000).toISOString();
