@@ -3,20 +3,50 @@ const axios = require('axios');
 
 // Environment Variables
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
-const ZENDESK_EMAIL     = process.env.ZENDESK_EMAIL;
-const ZENDESK_TOKEN     = process.env.ZENDESK_API_TOKEN;
 
 const BASE_URL = `https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2`;
 const CUSTOM_OBJECT_KEY = 'asset';
 
-// Axios instance with basic auth
+const { authHeader, authMode, invalidateToken } = require('./zendeskAuth');
+
+// Axios instance WITHOUT a baked-in credential.
+//
+// The Authorization header used to be computed once, here, at module load.
+// An OAuth access token expires (48h maximum), so the header has to be built
+// per request instead. Every function in this file shares this instance, so
+// an async request interceptor converts all of them at once.
 const zendeskApi = axios.create({
   baseURL: BASE_URL,
   headers: {
-    Authorization: `Basic ${Buffer.from(`${ZENDESK_EMAIL}/token:${ZENDESK_TOKEN}`).toString('base64')}`,
     'Content-Type': 'application/json',
   },
 });
+
+zendeskApi.interceptors.request.use(async (config) => {
+  config.headers.Authorization = await authHeader();
+  return config;
+});
+
+// Same behaviour zendeskRequest gives syncJobs: on a 401, drop the cached
+// token and retry once. Re-issuing through zendeskApi.request re-runs the
+// request interceptor above, so the retry carries a freshly minted token.
+// A second 401 is a real credential problem and is allowed to propagate.
+zendeskApi.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const config = error.config || {};
+    const status = error.response && error.response.status;
+
+    if (status === 401 && authMode() === 'oauth_client' && !config.__zdRetried) {
+      config.__zdRetried = true;
+      console.warn('⚠️  Zendesk 401 in services/zendesk.js — re-minting token and retrying once.');
+      invalidateToken();
+      return zendeskApi.request(config);
+    }
+
+    return Promise.reject(error);
+  }
+);
 
 // Search users by name/email
 async function searchUsers(query) {
