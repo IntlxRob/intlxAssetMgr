@@ -8,10 +8,12 @@ router.get('/ping', (_req, res) => res.status(200).send('admin-metrics-ok'));
 
 // ---- Zendesk creds (reuse your existing env) ----
 const SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
-const EMAIL     = process.env.ZENDESK_EMAIL;
-const API_TOKEN = process.env.ZENDESK_API_TOKEN;
 const ZD_BASE   = `https://${SUBDOMAIN}.zendesk.com`;
-const ZD_AUTH   = 'Basic ' + Buffer.from(`${EMAIL}/token:${API_TOKEN}`).toString('base64');
+
+// Auth comes from services/zendeskAuth: OAuth client_credentials when
+// configured, Basic otherwise. No module-level credential, because an OAuth
+// access token expires and has to be re-minted.
+const { authHeader } = require('../services/zendeskAuth');
 
 // ---- Where to send copies (your existing endpoint) ----
 const COPY_URL = process.env.METRICS_COPY_URL
@@ -40,7 +42,7 @@ async function fetchTicketIdsByCreatedRange(start, end, afterCursor, extraQuery)
   if (afterCursor) url += `&page[after]=${encodeURIComponent(afterCursor)}`;
 
   const r = await axios.get(url, {
-    headers: { Authorization: ZD_AUTH, Accept: 'application/json' },
+    headers: { Authorization: await authHeader(), Accept: 'application/json' },
     timeout: 15000,
     validateStatus: () => true
   });
