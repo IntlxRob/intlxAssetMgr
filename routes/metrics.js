@@ -7,11 +7,11 @@ const {
   updateTicketCustomFields
 } = require('../services/zendesk');
 
-// Reuse any existing secret var; fall back to METRICS_SHARED_SECRET
-const SHARED =
-  process.env.ZENDESK_WEBHOOK_SECRET ||
-  process.env.FRT_SHARED_SECRET ||
-  process.env.METRICS_SHARED_SECRET;
+// Auth is enforced at the mount by middleware/verifyZendeskToken (index.js).
+// The previous in-route x-zd-shared-secret check lived here and was dormant
+// because none of its env vars were set; setting ZENDESK_WEBHOOK_SECRET woke
+// it up and locked out the Zendesk webhook, which sends Bearer instead.
+// One gate, at the mount.
 
 // Your FRT field IDs (env overrides allowed)
 const DEFAULT_BUS = Number(process.env.ZENDESK_FRT_BUSINESS_FIELD_ID || 35345034828183); // Business
@@ -27,10 +27,6 @@ router.get('/ping', (_req, res) => res.status(200).send('pong'));
 // POST /hooks/metrics/copy
 router.post('/copy', async (req, res) => {
   try {
-    // Shared-secret header check (keeps bots out)
-    if (SHARED && req.headers['x-zd-shared-secret'] !== SHARED) {
-      return res.status(401).json({ error: 'bad-shared-secret' });
-    }
 
     const {
       ticket_id,
