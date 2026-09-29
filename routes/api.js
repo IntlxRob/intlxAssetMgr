@@ -4,6 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const zendeskService = require('../services/zendesk');
+const { authHeader } = require('../services/zendeskAuth');
 const googleSheetsService = require('../services/googleSheets');
 const { google } = require('googleapis');
 const calendar = google.calendar('v3');
@@ -412,7 +413,7 @@ router.get('/user-manager-fields', async (req, res) => {
             `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/search.json?query=email:${encodeURIComponent(email)}`,
             {
                 headers: {
-                    'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+                    'Authorization': await authHeader(),
                 }
             }
         );
@@ -757,7 +758,7 @@ router.post('/ticket', async (req, res) => {
                 // First find the user by email
                 const searchRes = await fetch(
                     `https://${process.env.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/search.json?query=email:${encodeURIComponent(email)}`,
-                    { headers: { 'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}` } }
+                    { headers: { 'Authorization': await authHeader() } }
                 );
                 const searchData = await searchRes.json();
                 const zendeskUser = searchData.users?.[0];
@@ -768,7 +769,7 @@ router.post('/ticket', async (req, res) => {
                         {
                             method: 'PUT',
                             headers: {
-                                'Authorization': `Basic ${Buffer.from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`).toString('base64')}`,
+                                'Authorization': await authHeader(),
                                 'Content-Type': 'application/json'
                             },
                             body: JSON.stringify({
@@ -905,9 +906,7 @@ router.post('/zendesk/upload', async (req, res) => {
         const config = {
             headers: {
                 'Content-Type': contentType,
-                'Authorization': `Basic ${Buffer.from(
-                    `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
-                ).toString('base64')}`
+                'Authorization': await authHeader()
             },
             maxBodyLength: Infinity,
             maxContentLength: Infinity
@@ -1063,13 +1062,11 @@ router.get('/zendesk/health', (req, res) => {
 router.get('/groups', async (req, res) => {
     try {
         const subdomain = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
-        const auth = Buffer.from(
-            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
-        ).toString('base64');
+        const auth = await authHeader();
 
         const response = await fetch(
             `https://${subdomain}.zendesk.com/api/v2/groups.json?per_page=100`,
-            { headers: { 'Authorization': `Basic ${auth}` } }
+            { headers: { 'Authorization': auth } }
         );
 
         if (!response.ok) throw new Error(`Zendesk API error: ${response.status}`);
@@ -1092,10 +1089,8 @@ router.get('/escalation-assignees', async (req, res) => {
     const ALLOWED_GROUPS = ['Triage', 'Engineering', 'Escalations', 'DevOPS'];
     try {
         const subdomain = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
-        const auth = Buffer.from(
-            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
-        ).toString('base64');
-        const headers = { 'Authorization': `Basic ${auth}` };
+        const auth = await authHeader();
+        const headers = { 'Authorization': auth };
 
         // 1. Get all groups, keep only the allowed ones
         const groupsResp = await fetch(
@@ -1166,13 +1161,11 @@ router.get('/escalation-assignees', async (req, res) => {
 router.get('/custom-statuses', async (req, res) => {
     try {
         const subdomain = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
-        const auth = Buffer.from(
-            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
-        ).toString('base64');
+        const auth = await authHeader();
 
         const response = await fetch(
             `https://${subdomain}.zendesk.com/api/v2/custom_statuses.json`,
-            { headers: { 'Authorization': `Basic ${auth}` } }
+            { headers: { 'Authorization': auth } }
         );
         if (!response.ok) throw new Error(`Zendesk API error: ${response.status}`);
 
@@ -2989,15 +2982,13 @@ router.get('/zendesk-user-pop', async (req, res) => {
         
         console.log(`[Zendesk User Pop] Normalized: ${phone}`);
         
-        const zendeskAuth = Buffer.from(
-            `${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`
-        ).toString('base64');
+        const zendeskAuth = await authHeader();
         
         const response = await fetch(
             `https://intlxsolutions.zendesk.com/api/v2/users/search.json?query=phone:"${phone}"`,
             {
                 headers: {
-                    'Authorization': `Basic ${zendeskAuth}`,
+                    'Authorization': zendeskAuth,
                     'Content-Type': 'application/json'
                 }
             }
