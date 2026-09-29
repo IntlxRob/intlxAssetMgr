@@ -13,8 +13,8 @@
 
 const crypto = require('crypto');
 
-const WEBHOOK_SECRET = process.env.ZENDESK_WEBHOOK_SECRET;
-const LEGACY_TOKEN = process.env.ZENDESK_API_TOKEN; // delete after cutover
+const WEBHOOK_SECRET = (process.env.ZENDESK_WEBHOOK_SECRET || '').trim();
+const LEGACY_TOKEN = (process.env.ZENDESK_API_TOKEN || '').trim();
 
 function safeEqual(received, expected) {
   if (typeof received !== 'string' || typeof expected !== 'string' || !expected) {
@@ -41,7 +41,7 @@ module.exports = function verifyZendeskToken(req, res, next) {
     return res.status(401).json({ error: 'Missing or invalid Authorization header' });
   }
 
-  const token = authHeader.slice(7);
+  const token = authHeader.slice(7).trim();
 
   if (safeEqual(token, WEBHOOK_SECRET)) {
     return next();
