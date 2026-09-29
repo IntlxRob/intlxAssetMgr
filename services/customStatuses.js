@@ -16,19 +16,17 @@ const axios = require('axios');
 
 const SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
 
-function authHeader() {
-  const token = Buffer
-    .from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`)
-    .toString('base64');
-  return { Authorization: `Basic ${token}`, 'Content-Type': 'application/json' };
-}
+// Auth comes from services/zendeskAuth: OAuth client_credentials when
+// configured, Basic otherwise. Aliased to authHeader so this file's existing
+// call sites read unchanged - but it is async now, so they await it.
+const { authHeaders: authHeader } = require('./zendeskAuth');
 
 async function syncCustomStatuses(pool) {
   console.log('🏷️  Starting custom status sync...');
 
   const { data } = await axios.get(
     `https://${SUBDOMAIN}.zendesk.com/api/v2/custom_statuses.json`,
-    { headers: authHeader() }
+    { headers: await authHeader() }
   );
 
   const statuses = data.custom_statuses || [];

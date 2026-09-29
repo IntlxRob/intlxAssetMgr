@@ -25,18 +25,16 @@ const SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
 const PAGE_DELAY_MS = parseInt(process.env.AUDIT_SYNC_DELAY_MS || '1000', 10);
 const MAX_PAGES = parseInt(process.env.AUDIT_SYNC_MAX_PAGES || '500', 10);
 
-function authHeader() {
-  const token = Buffer
-    .from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`)
-    .toString('base64');
-  return { Authorization: `Basic ${token}` };
-}
+// Auth comes from services/zendeskAuth: OAuth client_credentials when
+// configured, Basic otherwise. Aliased to authHeader so this file's existing
+// call sites read unchanged - but it is async now, so they await it.
+const { authHeaders: authHeader } = require('./zendeskAuth');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function fetchPage(url, attempt = 1) {
   try {
-    const { data } = await axios.get(url, { headers: authHeader(), timeout: 30000 });
+    const { data } = await axios.get(url, { headers: await authHeader(), timeout: 30000 });
     return data;
   } catch (err) {
     const status = err.response?.status;

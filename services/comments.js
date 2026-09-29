@@ -17,12 +17,10 @@ const axios = require('axios');
 const SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN || 'intlxsolutions';
 const DELAY_MS = parseInt(process.env.COMMENT_SYNC_DELAY_MS || '7000', 10);
 
-function authHeader() {
-  const token = Buffer
-    .from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`)
-    .toString('base64');
-  return { Authorization: `Basic ${token}` };
-}
+// Auth comes from services/zendeskAuth: OAuth client_credentials when
+// configured, Basic otherwise. Aliased to authHeader so this file's existing
+// call sites read unchanged - but it is async now, so they await it.
+const { authHeaders: authHeader } = require('./zendeskAuth');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -30,7 +28,7 @@ async function fetchComments(ticketId, attempt = 1) {
   try {
     const { data } = await axios.get(
       `https://${SUBDOMAIN}.zendesk.com/api/v2/tickets/${ticketId}/comments.json`,
-      { headers: authHeader(), timeout: 30000 }
+      { headers: await authHeader(), timeout: 30000 }
     );
     return data.comments || [];
   } catch (err) {
