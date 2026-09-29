@@ -11,6 +11,11 @@ const metrics = require('./routes/metrics');
 const analyticsRoutes = require('./routes/analytics');
 const { initRedis } = require('./middleware/cache');
 const verifyZendeskToken = require('./middleware/verifyZendeskToken');
+const { logAuthStatus } = require('./services/zendeskAuth');
+
+// Confirms the Zendesk credential works and names the acting identity at boot.
+// Never throws - a failure logs loudly rather than stopping the API serving.
+logAuthStatus();
 const { scheduleSync } = require('./services/syncJobs');
 
 const PORT = process.env.PORT || 3000;
