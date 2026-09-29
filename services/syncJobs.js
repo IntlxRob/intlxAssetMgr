@@ -52,7 +52,18 @@ const ZENDESK_CONFIG = {
 };
 
 const ZENDESK_API_BASE = `https://${ZENDESK_CONFIG.subdomain}.zendesk.com/api/v2`;
-const ZENDESK_AUTH = Buffer.from(`${ZENDESK_CONFIG.email}/token:${ZENDESK_CONFIG.token}`).toString('base64');
+
+// Auth comes from services/zendeskAuth: OAuth client_credentials when
+// configured, Basic otherwise. There is deliberately NO module-level
+// credential here any more.
+//
+// An OAuth access token expires (48h maximum, 30 minutes by default), and
+// this sync sleeps 7s between requests for rate-limit safety - roughly 257
+// requests per 30 minutes. A large incremental run crosses a token boundary
+// as a matter of course, not as an edge case. zendeskRequest re-mints and
+// retries once on 401, which is why this file uses it rather than just
+// asking for headers.
+const { zendeskRequest } = require('./zendeskAuth');
 
 // ============================================
 // UTILITY FUNCTIONS
@@ -66,12 +77,7 @@ async function makeZendeskRequest(url, retryCount = 0) {
   try {
     console.log(`🔄 Fetching: ${url}`);
     
-    const response = await axios.get(url, {
-      headers: {
-        'Authorization': `Basic ${ZENDESK_AUTH}`,
-        'Content-Type': 'application/json'
-      }
-    });
+    const response = await zendeskRequest({ method: 'get', url });
     
     const delay = SYNC_CONFIG.rateLimits.delayBetweenRequests;
     console.log(`⏳ Waiting ${delay}ms (rate limit protection)...`);
