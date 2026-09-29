@@ -17,6 +17,10 @@ const ZD_AUTH   = 'Basic ' + Buffer.from(`${EMAIL}/token:${API_TOKEN}`).toString
 const COPY_URL = process.env.METRICS_COPY_URL
   || 'https://intlxassetmgr-proxy.onrender.com/hooks/metrics/copy';
 
+// COPY_URL points back at our own /hooks/metrics/copy, which is now behind
+// verifyZendeskToken. Without this header the backfill 401s against itself.
+const HOOK_SECRET = process.env.ZENDESK_WEBHOOK_SECRET;
+
 // ---- Your numeric field IDs (env overrides allowed) ----
 const FRT_BUS = Number(process.env.ZENDESK_FRT_BUSINESS_FIELD_ID || 35345034828183);
 const FRT_CAL = Number(process.env.ZENDESK_FRT_CALENDAR_FIELD_ID || 35345064770327);
@@ -182,7 +186,10 @@ router.post('/backfill', async (req, res) => {
           if (body.map['full_resolution_time_in_minutes.calendar'] === false) delete body.map['full_resolution_time_in_minutes.calendar'];
 
           const r = await axios.post(COPY_URL, body, {
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...(HOOK_SECRET ? { Authorization: `Bearer ${HOOK_SECRET}` } : {})
+            },
             timeout: 20000,
             validateStatus: () => true
           });

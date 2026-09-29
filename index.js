@@ -10,6 +10,7 @@ const metrics = require('./routes/metrics');
 // ✨ NEW: Add these 3 imports for analytics
 const analyticsRoutes = require('./routes/analytics');
 const { initRedis } = require('./middleware/cache');
+const verifyZendeskToken = require('./middleware/verifyZendeskToken');
 const { scheduleSync } = require('./services/syncJobs');
 
 const PORT = process.env.PORT || 3000;
@@ -67,8 +68,13 @@ app.use(cookieParser());
 })();
 
 app.use('/api', apiRoutes);
-app.use('/hooks/metrics', metrics);
-app.use('/admin/metrics', require('./routes/metricsBackfill'));
+app.use('/hooks/metrics', verifyZendeskToken, metrics);
+// /ping is a harmless health check; every other route under this mount
+// writes to Zendesk, so it needs the shared secret.
+const protectMetricsAdmin = (req, res, next) =>
+  req.path === '/ping' ? next() : verifyZendeskToken(req, res, next);
+
+app.use('/admin/metrics', protectMetricsAdmin, require('./routes/metricsBackfill'));
 
 // ✨ NEW: Add analytics routes here
 app.use('/api/analytics', analyticsRoutes);
