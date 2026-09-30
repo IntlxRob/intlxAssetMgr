@@ -46,8 +46,11 @@ if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is not set.');
   process.exit(1);
 }
-if (!process.env.ZENDESK_EMAIL || !process.env.ZENDESK_API_TOKEN) {
-  console.error('ZENDESK_EMAIL / ZENDESK_API_TOKEN are not set.');
+const { authHeader, authMode } = require('../services/zendeskAuth');
+
+if (authMode() === 'none') {
+  console.error('No Zendesk credential configured. Set ZENDESK_OAUTH_CLIENT_ID +');
+  console.error('ZENDESK_OAUTH_CLIENT_SECRET, or ZENDESK_EMAIL + ZENDESK_API_TOKEN.');
   process.exit(1);
 }
 
@@ -56,9 +59,7 @@ const pool = new Pool({
   ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false }
 });
 
-const AUTH = Buffer
-  .from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`)
-  .toString('base64');
+
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -77,7 +78,7 @@ async function fetchBatch(ids, attempt = 1) {
   const url = `https://${SUBDOMAIN}.zendesk.com/api/v2/tickets/show_many.json?ids=${ids.join(',')}`;
   try {
     const { data } = await axios.get(url, {
-      headers: { Authorization: `Basic ${AUTH}` },
+      headers: { Authorization: await authHeader() },
       timeout: 30000
     });
     return data.tickets || [];

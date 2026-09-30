@@ -42,9 +42,10 @@ const pool = new Pool({
   ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false }
 });
 
-const AUTH = Buffer
-  .from(`${process.env.ZENDESK_EMAIL}/token:${process.env.ZENDESK_API_TOKEN}`)
-  .toString('base64');
+// Auth comes from services/zendeskAuth: OAuth client_credentials when
+// configured, Basic otherwise. No module-level credential - an OAuth token
+// expires and has to be re-minted.
+const { authHeader } = require('../services/zendeskAuth');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -63,7 +64,7 @@ async function fetchAudits(ticketId, attempt = 1) {
   try {
     const { data } = await axios.get(
       `https://${SUBDOMAIN}.zendesk.com/api/v2/tickets/${ticketId}/audits.json`,
-      { headers: { Authorization: `Basic ${AUTH}` }, timeout: 30000 }
+      { headers: { Authorization: await authHeader() }, timeout: 30000 }
     );
     return data.audits || [];
   } catch (err) {

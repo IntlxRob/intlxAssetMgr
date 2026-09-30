@@ -16,19 +16,18 @@
 require('dotenv').config();
 
 const SUB = process.env.ZENDESK_SUBDOMAIN;
-const EMAIL = process.env.ZENDESK_EMAIL;
-const TOKEN = process.env.ZENDESK_API_TOKEN;
+const { authHeader, authMode } = require('./services/zendeskAuth');
 
-if (!SUB || !EMAIL || !TOKEN) {
+if (!SUB || authMode() === 'none') {
   console.error('Missing ZENDESK_SUBDOMAIN, ZENDESK_EMAIL or ZENDESK_API_TOKEN in .env');
   process.exit(1);
 }
 
-const auth = 'Basic ' + Buffer.from(`${EMAIL}/token:${TOKEN}`).toString('base64');
+
 const base = `https://${SUB}.zendesk.com/api/v2`;
 
 async function get(path) {
-  const res = await fetch(base + path, { headers: { Authorization: auth } });
+  const res = await fetch(base + path, { headers: { Authorization: await authHeader() } });
   if (!res.ok) throw new Error(`${path} -> ${res.status} ${res.statusText}`);
   return res.json();
 }

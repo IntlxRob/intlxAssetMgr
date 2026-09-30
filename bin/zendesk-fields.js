@@ -20,17 +20,16 @@ require('dotenv').config();
 const axios = require('axios');
 
 const SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
-const EMAIL = process.env.ZENDESK_EMAIL;
-const TOKEN = process.env.ZENDESK_API_TOKEN;
+const { authHeader, authMode } = require('../services/zendeskAuth');
 
-if (!SUBDOMAIN || !EMAIL || !TOKEN) {
+if (!SUBDOMAIN || authMode() === 'none') {
   console.error('Missing Zendesk credentials. Expected ZENDESK_SUBDOMAIN, ZENDESK_EMAIL,');
   console.error('ZENDESK_API_TOKEN — the same ones services/syncJobs.js already uses.');
   console.error('Run this from the repo root so .env is picked up.');
   process.exit(1);
 }
 
-const AUTH = Buffer.from(`${EMAIL}/token:${TOKEN}`).toString('base64');
+
 const BASE = `https://${SUBDOMAIN}.zendesk.com/api/v2`;
 
 const ALL = process.argv.includes('--all');
@@ -46,7 +45,7 @@ async function main() {
   process.stdout.write('Fetching ticket fields');
   while (url) {
     const { data } = await axios.get(url, {
-      headers: { Authorization: `Basic ${AUTH}`, 'Content-Type': 'application/json' }
+      headers: { Authorization: await authHeader(), 'Content-Type': 'application/json' }
     });
     fields = fields.concat(data.ticket_fields || []);
     url = data.next_page;

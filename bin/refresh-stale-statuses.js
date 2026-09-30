@@ -18,9 +18,10 @@ const { getPool } = require('../db');
 
 const DRY = process.argv.includes('--dry-run');
 const SUB = process.env.ZENDESK_SUBDOMAIN;
-const AUTH = 'Basic ' + Buffer.from(
-  process.env.ZENDESK_EMAIL + '/token:' + process.env.ZENDESK_API_TOKEN
-).toString('base64');
+// Auth comes from services/zendeskAuth: OAuth client_credentials when
+// configured, Basic otherwise. No module-level credential - an OAuth token
+// expires and has to be re-minted.
+const { authHeader } = require('../services/zendeskAuth');
 
 const chunk = (arr, n) =>
   Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
@@ -41,7 +42,7 @@ const chunk = (arr, n) =>
   for (const batch of chunk(ids, 100)) {
     const url = `https://${SUB}.zendesk.com/api/v2/tickets/show_many.json`
               + `?ids=${batch.join(',')}`;
-    const res = await fetch(url, { headers: { Authorization: AUTH } });
+    const res = await fetch(url, { headers: { Authorization: await authHeader() } });
     if (!res.ok) {
       console.error(`  batch failed: ${res.status} ${res.statusText}`);
       continue;
