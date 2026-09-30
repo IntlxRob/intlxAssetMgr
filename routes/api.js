@@ -52,8 +52,20 @@ if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
         global.addressBookRefreshToken = process.env.SERVERDATA_REFRESH_TOKEN;
         
         try {
-            const clientId = process.env.SERVERDATA_CLIENT_ID || 'r8HaHY19cEaAnBZVN7gBuQ';
-            const clientSecret = process.env.SERVERDATA_CLIENT_SECRET || 'F862FCvwDX8J5JZtV3IQbHKqrWVafD1THU716LCfQuY';
+            const clientId = process.env.SERVERDATA_CLIENT_ID;
+            const clientSecret = process.env.SERVERDATA_CLIENT_SECRET;
+
+            // No fallback literal. A committed credential behind `||` means the
+            // code works whether or not the env var was ever set, so nobody
+            // notices - and the secret in source is what authenticates. That is
+            // exactly how this one survived: live in Render AND in git history.
+            if (!clientId || !clientSecret) {
+                console.error(
+                    '[OAuth] SERVERDATA_CLIENT_ID / SERVERDATA_CLIENT_SECRET are not set - ' +
+                    'skipping address book initialisation.'
+                );
+                return;
+            }
             const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
             
             const response = await fetch('https://login.serverdata.net/user/connect/token', {
