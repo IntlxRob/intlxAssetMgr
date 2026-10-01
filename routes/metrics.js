@@ -90,7 +90,28 @@ router.post('/copy', async (req, res) => {
 
     return res.status(200).json({ status: 'ok', ticket_id: Number(ticket_id), written: custom_fields });
   } catch (e) {
-    return res.status(500).json({ error: String(e) });
+    // ticket_id is block-scoped to the try above, so read it back here.
+    const id = (req.body && req.body.ticket_id) || 'unknown';
+    const status = e.response && e.response.status;
+    const detail =
+      (e.response && e.response.data && (e.response.data.error || e.response.data.description)) ||
+      e.message ||
+      String(e);
+
+    // Zendesk refusing the update is an outcome, not a fault. A closed or
+    // archived ticket cannot be edited (422); a merged or deleted one is gone
+    // (404). Reporting these as 500 made them indistinguishable from real
+    // faults in the webhook invocation log, which is the only place failures
+    // here are visible at all.
+    if (status === 422 || status === 404) {
+      console.warn(`[metrics/copy] ticket ${id}: Zendesk declined the update (${status}) - ${detail}`);
+      return res.status(202).json({ status: 'ticket-not-editable', http: status, ticket_id: id });
+    }
+
+    // Anything else is a genuine fault and must leave a trace. The previous
+    // version logged nothing at all.
+    console.error(`[metrics/copy] ticket ${id} FAILED${status ? ' (HTTP ' + status + ')' : ''}:`, detail);
+    return res.status(500).json({ error: detail });
   }
 });
 
