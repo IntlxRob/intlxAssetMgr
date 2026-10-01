@@ -228,9 +228,16 @@ function buildWhereClause(filters = {}, options = {}) {
         }
     }
 
-    // SLA status is NOT filtered here. The browser computes 76.5% compliance
-    // while analytics_daily reports 99.2%, so there are two definitions in play
-    // and neither should be frozen into a query until that is settled.
+    // SLA status is NOT filtered here, and the old note about "two definitions"
+    // is resolved: there was one definition and one bug. analytics_daily
+    // computed compliance by comparing first_resolution_time_minutes against
+    // thresholds that are first-RESPONSE targets (60 minutes for urgent), so
+    // almost everything passed and it reported 99.2%. The browser's 76.5% was
+    // the closer figure.
+    //
+    // Still not filtered here, for a different reason: compliance depends on
+    // which target applies to a given ticket, and that belongs in the SLA
+    // endpoints rather than in a generic WHERE builder.
 
     // When the caller already has a WHERE clause of its own, it needs these
     // conditions as an appendable AND fragment instead.

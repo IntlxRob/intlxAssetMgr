@@ -778,7 +778,10 @@ async function aggregateDailyAnalytics(targetDate = null) {
         ), 0) as billable_time_minutes,
         
         -- Average time metrics
-        ROUND(AVG(first_resolution_time_minutes) FILTER (WHERE first_resolution_time_minutes > 0)) as avg_first_reply_minutes,
+        -- first_reply_minutes, not first_resolution: these are different
+        -- metrics and differ by hours. Averaging resolution here stored 662
+        -- minutes where the true first reply average was 99.
+        ROUND(AVG(first_reply_minutes) FILTER (WHERE first_reply_minutes > 0)) as avg_first_reply_minutes,
         ROUND(AVG(full_resolution_time_minutes) FILTER (WHERE full_resolution_time_minutes > 0)) as avg_full_resolution_minutes,
         ROUND(AVG(agent_wait_time_minutes) FILTER (WHERE agent_wait_time_minutes > 0)) as avg_agent_wait_minutes,
         ROUND(AVG(requester_wait_time_minutes) FILTER (WHERE requester_wait_time_minutes > 0)) as avg_requester_wait_minutes,
@@ -903,7 +906,10 @@ async function aggregateWeeklyAgentPerformance(targetWeekStart = null) {
         ROUND(SUM(agent_wait_time_minutes)::numeric / 60, 2) as total_hours,
         
         ROUND(AVG(full_resolution_time_minutes) FILTER (WHERE full_resolution_time_minutes > 0)) as avg_resolution_minutes,
-        ROUND(AVG(first_resolution_time_minutes) FILTER (WHERE first_resolution_time_minutes > 0)) as avg_first_reply_minutes,
+        -- first_reply_minutes, not first_resolution: these are different
+        -- metrics and differ by hours. Averaging resolution here stored 662
+        -- minutes where the true first reply average was 99.
+        ROUND(AVG(first_reply_minutes) FILTER (WHERE first_reply_minutes > 0)) as avg_first_reply_minutes,
         
         -- SLA compliance rate
         CASE 
