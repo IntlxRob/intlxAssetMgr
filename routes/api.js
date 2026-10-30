@@ -2250,6 +2250,326 @@ router.get('/organizations/:id', async (req, res) => {
  * Update organization by ID.
  * Used by client-side API for customer notes editing.
  */
+// ============================================
+// TICKET FIELD EDITING
+// ============================================
+
+/**
+ * The ticket fields the rebuild is allowed to edit.
+ *
+ * Keyed by name rather than id so the frontend never carries a field id, and
+ * so an unrecognised key is a 400 rather than a custom_fields entry that
+ * Zendesk accepts and silently ignores.
+ *
+ * All three are taggers: they accept only their configured values, so the UI
+ * wants dropdowns and a bad value comes back as a 422.
+ *
+ * Billable (21223282485911, checkbox) is deliberately absent — it exists in
+ * Zendesk but was never used in the old app.
+ */
+const EDITABLE_TICKET_FIELDS = {
+    requestType:        { id: 22563831352855, label: 'Request Type' },
+    starlingLocation:   { id: 24086888738455, label: 'Starling Location' },
+    starlingDepartment: { id: 24087305679511, label: 'Starling Department' }
+};
+
+/**
+ * Tagger options, cached in-process for five minutes.
+ *
+ * Field definitions change about never, and staleness here cannot cause a
+ * silent no-op: an option that has been removed upstream now fails as a 400
+ * rather than being written and discarded. The cache exists so that a save
+ * does not cost an extra Zendesk round trip.
+ */
+const OPTIONS_TTL_MS = 5 * 60 * 1000;
+const optionsCache = new Map();  // fieldId -> { at, options }
+
+async function cachedFieldOptions(fieldId) {
+    const key = String(fieldId);
+    const hit = optionsCache.get(key);
+    if (hit && (Date.now() - hit.at) < OPTIONS_TTL_MS) return hit.options;
+
+    const options = await zendeskService.getTicketFieldOptions(fieldId);
+    optionsCache.set(key, { at: Date.now(), options });
+    return options;
+}
+
+/** null, undefined and '' all mean "no value" — Zendesk uses them interchangeably. */
+const isEmptyValue = (v) => v === null || v === undefined || v === '';
+
+/**
+ * GET /api/ticket-fields/editable
+ *
+ * What the UI may edit. Lets the frontend build its form from the backend's
+ * list instead of a second hardcoded copy that can drift out of step.
+ */
+router.get('/ticket-fields/editable', async (req, res) => {
+    const entries = Object.entries(EDITABLE_TICKET_FIELDS);
+
+    // Options come from Zendesk, never from a list held here or in the
+    // frontend. Zendesk accepts any value for a tagger and silently keeps the
+    // old one when it is not a configured option, so a stale copy of this list
+    // turns every save into a no-op that reports success.
+    const results = await Promise.all(
+        entries.map(async ([key, f]) => {
+            try {
+                const options = await zendeskService.getTicketFieldOptions(f.id);
+                return {
+                    key,
+                    id: String(f.id),
+                    label: f.label,
+                    type: 'tagger',
+                    options
+                };
+            } catch (error) {
+                // Log the status only — the axios error carries the request
+                // config, Authorization header included.
+                const status = error.response ? error.response.status : null;
+                console.error(`[API] options for ${key} (${f.id}) failed: HTTP ${status || '?'}`);
+                return {
+                    key,
+                    id: String(f.id),
+                    label: f.label,
+                    type: 'tagger',
+                    options: null,
+                    error: 'options-unavailable'
+                };
+            }
+        })
+    );
+
+    const broken = results.filter((r) => r.options === null).map((r) => r.key);
+
+    // A field whose options could not be read must not render as an editable
+    // dropdown — an empty or guessed list is how a silent no-op gets shipped.
+    // Say so explicitly rather than returning a plausible-looking empty array.
+    res.json({
+        fields: results,
+        incomplete: broken.length > 0,
+        ...(broken.length ? { unavailable: broken } : {})
+    });
+});
+
+/**
+ * PATCH /api/tickets/:id
+ *
+ * Body is named keys only, e.g. { "requestType": "Move/Add/Change" }.
+ * An empty string clears the field.
+ *
+ * Partial by design: only the keys present are written, so the UI can send one
+ * field without reading and resending the others.
+ */
+router.patch('/tickets/:id', async (req, res) => {
+    const ticketId = req.params.id;
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+
+    const unknown = Object.keys(body).filter((k) => !(k in EDITABLE_TICKET_FIELDS));
+    if (unknown.length) {
+        return res.status(400).json({
+            error: 'unknown-field',
+            message: `not editable: ${unknown.join(', ')}`,
+            editable: Object.keys(EDITABLE_TICKET_FIELDS)
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // Resolve every value against the field's configured options BEFORE
+    // writing anything.
+    //
+    // This is not defensive politeness. The echoed value cannot distinguish
+    // these two cases on its own:
+    //
+    //   sent "Question", got "question"  -> normalised, write SUCCEEDED
+    //   sent "anything",  got "question" -> rejected, old value KEPT
+    //
+    // Identical shape, opposite meaning. Resolving up front removes the
+    // ambiguity instead of trying to interpret it afterwards.
+    //
+    // Accepts either the API value or the display name, because the two are
+    // routinely different ('service_request' vs 'Service Request') and a UI
+    // sending the name is the most likely mistake.
+    // -----------------------------------------------------------------
+    const resolved = [];
+    const rejected = [];
+
+    for (const [key, raw] of Object.entries(body)) {
+        if (raw === undefined) continue;
+        const field = EDITABLE_TICKET_FIELDS[key];
+
+        if (isEmptyValue(raw)) {
+            resolved.push({ key, id: field.id, value: null });
+            continue;
+        }
+
+        let options;
+        try {
+            options = await cachedFieldOptions(field.id);
+        } catch (error) {
+            // Status only — the axios error carries the Authorization header.
+            const status = error.response ? error.response.status : null;
+            console.error(`[API] options for ${key} (${field.id}) failed: HTTP ${status || '?'}`);
+            return res.status(502).json({
+                error: 'options-unavailable',
+                message: `could not read the configured options for ${field.label}, ` +
+                         'so the value cannot be validated and the write was not attempted',
+                field: key
+            });
+        }
+
+        const want = String(raw).trim().toLowerCase();
+        const match = options.find((o) =>
+            String(o.value).trim().toLowerCase() === want ||
+            String(o.name).trim().toLowerCase() === want
+        );
+
+        if (!match) {
+            rejected.push({
+                key,
+                requested: raw,
+                validValues: options.map((o) => o.value)
+            });
+            continue;
+        }
+
+        resolved.push({ key, id: field.id, value: match.value });
+    }
+
+    if (rejected.length) {
+        // Nothing has been written at this point — a rejected value fails
+        // before the request leaves the process, rather than being sent and
+        // silently discarded by Zendesk.
+        return res.status(400).json({
+            error: 'invalid-value',
+            message: 'not a configured option: ' +
+                rejected.map((r) => `${r.key}=${JSON.stringify(r.requested)}`).join(', '),
+            rejected
+        });
+    }
+
+    const custom_fields = resolved.map((r) => ({ id: r.id, value: r.value }));
+
+    if (!custom_fields.length) {
+        return res.status(400).json({
+            error: 'no-fields',
+            message: 'nothing to update',
+            editable: Object.keys(EDITABLE_TICKET_FIELDS)
+        });
+    }
+
+    try {
+        const ticket = await zendeskService.updateTicketCustomFields(ticketId, custom_fields);
+
+        // ---------------------------------------------------------------
+        // Zendesk can return 200 OK having applied NOTHING.
+        //
+        // A closed ticket, or a value outside a tagger field's configured
+        // options, is accepted and silently dropped — no error, no warning,
+        // and a response body that looks like success. Measured 2026-10-30:
+        // PATCH {"requestType":"anything"} on closed ticket 123456 returned
+        // 200 with the field still holding its previous value.
+        //
+        // So the only trustworthy signal is the ticket Zendesk echoes back.
+        // Reporting success from the request body would be asserting an
+        // outcome rather than checking it.
+        // ---------------------------------------------------------------
+        const echoed = new Map(
+            (ticket.custom_fields || []).map((f) => [String(f.id), f.value])
+        );
+
+        const applied = [];
+        const ignored = [];
+
+        // Compare against the RESOLVED value — the canonical option value
+        // actually sent — not against what the caller typed. Comparing against
+        // the caller's spelling is what produced two false failures on
+        // 2026-10-30: "Question" normalised to "question", and a cleared field
+        // came back as '' rather than null, and both were reported as
+        // not-applied despite having worked.
+        for (const r of resolved) {
+            const id = String(r.id);
+            const actual = echoed.has(id) ? echoed.get(id) : null;
+
+            const same = isEmptyValue(r.value)
+                ? isEmptyValue(actual)
+                : (!isEmptyValue(actual) &&
+                   String(actual).trim().toLowerCase() === String(r.value).trim().toLowerCase());
+
+            (same ? applied : ignored).push({
+                key: r.key,
+                requested: r.value,
+                actual: actual === undefined ? null : actual
+            });
+        }
+
+        if (ignored.length) {
+            return res.status(409).json({
+                error: 'not-applied',
+                message:
+                    'Zendesk returned success but did not apply ' +
+                    ignored.map((f) => f.key).join(', ') +
+                    '. The value was a valid option and the request was accepted, ' +
+                    'so the ticket itself refused the write — a closed ticket is ' +
+                    'accepted and silently dropped.',
+                ticketId,
+                ticketStatus: ticket.status,
+                ignored,
+                applied: applied.map((f) => f.key)
+            });
+        }
+
+        return res.json({
+            ticket,
+            updated: applied.map((f) => f.key)
+        });
+    } catch (error) {
+        // Log the STATUS only. The axios error object carries the request
+        // config, Authorization header included, so it must never be logged or
+        // returned wholesale.
+        const status = error.response ? error.response.status : null;
+        const data = error.response ? error.response.data : null;
+        const detail = data
+            ? (data.description || data.error ||
+               (data.details ? JSON.stringify(data.details).slice(0, 300) : null))
+            : null;
+
+        console.error(`[API] PATCH /tickets/${ticketId} failed: HTTP ${status || '?'}`);
+
+        if (status === 404) {
+            return res.status(404).json({
+                error: 'not-found',
+                message: `ticket ${ticketId} not found`
+            });
+        }
+
+        if (status === 422) {
+            // Zendesk uses 422 both for a closed ticket and for a tagger value
+            // outside the field's options. Its description distinguishes them,
+            // so pass it through rather than guessing.
+            return res.status(409).json({
+                error: 'not-editable',
+                message: detail ||
+                    'Zendesk rejected the update. A closed ticket cannot be edited, ' +
+                    'and a tagger field only accepts its configured values.',
+                ticketId
+            });
+        }
+
+        if (status === 403) {
+            return res.status(403).json({
+                error: 'forbidden',
+                message: detail || 'the credential lacks permission to update this ticket'
+            });
+        }
+
+        return res.status(502).json({
+            error: 'zendesk-unavailable',
+            status,
+            message: detail || error.message
+        });
+    }
+});
+
+
 router.put('/organizations/:id', async (req, res) => {
     try {
         const orgId = req.params.id;

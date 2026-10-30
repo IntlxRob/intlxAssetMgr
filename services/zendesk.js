@@ -359,6 +359,28 @@ async function getTicketMetrics(ticketId) {
   return res.data.ticket_metric;
 }
 
+/**
+ * A tagger field's configured options.
+ *
+ * Needed because Zendesk accepts ANY value for a tagger, returns 200, and
+ * silently keeps the old one if the value is not a configured option — on open
+ * tickets as much as closed ones (measured 2026-10-30, ticket 122574). So the
+ * UI cannot hold its own copy of the option list: a rename in Admin Center
+ * would turn every save into a no-op with no error anywhere.
+ *
+ * `name` is what an agent sees; `value` is what the API expects. They are
+ * often different — Request Type displays as prose and stores as tags like
+ * 'alarm_ticket'. Show the name, send the value.
+ */
+async function getTicketFieldOptions(fieldId) {
+  const res = await zendeskApi.get(`/ticket_fields/${fieldId}`);
+  const field = res.data.ticket_field || {};
+  return (field.custom_field_options || []).map((o) => ({
+    name: o.name,
+    value: o.value
+  }));
+}
+
 async function updateTicketCustomFields(ticketId, fields, addTag) {
   const body = {
     ticket: {
@@ -371,6 +393,7 @@ async function updateTicketCustomFields(ticketId, fields, addTag) {
 }
 
 module.exports = {
+  getTicketFieldOptions,
   // Connection test
   testConnection,
   
