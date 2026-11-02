@@ -6,3 +6,13 @@ npm-debug.log
 .env
 derived-baseline.json
 baseline.json
+
+# patch scripts and backups
+*.bak
+*.bak[0-9]
+patch-*.cjs
+
+# captured script output
+*.txt
+*.csv
+account-hold-plan.json
