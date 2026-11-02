@@ -372,6 +372,20 @@ async function getTicketMetrics(ticketId) {
  * often different — Request Type displays as prose and stores as tags like
  * 'alarm_ticket'. Show the name, send the value.
  */
+/**
+ * One ticket, as Zendesk holds it.
+ *
+ * Needed because the synced `tickets` table stores request type as
+ * request_type_derived — the custom field OR a value inferred from alarm tags
+ * when the field is empty — so the row cannot tell a stored value from an
+ * inferred one. An editor has to write to a field, which means it has to read
+ * that field.
+ */
+async function getTicket(ticketId) {
+  const res = await zendeskApi.get(`/tickets/${ticketId}`);
+  return res.data.ticket;
+}
+
 async function getTicketFieldOptions(fieldId) {
   const res = await zendeskApi.get(`/ticket_fields/${fieldId}`);
   const field = res.data.ticket_field || {};
@@ -393,6 +407,7 @@ async function updateTicketCustomFields(ticketId, fields, addTag) {
 }
 
 module.exports = {
+  getTicket,
   getTicketFieldOptions,
   // Connection test
   testConnection,

@@ -2359,6 +2359,65 @@ router.get('/ticket-fields/editable', async (req, res) => {
  * Partial by design: only the keys present are written, so the UI can send one
  * field without reading and resending the others.
  */
+/**
+ * GET /api/tickets/:id/editable
+ *
+ * The three editable fields' ACTUAL stored values, read from Zendesk.
+ *
+ * Deliberately not served from the synced table. request_type_derived there is
+ * the custom field falling back to alarm tags, so it cannot distinguish a
+ * stored value from an inferred one — and an editor that cannot make that
+ * distinction will eventually write an inferred value as though a human had
+ * chosen it.
+ *
+ * `status` comes back so the UI can say a ticket is closed. Zendesk permits
+ * the write either way (measured 2026-10-30 on closed ticket 123456), so
+ * whether to allow it is a product decision rather than a constraint.
+ */
+router.get('/tickets/:id/editable', async (req, res) => {
+    const ticketId = req.params.id;
+
+    let ticket;
+    try {
+        ticket = await zendeskService.getTicket(ticketId);
+    } catch (error) {
+        // Status only — an axios error carries the Authorization header.
+        const status = error.response ? error.response.status : null;
+        console.error(`[API] GET /tickets/${ticketId}/editable failed: HTTP ${status || '?'}`);
+
+        if (status === 404) {
+            return res.status(404).json({
+                error: 'not-found',
+                message: `ticket ${ticketId} not found`
+            });
+        }
+        return res.status(502).json({
+            error: 'zendesk-unavailable',
+            status,
+            message: 'could not read the ticket from Zendesk'
+        });
+    }
+
+    const byId = new Map(
+        (ticket.custom_fields || []).map((f) => [String(f.id), f.value])
+    );
+
+    const values = {};
+    for (const [key, field] of Object.entries(EDITABLE_TICKET_FIELDS)) {
+        const raw = byId.has(String(field.id)) ? byId.get(String(field.id)) : null;
+        // Zendesk returns '' for a cleared field and null for one never set.
+        // Both mean empty, and a UI that distinguishes them invents a
+        // difference that does not exist.
+        values[key] = (raw === '' || raw === undefined) ? null : raw;
+    }
+
+    res.json({
+        ticketId: String(ticket.id),
+        status: ticket.status,
+        values
+    });
+});
+
 router.patch('/tickets/:id', async (req, res) => {
     const ticketId = req.params.id;
     const body = (req.body && typeof req.body === 'object') ? req.body : {};
@@ -2507,9 +2566,10 @@ router.patch('/tickets/:id', async (req, res) => {
                 message:
                     'Zendesk returned success but did not apply ' +
                     ignored.map((f) => f.key).join(', ') +
-                    '. The value was a valid option and the request was accepted, ' +
-                    'so the ticket itself refused the write — a closed ticket is ' +
-                    'accepted and silently dropped.',
+                    '. The value was a valid option and Zendesk accepted the ' +
+                    'request, so the ticket itself did not take the change. ' +
+                    'Note that a closed ticket is NOT a cause — closed tickets ' +
+                    'accept these writes (verified on ticket 123456).',
                 ticketId,
                 ticketStatus: ticket.status,
                 ignored,
