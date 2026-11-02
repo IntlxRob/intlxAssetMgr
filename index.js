@@ -136,60 +136,8 @@ app.get('/', (req, res) => {
   res.send('Backend API is running');
 });
 
-// ENHANCED: Initialize both subscriptions AND cache data
-async function initializeServer() {
-    try {
-        console.log('[Server] Starting presence system initialization...');
-        
-        setTimeout(async () => {
-            try {
-                // Import the cache function
-                const { initializePresenceCache } = require('./routes/api');
-                
-                // Step 1: Initialize cache data first
-                await initializePresenceCache();
-                console.log('[Server] ✅ Presence cache initialized');
-                
-                // Step 2: Then set up subscriptions (your existing code)
-                await initializeDirectPresenceSubscriptions();
-                console.log('[Server] ✅ Presence subscriptions initialized');
-                
-            } catch (error) {
-                console.error('[Server] ❌ Failed to initialize presence system:', error);
-                console.log('[Server] Will fallback to on-demand initialization');
-            }
-        }, 5000);
-        
-    } catch (error) {
-        console.error('[Server] Error during initialization:', error);
-    }
-}
 
-// ADD THIS: Cache initialization function
-async function initializePresenceCache() {
-    try {
-        // Import your cache initialization function from your routes
-        const { refreshAgentCache } = require('./routes/api');
-        await refreshAgentCache();
-        console.log('[Server] Presence cache populated with initial data');
-    } catch (error) {
-        console.error('[Server] Failed to initialize presence cache:', error);
-        throw error;
-    }
-}
 
-// ADD THIS: Periodic cache refresh
-function startCacheRefreshTimer() {
-    // Refresh cache every 2 minutes as backup
-    setInterval(async () => {
-        try {
-            await initializePresenceCache();
-            console.log('[Server] Background cache refresh completed');
-        } catch (error) {
-            console.error('[Server] Background cache refresh failed:', error);
-        }
-    }, 120000); // 2 minutes
-}
 
 // Enhanced cleanup
 process.on('SIGTERM', async () => {
@@ -207,17 +155,39 @@ process.on('SIGINT', async () => {
 // ADD THIS: Comprehensive cleanup
 async function cleanup() {
     try {
-        await cleanupPresenceSubscriptions();
-        // Clear any timers
-        clearInterval(global.cacheRefreshTimer);
+        // cleanupPresenceSubscriptions() used to be called here. It was never
+        // defined anywhere in this repo, so this line threw on every SIGTERM
+        // and SIGINT — which meant the clearInterval() below never ran and
+        // graceful shutdown never completed. Every deploy took this path.
+        //
+        // Nothing replaces it, because there is nothing to tear down: the
+        // function that would have created those subscriptions
+        // (initializeDirectPresenceSubscriptions) was equally undefined and
+        // equally never ran.
+
+        // Draining the pool is what a graceful shutdown is actually for, and
+        // it is what the throw above has been preventing. Lazily required and
+        // separately guarded so a shape change in ./db cannot reintroduce the
+        // same failure.
+        try {
+            const db = require('./db');
+            if (db && typeof db.getPool === 'function') {
+                await db.getPool().end();
+                console.log('[Server] Postgres pool drained');
+            }
+        } catch (dbError) {
+            console.error(
+                '[Server] Pool drain failed:',
+                dbError && dbError.message ? dbError.message : dbError
+            );
+        }
+
         console.log('[Server] Cleanup completed');
     } catch (error) {
         console.error('[Server] Cleanup error:', error);
     }
 }
 
-// Start the initialization
-initializeServer();
 
 // ✨ NEW: Start analytics sync scheduler (add right before app.listen)
 if (process.env.ENABLE_ANALYTICS_SYNC !== 'false') {
@@ -227,5 +197,4 @@ if (process.env.ENABLE_ANALYTICS_SYNC !== 'false') {
 
 app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
-    console.log('[Server] Ready to initialize presence system...');
 });
