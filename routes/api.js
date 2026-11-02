@@ -10,6 +10,25 @@ const { google } = require('googleapis');
 const calendar = google.calendar('v3');
 const db = require('../db'); 
 const pool = db.getPool();
+
+// The ticket-field ids and the derivation rules, from the module the SYNC
+// already uses. Importing rather than restating them: two copies of the same
+// facts is the shape behind several bugs in this project, and a wrong field id
+// here would read one field's options and write to another, with a 200 and no
+// complaint.
+const {
+    computeDerivedFields,
+    REQUEST_TYPE_FIELD_ID,
+    STARLING_LOCATION_FIELD_ID,
+    STARLING_DEPARTMENT_FIELD_ID
+} = require('../services/derived');
+
+// Billable's id and computation. Owned by billing.js, which reads it from
+// process.env.BILLABLE_FIELD_ID with NO fallback — computeBillable() returns
+// false outright when it is unset — so a hardcoded copy here would diverge
+// silently the day that variable changes, and this editor would write a field
+// the Billable column does not read.
+const { BILLABLE_FIELD_ID, computeBillingFields } = require('../services/billing');
 const https = require('https'); // PagerDuty OnCall Calendar Webcal
 const ical = require('ical'); // PagerDuty OnCall Calendar Webcal
 
@@ -2268,10 +2287,47 @@ router.get('/organizations/:id', async (req, res) => {
  * Zendesk but was never used in the old app.
  */
 const EDITABLE_TICKET_FIELDS = {
-    requestType:        { id: 22563831352855, label: 'Request Type' },
-    starlingLocation:   { id: 24086888738455, label: 'Starling Location' },
-    starlingDepartment: { id: 24087305679511, label: 'Starling Department' }
+    requestType:        { id: Number(REQUEST_TYPE_FIELD_ID),        label: 'Request Type',        type: 'tagger' },
+    starlingLocation:   { id: Number(STARLING_LOCATION_FIELD_ID),   label: 'Starling Location',   type: 'tagger' },
+    starlingDepartment: { id: Number(STARLING_DEPARTMENT_FIELD_ID), label: 'Starling Department', type: 'tagger' },
+    // A checkbox, not a tagger — no custom_field_options, boolean values, and
+    // it feeds billed_minutes through the tickets_billed view.
+    billable:           { id: Number(BILLABLE_FIELD_ID),            label: 'Billable',            type: 'checkbox' }
 };
+
+/**
+ * A checkbox's two states, in the same shape a tagger's options arrive in, so
+ * the UI needs no special case for it.
+ *
+ * There is deliberately no empty state. Zendesk stores a checkbox as true or
+ * false; null only means never written, and once written there is no way back
+ * to it. Offering "none" would be offering something the field cannot do.
+ */
+const CHECKBOX_OPTIONS = [
+    { name: 'Billable', value: 'true' },
+    { name: 'Not billable', value: 'false' }
+];
+
+// These were hardcoded here and verified against live tickets before the ids
+// came from derived.js. If the two ever disagree, say so at startup rather than
+// reading one field's options and writing to another.
+{
+    const VERIFIED = {
+        requestType: 22563831352855,
+        starlingLocation: 24086888738455,
+        starlingDepartment: 24087305679511
+    };
+    for (const [key, expected] of Object.entries(VERIFIED)) {
+        const actual = EDITABLE_TICKET_FIELDS[key].id;
+        if (actual !== expected) {
+            console.error(
+                `[API] ticket field id mismatch for ${key}: derived.js says ${actual}, ` +
+                `verified value is ${expected}. One of them is wrong and ticket editing ` +
+                'will write to the wrong field. Not failing startup, but fix this.'
+            );
+        }
+    }
+}
 
 /**
  * Tagger options, cached in-process for five minutes.
@@ -2312,6 +2368,19 @@ router.get('/ticket-fields/editable', async (req, res) => {
     // turns every save into a no-op that reports success.
     const results = await Promise.all(
         entries.map(async ([key, f]) => {
+            // A checkbox has no custom_field_options. Asking for them would
+            // return an empty list, which the UI cannot distinguish from "the
+            // options could not be read" — so answer from here instead.
+            if (f.type === 'checkbox') {
+                return {
+                    key,
+                    id: String(f.id),
+                    label: f.label,
+                    type: 'checkbox',
+                    options: CHECKBOX_OPTIONS
+                };
+            }
+
             try {
                 const options = await zendeskService.getTicketFieldOptions(f.id);
                 return {
@@ -2456,7 +2525,40 @@ router.patch('/tickets/:id', async (req, res) => {
         const field = EDITABLE_TICKET_FIELDS[key];
 
         if (isEmptyValue(raw)) {
+            // A checkbox cannot be returned to "never written", so clearing one
+            // is a request Zendesk cannot honour. Say so rather than sending it
+            // and reporting whatever comes back.
+            if (field.type === 'checkbox') {
+                rejected.push({
+                    key,
+                    requested: raw,
+                    validValues: CHECKBOX_OPTIONS.map((o) => o.value)
+                });
+                continue;
+            }
             resolved.push({ key, id: field.id, value: null });
+            continue;
+        }
+
+        if (field.type === 'checkbox') {
+            // Matching computeBillable()'s reading in services/billing.js,
+            // which treats true / 'true' / 'yes' / '1' / 'billable' as billable
+            // and everything else as not. Accepting the same spellings here
+            // means the editor and the sync cannot disagree about a value.
+            const want = String(raw).trim().toLowerCase();
+            const isTrue = raw === true || ['true', 'yes', '1', 'billable'].includes(want);
+            const isFalse = raw === false || ['false', 'no', '0', 'non-billable'].includes(want);
+
+            if (!isTrue && !isFalse) {
+                rejected.push({
+                    key,
+                    requested: raw,
+                    validValues: CHECKBOX_OPTIONS.map((o) => o.value)
+                });
+                continue;
+            }
+
+            resolved.push({ key, id: field.id, value: isTrue });
             continue;
         }
 
@@ -2577,9 +2679,71 @@ router.patch('/tickets/:id', async (req, res) => {
             });
         }
 
+        // -----------------------------------------------------------
+        // Keep the synced row in step.
+        //
+        // The TABLE reads Postgres; this route writes Zendesk. Without this the
+        // UI shows the old value until the next sync, and a page refresh makes
+        // a saved edit look like it reverted — measured on ticket 138570.
+        //
+        // Only the three columns this route can change, and the values come
+        // from computeDerivedFields() against the ticket Zendesk just echoed
+        // back, so request_type_derived keeps its real rule (the custom field
+        // falling back to alarm tags) rather than acquiring a second one here.
+        // -----------------------------------------------------------
+        let localRowUpdated = false;
+        try {
+            const derived = computeDerivedFields(ticket);
+            // is_billable comes from billing.js rather than derived.js, and it
+            // matters more than the others: billed_minutes is computed by the
+            // tickets_billed VIEW from this column, so leaving it stale would
+            // put a Billable flag and a billed figure in disagreement on an
+            // invoice. Because it is a view, setting the column here is
+            // sufficient — nothing needs refreshing.
+            const billing = computeBillingFields(ticket);
+            const result = await pool.query(
+                `UPDATE tickets
+                    SET request_type_derived = $1,
+                        starling_location    = $2,
+                        starling_department  = $3,
+                        is_billable          = $4,
+                        derived_computed_at  = NOW()
+                  WHERE id = $5`,
+                [
+                    derived.request_type_derived,
+                    derived.starling_location,
+                    derived.starling_department,
+                    billing.is_billable,
+                    ticketId
+                ]
+            );
+            localRowUpdated = result.rowCount > 0;
+            if (!localRowUpdated) {
+                // Not an error: a ticket created since the last sync has no row
+                // yet. Worth saying, because the UI will show nothing for it
+                // until the sync catches up.
+                console.warn(
+                    `[API] PATCH /tickets/${ticketId}: Zendesk updated, but no local ` +
+                    'row to refresh — not synced yet.'
+                );
+            }
+        } catch (dbError) {
+            // The Zendesk write already succeeded and is the thing that
+            // matters. A failure here means the table is briefly stale, not
+            // that the edit was lost, so it must not turn a successful save
+            // into an error the user sees.
+            console.error(
+                `[API] PATCH /tickets/${ticketId}: local row refresh failed — ` +
+                (dbError && dbError.message ? dbError.message : 'unknown')
+            );
+        }
+
         return res.json({
             ticket,
-            updated: applied.map((f) => f.key)
+            updated: applied.map((f) => f.key),
+            // So the UI can tell the difference between "saved and the table is
+            // current" and "saved, but the table will lag until the next sync".
+            localRowUpdated
         });
     } catch (error) {
         // Log the STATUS only. The axios error object carries the request
