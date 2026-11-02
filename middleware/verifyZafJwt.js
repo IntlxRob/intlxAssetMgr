@@ -149,7 +149,18 @@ module.exports = function verifyZafJwt(req, res, next) {
     // Log the REASON, never the token. A rejected credential is still a
     // credential and still belongs in nobody's log file.
     const why = error && error.name ? error.name : 'VerifyError';
-    console.warn(`verifyZafJwt: rejected ${req.method} ${req.originalUrl} — ${why}`);
+    const detail = error && error.message ? error.message : '';
+
+    // The number of dot-separated segments separates the two causes on its
+    // own: a real JWT has three, and an unsubstituted '{{jwt.token}}'
+    // placeholder has one. A count is not content, so this is safe to log —
+    // unlike the token, which is a credential even after being rejected.
+    const segments = token.split('.').length;
+
+    console.warn(
+      `verifyZafJwt: rejected ${req.method} ${req.originalUrl} — ` +
+        `${why}${detail ? ': ' + detail : ''} (segments=${segments})`
+    );
 
     if (why === 'TokenExpiredError') {
       return res.status(401).json({
