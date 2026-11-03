@@ -3910,7 +3910,14 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
 
             open_worked AS (
                 SELECT ${byGroup ? 't.group_id' : 'te.agent_id'} AS id,
-                       COUNT(DISTINCT te.ticket_id)::int AS n
+                       COUNT(DISTINCT te.ticket_id)::int AS n,
+                       -- Resolved AT PERIOD END, not resolved now. The whole
+                       -- point: "now" makes a past period's figures drift every
+                       -- time an old ticket closes.
+                       COUNT(DISTINCT te.ticket_id) FILTER (
+                         WHERE t.solved_at IS NOT NULL
+                           AND t.solved_at < b.to_date + interval '1 day'
+                       )::int AS resolved
                   FROM ticket_time_entries te
                   JOIN tickets t ON t.id = te.ticket_id
                   CROSS JOIN bounds b
@@ -3919,7 +3926,10 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                    -- Machine-written entries; see the guard on
                    -- /agents/ticket-time for why this is a timing test.
                    AND te.created_at >  t.created_at + interval '1 minute'
-                   AND t.status NOT IN ('solved','closed','deleted')
+                   -- Resolved tickets stay in the population now; resolution is a
+                   -- column above rather than an exclusion here, which is what
+                   -- lets one CTE serve both sides of the rate.
+                   AND t.status <> 'deleted'
                    ${groupClause}
                    ${sourceClause}
                    ${scopeClause}
@@ -4011,7 +4021,12 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                 CASE WHEN COALESCE(s.solved, 0) > 0
                      THEN ROUND(100.0 * s.human_solved / s.solved) END AS human_share,
                 s.hours_per_human,
-                COALESCE(ow.n, 0)                AS open_worked,
+                COALESCE(ow.n, 0)                AS worked,
+                GREATEST(COALESCE(ow.n, 0) - COALESCE(ow.resolved, 0), 0)::int
+                                                 AS open_worked,
+                CASE WHEN COALESCE(ow.n, 0) > 0
+                     THEN ROUND(100.0 * ow.resolved / ow.n, 1) END
+                                                 AS completion_pct,
 
                 COALESCE(bo.n, 0)                AS backlog_opening,
                 COALESCE(bc.n, 0)                AS backlog_closing,
@@ -4078,7 +4093,8 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
         for (const k of [
             'assigned','assigned_human','assigned_alarm',
             'solved','human_solved','alarm_solved','human_share','hours_per_human',
-            'open_worked','backlog_opening','backlog_closing',
+            'worked','open_worked','completion_pct',
+            'backlog_opening','backlog_closing',
             'backlog_aging','backlog_aging_extended',
             'one_touch_pct','two_touch_pct','multi_touch_pct',
             'median_first_reply','median_resolution','median_requester_wait',
