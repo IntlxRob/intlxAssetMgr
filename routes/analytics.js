@@ -1688,10 +1688,20 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         t.on_hold_time_minutes,
 
         cs.agent_label     AS custom_status_label,
-        cs.status_category AS custom_status_category
+        cs.status_category AS custom_status_category,
+
+        -- Support level. Filterable since the EXISTS in buildWhereClause, but
+        -- never selected, so no ticket row carried it and no column could show
+        -- it. NULL means untiered, which the 'none' filter branch treats the
+        -- same as having no organization.
+        o.visualize_tier AS visualize_tier
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+      -- LEFT, not INNER: a ticket with no organization must survive. The
+      -- tier filter has a 'none' branch written for exactly those rows, so
+      -- dropping them here would contradict a filter that already ships.
+      LEFT JOIN organizations o ON o.id = t.organization_id
       ${whereClause}
       ${sourceClause}
       ORDER BY ${sortBy} ${sortOrder} NULLS LAST, t.id DESC
@@ -1802,10 +1812,20 @@ router.get('/export/tickets', async (req, res) => {
         t.on_hold_time_minutes,
 
         cs.agent_label     AS custom_status_label,
-        cs.status_category AS custom_status_category
+        cs.status_category AS custom_status_category,
+
+        -- Support level. Filterable since the EXISTS in buildWhereClause, but
+        -- never selected, so no ticket row carried it and no column could show
+        -- it. NULL means untiered, which the 'none' filter branch treats the
+        -- same as having no organization.
+        o.visualize_tier AS visualize_tier
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
+      -- LEFT, not INNER: a ticket with no organization must survive. The
+      -- tier filter has a 'none' branch written for exactly those rows, so
+      -- dropping them here would contradict a filter that already ships.
+      LEFT JOIN organizations o ON o.id = t.organization_id
       ${whereClause}
       ${sourceClause}
       ORDER BY ${sortBy} ${sortOrder} NULLS LAST, t.id DESC
