@@ -3873,6 +3873,11 @@ router.get('/agents/scorecard', cacheMiddleware(300), async (req, res) => {
                  WHERE t.created_at >= b.from_date
                    AND t.created_at <  b.to_date + interval '1 day'
                    ${idNotNull}
+                   -- The banner says self-cleared and merged alarms are excluded
+                   -- throughout; this CTE was the one that did not. HANDLED tests tags
+                   -- only, so a human ticket and an open new alarm both pass — it can
+                   -- sit on an intake CTE without dropping unresolved work.
+                   ${handledClause}
                    ${notAutomation}
                    ${groupClause}
                    ${sourceClause}
