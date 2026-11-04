@@ -120,17 +120,38 @@ function buildWhereClause(filters = {}, options = {}) {
     // and tickets with no organization at all - without that second half those
     // tickets are unreachable by any value of this filter.
     if (filters.visualizeTier) {
-        if (filters.visualizeTier === 'none') {
-            conditions.push(`(t.organization_id IS NULL OR EXISTS (
-                SELECT 1 FROM organizations o
-                 WHERE o.id = t.organization_id AND o.visualize_tier IS NULL))`);
-        } else {
-            params.push(filters.visualizeTier);
-            conditions.push(`EXISTS (
+        // Multi-select. Normalised the way the status filter above is: an array
+        // from an in-process caller, a comma-joined string from toQuery.
+        const tiers = Array.isArray(filters.visualizeTier)
+            ? filters.visualizeTier
+            : String(filters.visualizeTier).split(',').map(s => s.trim()).filter(Boolean);
+
+        // 'none' is IS NULL rather than a value, so it cannot ride in the ANY
+        // array - and it covers two populations, untiered organizations AND
+        // tickets with no organization at all. Each half is emitted only if
+        // something selected it, then OR'd: "Basic + No level" reads as
+        // "Basic OR untiered", which is the point of making this multi-select.
+        const named = tiers.filter((t) => t !== 'none');
+        const wantsNone = tiers.includes('none');
+        const parts = [];
+
+        if (named.length) {
+            params.push(named);
+            parts.push(`EXISTS (
                 SELECT 1 FROM organizations o
                  WHERE o.id = t.organization_id
-                   AND o.visualize_tier = $${paramIndex++})`);
+                   AND o.visualize_tier = ANY($${paramIndex++}))`);
         }
+
+        if (wantsNone) {
+            parts.push(`(t.organization_id IS NULL OR EXISTS (
+                SELECT 1 FROM organizations o
+                 WHERE o.id = t.organization_id AND o.visualize_tier IS NULL))`);
+        }
+
+        // Guarded: an empty array would otherwise push "()" and break the SQL
+        // for a filter the caller effectively did not set.
+        if (parts.length) conditions.push(`(${parts.join(' OR ')})`);
     }
 
     // Group filter. `groupIds` is the multi-select in the filter bar, sent
