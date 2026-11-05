@@ -3672,6 +3672,29 @@ function parseReason(raw) {
     return s.length ? s : null;
 }
 
+/** Shared by both bulk routes, so a cap raised in one cannot be missed in the
+ *  other. Returns { ids } or { error }; the caller sends the response, which
+ *  keeps this unaware of res. */
+function parseTicketIds(raw) {
+    const ids = Array.isArray(raw) ? raw : null;
+
+    if (!ids || ids.length === 0) {
+        return { error: { error: 'no-tickets', message: 'ticketIds must be a non-empty array' } };
+    }
+    // A cap, because an unbounded array is a way to hold the database open.
+    // A month is in the hundreds; 5000 is far past any real selection.
+    if (ids.length > 5000) {
+        return { error: { error: 'too-many', message: 'at most 5000 tickets per call', count: ids.length } };
+    }
+
+    const bad = ids.filter((i) => !/^\d+$/.test(String(i).trim()));
+    if (bad.length) {
+        return { error: { error: 'bad-ticket-id', message: 'non-numeric ticket ids', bad: bad.slice(0, 10) } };
+    }
+
+    return { ids: ids.map((i) => String(i).trim()) };
+}
+
 /**
  * PUT /api/tickets/:id/billing-audit
  *
@@ -3756,21 +3779,10 @@ router.delete('/tickets/:id/billing-audit', async (req, res) => {
  */
 router.post('/billing-audit/bulk', async (req, res) => {
     const body = req.body || {};
-    const ids = Array.isArray(body.ticketIds) ? body.ticketIds : null;
 
-    if (!ids || ids.length === 0) {
-        return res.status(400).json({ error: 'no-tickets', message: 'ticketIds must be a non-empty array' });
-    }
-    // A cap, because an unbounded array is a way to hold the database open.
-    // A month is in the hundreds; 5000 is far past any real selection.
-    if (ids.length > 5000) {
-        return res.status(400).json({ error: 'too-many', message: 'at most 5000 tickets per call', count: ids.length });
-    }
-
-    const bad = ids.filter((i) => !/^\d+$/.test(String(i).trim()));
-    if (bad.length) {
-        return res.status(400).json({ error: 'bad-ticket-id', message: 'non-numeric ticket ids', bad: bad.slice(0, 10) });
-    }
+    const parsed = parseTicketIds(body.ticketIds);
+    if (parsed.error) return res.status(400).json(parsed.error);
+    const ids = parsed.ids;
 
     const minutes = parseChargeableMinutes(body.chargeableMinutes);
     if (minutes === null) {
@@ -3793,12 +3805,62 @@ router.post('/billing-audit/bulk', async (req, res) => {
                          reason             = EXCLUDED.reason,
                          audited_at         = now()
                RETURNING ticket_id`,
-            [ids.map((i) => String(i).trim()), minutes, reason]
+            [ids, minutes, reason]
 
         );
         res.json({ updated: result.rowCount, chargeableMinutes: minutes, reason });
     } catch (error) {
         console.error(`[API] bulk billing audit failed: ${error.message}`);
+        res.status(500).json({ error: 'write-failed' });
+    }
+});
+
+/**
+ * POST /api/billing-audit/bulk-full
+ *
+ * Body: { ticketIds: [...], reason? }
+ *
+ * Bill each at its OWN rounded figure. Separate from /bulk because that route
+ * applies one value to many tickets and this is a different value per ticket —
+ * so the figure comes from tickets_billed rather than from the request, and
+ * the client's idea of a ticket's rounding cannot disagree with the view's.
+ *
+ * The largest batch in the audit: 39 of 72 in October's sample.
+ */
+router.post('/billing-audit/bulk-full', async (req, res) => {
+    const body = req.body || {};
+
+    const parsed = parseTicketIds(body.ticketIds);
+    if (parsed.error) return res.status(400).json(parsed.error);
+    const ids = parsed.ids;
+
+    const reason = parseReason(body.reason);
+
+    try {
+        const result = await db.query(
+            `INSERT INTO ticket_billing_audit (ticket_id, chargeable_minutes, reason)
+                  SELECT t.id, COALESCE(t.billed_minutes, 0)::int, $2::text
+                    FROM tickets_billed t
+                   WHERE t.id = ANY($1::bigint[])
+             ON CONFLICT (ticket_id) DO UPDATE
+                     SET chargeable_minutes = EXCLUDED.chargeable_minutes,
+                         reason             = EXCLUDED.reason,
+                         audited_at         = now()
+               RETURNING ticket_id, chargeable_minutes`,
+            [ids, reason]
+        );
+
+        // requested as well as updated: an id absent from tickets_billed
+        // produces no row, and silently auditing fewer tickets than were
+        // selected is the sort of thing nobody notices until a total is wrong.
+        res.json({
+            updated: result.rowCount,
+            requested: ids.length,
+            reason,
+            rows: result.rows
+        });
+    } catch (error) {
+        console.error(`[API] bulk-full billing audit failed: ${error.message}`);
         res.status(500).json({ error: 'write-failed' });
     }
 });
