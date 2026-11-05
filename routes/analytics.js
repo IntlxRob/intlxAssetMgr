@@ -1715,7 +1715,11 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         -- never selected, so no ticket row carried it and no column could show
         -- it. NULL means untiered, which the 'none' filter branch treats the
         -- same as having no organization.
-        o.visualize_tier AS visualize_tier
+        o.visualize_tier AS visualize_tier,
+
+        -- Set by the monthly billing audit. NULL means not audited; 0 means
+        -- audited and not chargeable. Those are different answers.
+        ${CHARGEABLE_MINUTES_SELECT} AS chargeable_minutes
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
@@ -1839,7 +1843,11 @@ router.get('/export/tickets', async (req, res) => {
         -- never selected, so no ticket row carried it and no column could show
         -- it. NULL means untiered, which the 'none' filter branch treats the
         -- same as having no organization.
-        o.visualize_tier AS visualize_tier
+        o.visualize_tier AS visualize_tier,
+
+        -- Set by the monthly billing audit. NULL means not audited; 0 means
+        -- audited and not chargeable. Those are different answers.
+        ${CHARGEABLE_MINUTES_SELECT} AS chargeable_minutes
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
@@ -2483,6 +2491,28 @@ router.post('/backfill', async (req, res) => {
         
         // Import the function from syncJobs
         const { backfillDailyAnalytics } = require('../services/syncJobs');
+
+const CHARGEABLE_MINUTES_FIELD_ID = process.env.CHARGEABLE_MINUTES_FIELD_ID
+    ? parseInt(process.env.CHARGEABLE_MINUTES_FIELD_ID, 10)
+    : null;
+
+/**
+ * Chargeable minutes, read inline from the custom_fields JSONB already on the
+ * row rather than denormalised onto tickets.
+ *
+ * is_billable earns a column because every analytics query reads it. This is
+ * read by one view, a few hundred rows at a time, once a month - the fast path
+ * would be work done on spec. Promote it if that changes.
+ *
+ * NULLIF guards the empty string: ''::int throws, and an unset Zendesk numeric
+ * field has been seen to come back as '' rather than null.
+ */
+const CHARGEABLE_MINUTES_SELECT = CHARGEABLE_MINUTES_FIELD_ID
+    ? `(SELECT NULLIF(cf->>'value', '')::int
+          FROM jsonb_array_elements(t.custom_fields) cf
+         WHERE (cf->>'id')::bigint = ${Number(CHARGEABLE_MINUTES_FIELD_ID)}
+         LIMIT 1)`
+    : 'NULL::int';
         
         console.log(`Starting backfill from ${start_date} to ${end_date}...`);
         
