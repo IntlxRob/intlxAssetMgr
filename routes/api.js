@@ -3662,6 +3662,16 @@ function parseChargeableMinutes(raw) {
     return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
+/** Optional, trimmed, and bounded. A free-text field eventually receives a
+ *  pasted email thread; 200 characters is more than a reason needs and less
+ *  than a document. Empty becomes null rather than '' so "no reason" has one
+ *  representation. */
+function parseReason(raw) {
+    if (typeof raw !== 'string') return null;
+    const s = raw.trim().slice(0, 200);
+    return s.length ? s : null;
+}
+
 /**
  * PUT /api/tickets/:id/billing-audit
  *
@@ -3683,14 +3693,23 @@ router.put('/tickets/:id/billing-audit', async (req, res) => {
     }
 
     try {
+        // An absent reason writes NULL rather than keeping the old one: a
+
+        // reason that no longer describes the charge is worse than none.
+
+        const reason = parseReason(req.body && req.body.reason);
+
+
         const result = await db.query(
-            `INSERT INTO ticket_billing_audit (ticket_id, chargeable_minutes)
-                  VALUES ($1, $2)
+            `INSERT INTO ticket_billing_audit (ticket_id, chargeable_minutes, reason)
+                  VALUES ($1, $2, $3)
              ON CONFLICT (ticket_id) DO UPDATE
                      SET chargeable_minutes = EXCLUDED.chargeable_minutes,
+                         reason             = EXCLUDED.reason,
                          audited_at         = now()
-               RETURNING ticket_id, chargeable_minutes, audited_at`,
-            [ticketId, minutes]
+               RETURNING ticket_id, chargeable_minutes, reason, audited_at`,
+            [ticketId, minutes, reason]
+
         );
         res.json({ audit: result.rows[0] });
     } catch (error) {
@@ -3763,16 +3782,21 @@ router.post('/billing-audit/bulk', async (req, res) => {
     }
 
     try {
+        const reason = parseReason(body.reason);
+
+
         const result = await db.query(
-            `INSERT INTO ticket_billing_audit (ticket_id, chargeable_minutes)
-                  SELECT unnest($1::bigint[]), $2::int
+            `INSERT INTO ticket_billing_audit (ticket_id, chargeable_minutes, reason)
+                  SELECT unnest($1::bigint[]), $2::int, $3::text
              ON CONFLICT (ticket_id) DO UPDATE
                      SET chargeable_minutes = EXCLUDED.chargeable_minutes,
+                         reason             = EXCLUDED.reason,
                          audited_at         = now()
                RETURNING ticket_id`,
-            [ids.map((i) => String(i).trim()), minutes]
+            [ids.map((i) => String(i).trim()), minutes, reason]
+
         );
-        res.json({ updated: result.rowCount, chargeableMinutes: minutes });
+        res.json({ updated: result.rowCount, chargeableMinutes: minutes, reason });
     } catch (error) {
         console.error(`[API] bulk billing audit failed: ${error.message}`);
         res.status(500).json({ error: 'write-failed' });

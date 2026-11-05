@@ -1723,7 +1723,8 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         -- answer from zero, and the reason this is a table rather than a
         -- nullable column.
         ba.chargeable_minutes AS chargeable_minutes,
-        ba.audited_at         AS audited_at
+        ba.audited_at         AS audited_at,
+        ba.reason             AS audit_reason
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
@@ -1856,7 +1857,8 @@ router.get('/export/tickets', async (req, res) => {
         -- answer from zero, and the reason this is a table rather than a
         -- nullable column.
         ba.chargeable_minutes AS chargeable_minutes,
-        ba.audited_at         AS audited_at
+        ba.audited_at         AS audited_at,
+        ba.reason             AS audit_reason
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
