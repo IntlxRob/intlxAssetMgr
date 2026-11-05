@@ -2308,6 +2308,26 @@ const CHECKBOX_OPTIONS = [
     { name: 'Not billable', value: 'false' }
 ];
 
+/**
+ * A caller's value matched against a tagger's configured options, or null.
+ *
+ * Accepts either the API value or the display name, because the two are
+ * routinely different ('service_request' vs 'Service Request') and a UI
+ * sending the name is the most likely mistake.
+ *
+ * Extracted so PATCH /tickets/:id and POST /tickets/bulk-field cannot drift.
+ * Two copies of this would not throw when they disagreed: Zendesk accepts a
+ * value outside the option list with a 200 and silently discards it, so the
+ * symptom of divergence is a write that reports success and does nothing.
+ */
+function matchTaggerOption(options, raw) {
+    const want = String(raw).trim().toLowerCase();
+    return options.find((o) =>
+        String(o.value).trim().toLowerCase() === want ||
+        String(o.name).trim().toLowerCase() === want
+    ) || null;
+}
+
 // These were hardcoded here and verified against live tickets before the ids
 // came from derived.js. If the two ever disagree, say so at startup rather than
 // reading one field's options and writing to another.
@@ -2487,6 +2507,193 @@ router.get('/tickets/:id/editable', async (req, res) => {
     });
 });
 
+/**
+ * POST /api/tickets/bulk-field
+ *
+ * Body: { ticketIds: [...], field: 'requestType', value: 'question' }
+ *
+ * One tagger, one value, many tickets. For classifying the ~3,600 tickets
+ * that never got a Request Type - see claude/request-type-cleanup.md. The
+ * work there is assembling a set that shares an answer, which is why this is
+ * driven from a filtered, hand-ticked list rather than from a rule.
+ *
+ * TAGGERS ONLY. 'billable' is refused: is_billable feeds billed_minutes
+ * through the tickets_billed view, so a bulk flip changes invoices. That
+ * stays on the per-ticket path.
+ *
+ * Per ticket rather than update_many. update_many is one call but is
+ * asynchronous and echoes nothing, so verifying it needs a second show_many
+ * pass and partial failures hide until then. updateTicketCustomFields echoes
+ * the ticket, which is both the proof the write landed and the input to
+ * computeDerivedFields - and these tickets are old enough that partial
+ * success is likely, so a per-ticket outcome is worth more than a job id.
+ */
+router.post('/tickets/bulk-field', async (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const key = body.field;
+    const field = EDITABLE_TICKET_FIELDS[key];
+
+    if (!field) {
+        return res.status(400).json({
+            error: 'unknown-field',
+            message: `not editable: ${key}`,
+            editable: Object.keys(EDITABLE_TICKET_FIELDS)
+        });
+    }
+    if (field.type !== 'tagger') {
+        return res.status(400).json({
+            error: 'not-bulk-editable',
+            message: `${field.label} cannot be set in bulk. It feeds billed_minutes ` +
+                     'through the tickets_billed view, so changing it changes invoices. ' +
+                     'Use the per-ticket editor.',
+            field: key
+        });
+    }
+
+    const parsed = parseTicketIds(body.ticketIds);
+    if (parsed.error) return res.status(400).json(parsed.error);
+    const ids = parsed.ids;
+
+    // Lower than parseTicketIds' 5000: this route holds the request open
+    // while it writes, so the cap is about how long a caller should wait
+    // rather than about protecting the database.
+    if (ids.length > 500) {
+        return res.status(400).json({
+            error: 'too-many',
+            message: 'at most 500 tickets per call - this route writes synchronously',
+            count: ids.length
+        });
+    }
+
+    let options;
+    try {
+        options = await cachedFieldOptions(field.id);
+    } catch (error) {
+        const status = error.response ? error.response.status : null;
+        console.error(`[API] options for ${key} (${field.id}) failed: HTTP ${status || '?'}`);
+        return res.status(502).json({
+            error: 'options-unavailable',
+            message: `could not read the configured options for ${field.label}, ` +
+                     'so the value cannot be validated and nothing was written',
+            field: key
+        });
+    }
+
+    // Resolved ONCE, before anything is written. An unmatched value would be
+    // accepted by Zendesk with a 200 on every one of 500 tickets and applied
+    // to none of them.
+    const clearing = isEmptyValue(body.value);
+    const match = clearing ? null : matchTaggerOption(options, body.value);
+
+    if (!clearing && !match) {
+        return res.status(400).json({
+            error: 'invalid-value',
+            message: `not a configured option for ${field.label}: ${JSON.stringify(body.value)}`,
+            validValues: options.map((o) => o.value)
+        });
+    }
+
+    const value = clearing ? null : match.value;
+    const custom_fields = [{ id: field.id, value }];
+
+    /** One ticket: write, then check the echo rather than the status code. */
+    async function applyOne(ticketId) {
+        try {
+            const ticket = await zendeskService.updateTicketCustomFields(ticketId, custom_fields);
+
+            const echoed = (ticket.custom_fields || [])
+                .find((f) => String(f.id) === String(field.id));
+            const actual = echoed ? echoed.value : null;
+
+            // Compared against the RESOLVED value, not the caller's spelling:
+            // 'Question' normalises to 'question', and a cleared field comes
+            // back as '' rather than null. Both looked like failures once.
+            const same = isEmptyValue(value)
+                ? isEmptyValue(actual)
+                : (!isEmptyValue(actual) &&
+                   String(actual).trim().toLowerCase() === String(value).trim().toLowerCase());
+
+            return same
+                ? { id: ticketId, ok: true, ticket }
+                : { id: ticketId, ok: false, reason: 'not-applied', actual: actual ?? null };
+        } catch (error) {
+            // Status only. The axios error carries the Authorization header.
+            const status = error.response ? error.response.status : null;
+            return { id: ticketId, ok: false, reason: status ? `http-${status}` : 'request-failed' };
+        }
+    }
+
+    // Four at a time. Sequential would be a minute for a full batch; wide
+    // parallelism would spend the account's rate limit on one person's bulk
+    // edit while the sync and the app are also calling.
+    const queue = [...ids];
+    const results = [];
+    await Promise.all(Array.from({ length: 4 }, async () => {
+        for (;;) {
+            const id = queue.shift();
+            if (id === undefined) return;
+            results.push(await applyOne(id));
+        }
+    }));
+
+    const applied = results.filter((r) => r.ok);
+    const failed = results.filter((r) => !r.ok).map(({ id, reason, actual }) => ({ id, reason, actual }));
+
+    // -----------------------------------------------------------------
+    // Keep the synced rows in step.
+    //
+    // The table reads Postgres; this wrote Zendesk. Without this the rows
+    // show their old values until the next sync, and a refresh makes the
+    // edit look reverted - the same bug measured on ticket 138570.
+    //
+    // computeDerivedFields against the echoed ticket, so request_type_derived
+    // keeps its real rule (custom field falling back to alarm tags) instead
+    // of acquiring a second one here. is_billable is untouched: this route
+    // only writes taggers.
+    // -----------------------------------------------------------------
+    let localRowsUpdated = 0;
+    if (applied.length) {
+        try {
+            const rowIds = [];
+            const rtd = [];
+            const sl = [];
+            const sd = [];
+            for (const r of applied) {
+                const d = computeDerivedFields(r.ticket);
+                rowIds.push(r.ticket.id);
+                rtd.push(d.request_type_derived);
+                sl.push(d.starling_location);
+                sd.push(d.starling_department);
+            }
+
+            const upd = await pool.query(
+                `UPDATE tickets t
+                     SET request_type_derived = v.rtd,
+                         starling_location    = v.sl,
+                         starling_department  = v.sd,
+                         derived_computed_at  = NOW()
+                    FROM (SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::text[])
+                            AS x(id, rtd, sl, sd)) v
+                   WHERE t.id = v.id`,
+                [rowIds, rtd, sl, sd]
+            );
+            localRowsUpdated = upd.rowCount;
+        } catch (error) {
+            // A stale table is not a lost edit - Zendesk already took it.
+            console.error(`[API] bulk-field local write-through failed: ${error.message}`);
+        }
+    }
+
+    res.json({
+        field: key,
+        value,
+        requested: ids.length,
+        applied: applied.length,
+        failed,
+        localRowsUpdated
+    });
+});
+
 router.patch('/tickets/:id', async (req, res) => {
     const ticketId = req.params.id;
     const body = (req.body && typeof req.body === 'object') ? req.body : {};
@@ -2577,11 +2784,7 @@ router.patch('/tickets/:id', async (req, res) => {
             });
         }
 
-        const want = String(raw).trim().toLowerCase();
-        const match = options.find((o) =>
-            String(o.value).trim().toLowerCase() === want ||
-            String(o.name).trim().toLowerCase() === want
-        );
+        const match = matchTaggerOption(options, raw);
 
         if (!match) {
             rejected.push({
