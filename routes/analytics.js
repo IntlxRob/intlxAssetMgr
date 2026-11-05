@@ -443,8 +443,106 @@ router.get('/tickets/by-status', cacheMiddleware(300), async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/reports/review/trend
+ *
+ * Monthly created and solved counts for the customer review.
+ *
+ * Query: startDate, endDate (both required, inclusive), organizationId, source.
+ *
+ * Two CTEs rather than one GROUP BY, because the series filter on different
+ * date columns — created_at and solved_at. That is the whole reason this is
+ * not /tickets/trends, whose tickets_solved is a cohort rate (see its note).
+ *
+ * A ticket solved this month but raised last month belongs to this month's
+ * solved count and last month's created count. Both are true, and a review
+ * that cannot show the difference cannot show a backlog being worked down.
+ *
+ * Returns ascending by month — the chart reads left to right — where
+ * /tickets/trends returns descending.
+ */
+router.get('/reports/review/trend', cacheMiddleware(300), async (req, res) => {
+    try {
+        const { startDate, endDate, organizationId, source } = req.query;
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'startDate and endDate are required' });
+        }
+
+        const params = [startDate, endDate];
+
+        // Built before the SQL so the statement itself stays readable, and so
+        // the placeholder numbering cannot drift between the two CTEs — they
+        // must filter identically on everything except the date column.
+        let orgClause = '';
+        if (organizationId) {
+            params.push(organizationId);
+            orgClause = `AND t.organization_id = $${params.length}`;
+        }
+        const srcClause = sourceClauseFor(source);
+
+        const result = await query(`
+            WITH months AS (
+                -- Every month in range, so an empty one is a zero rather than
+                -- a missing bar. A quiet month that vanishes reads as absent
+                -- data instead of as the fact it is.
+                SELECT generate_series(
+                           date_trunc('month', $1::date),
+                           date_trunc('month', $2::date),
+                           interval '1 month')::date AS m
+            ),
+            created AS (
+                SELECT date_trunc('month', t.created_at)::date AS m,
+                       COUNT(*)::int AS created,
+                       COUNT(*) FILTER (WHERE NOT ${IS_ALARM})::int AS created_human
+                  FROM tickets t
+                 WHERE t.created_at >= $1::date
+                   AND t.created_at <  ($2::date + 1)
+                   ${orgClause} ${srcClause}
+                 GROUP BY 1
+            ),
+            solved AS (
+                SELECT date_trunc('month', t.solved_at)::date AS m,
+                       COUNT(*)::int AS solved,
+                       COUNT(*) FILTER (WHERE NOT ${IS_ALARM})::int AS solved_human
+                  FROM tickets t
+                 WHERE t.solved_at IS NOT NULL
+                   AND t.solved_at >= $1::date
+                   AND t.solved_at <  ($2::date + 1)
+                   ${orgClause} ${srcClause}
+                 GROUP BY 1
+            )
+            SELECT to_char(m.m, 'YYYY-MM')        AS month,
+                   COALESCE(c.created, 0)         AS created,
+                   COALESCE(c.created_human, 0)   AS created_human,
+                   COALESCE(s.solved, 0)          AS solved,
+                   COALESCE(s.solved_human, 0)    AS solved_human
+              FROM months m
+              LEFT JOIN created c ON c.m = m.m
+              LEFT JOIN solved  s ON s.m = m.m
+             ORDER BY m.m
+        `, params);
+
+        res.json({ months: result.rows });
+    } catch (error) {
+        console.error(`[analytics] review trend failed: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * GET /api/analytics/tickets/trends
  * Get ticket volume trends over time
+ *
+ * CAUTION: every column is bucketed by created_at, including tickets_solved.
+ * That column is "of the tickets CREATED in this period, how many have since
+ * been solved" — a cohort completion rate, not tickets solved in the period.
+ *
+ * The two readings differ most exactly where it matters: a month that cleared
+ * a long backlog looks unremarkable here, because those tickets are counted
+ * against the months they arrived in.
+ *
+ * For a real created-vs-solved series see /reports/review/trend, which filters
+ * the two on different date columns.
  */
 router.get('/tickets/trends', cacheMiddleware(300), async (req, res) => {
     try {
