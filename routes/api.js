@@ -3631,4 +3631,152 @@ router.get('/sync-status', async (req, res) => {
 // END OF ANALYTICS ENDPOINTS
 // ============================================
 
+
+/* =========================================================================
+ * Billing audit
+ *
+ * The monthly T&M audit's decision, per ticket. Stored here rather than in
+ * Zendesk because closed tickets reject custom field writes and the audit runs
+ * on closed tickets - Zendesk closes four days after solved, the audit runs
+ * after month end. Measured 2026-11-05 on #137579:
+ *
+ *   HTTP 422 {"status":[{"description":"One of the updates to a closed
+ *             ticket was rejected"}]}
+ *
+ * A row means audited. No row means not audited. chargeable_minutes is never
+ * null, so 0 - audited and not chargeable - is an ordinary value rather than a
+ * convention that has to be remembered at every read.
+ *
+ * Deliberately does not touch is_billable. That write hits the same 422, and
+ * the two facts are different anyway: is_billable is what the agent marked,
+ * this is what accounting decided. The spreadsheet keeps them in two columns
+ * for the same reason.
+ * ========================================================================= */
+
+/** Shared by the single and bulk writes so they cannot disagree about what a
+ *  valid figure is. Returns a number, or null if the input is not one. */
+function parseChargeableMinutes(raw) {
+    const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
+    // Integer and non-negative. Zero is valid and is the whole write-off case,
+    // so this must not reject falsy values.
+    return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/**
+ * PUT /api/tickets/:id/billing-audit
+ *
+ * Body: { chargeableMinutes }
+ */
+router.put('/tickets/:id/billing-audit', async (req, res) => {
+    const ticketId = String(req.params.id || '').trim();
+    if (!/^\d+$/.test(ticketId)) {
+        return res.status(400).json({ error: 'bad-ticket-id', ticketId });
+    }
+
+    const minutes = parseChargeableMinutes(req.body && req.body.chargeableMinutes);
+    if (minutes === null) {
+        return res.status(400).json({
+            error: 'invalid-value',
+            message: 'chargeableMinutes must be a whole number of minutes, 0 or greater',
+            requested: req.body ? req.body.chargeableMinutes : undefined
+        });
+    }
+
+    try {
+        const result = await db.query(
+            `INSERT INTO ticket_billing_audit (ticket_id, chargeable_minutes)
+                  VALUES ($1, $2)
+             ON CONFLICT (ticket_id) DO UPDATE
+                     SET chargeable_minutes = EXCLUDED.chargeable_minutes,
+                         audited_at         = now()
+               RETURNING ticket_id, chargeable_minutes, audited_at`,
+            [ticketId, minutes]
+        );
+        res.json({ audit: result.rows[0] });
+    } catch (error) {
+        console.error(`[API] billing audit write for ${ticketId} failed: ${error.message}`);
+        res.status(500).json({ error: 'write-failed', ticketId });
+    }
+});
+
+/**
+ * DELETE /api/tickets/:id/billing-audit
+ *
+ * Returns the ticket to un-audited. A real operation, not a tidy-up: row
+ * presence is what distinguishes "audited, charge nothing" from "nobody has
+ * looked at this yet".
+ */
+router.delete('/tickets/:id/billing-audit', async (req, res) => {
+    const ticketId = String(req.params.id || '').trim();
+    if (!/^\d+$/.test(ticketId)) {
+        return res.status(400).json({ error: 'bad-ticket-id', ticketId });
+    }
+
+    try {
+        const result = await db.query(
+            'DELETE FROM ticket_billing_audit WHERE ticket_id = $1 RETURNING ticket_id',
+            [ticketId]
+        );
+        // Not 404 when there was no row: un-auditing something already
+        // un-audited is the state the caller asked for.
+        res.json({ ticketId, removed: result.rowCount > 0 });
+    } catch (error) {
+        console.error(`[API] billing audit delete for ${ticketId} failed: ${error.message}`);
+        res.status(500).json({ error: 'delete-failed', ticketId });
+    }
+});
+
+/**
+ * POST /api/billing-audit/bulk
+ *
+ * Body: { ticketIds: [...], chargeableMinutes }
+ *
+ * One value across many tickets, because that is the shape of the work: in
+ * October's sample 16 tickets capped at 15 and 9 were written off entirely.
+ * Twenty-five decisions, two gestures.
+ */
+router.post('/billing-audit/bulk', async (req, res) => {
+    const body = req.body || {};
+    const ids = Array.isArray(body.ticketIds) ? body.ticketIds : null;
+
+    if (!ids || ids.length === 0) {
+        return res.status(400).json({ error: 'no-tickets', message: 'ticketIds must be a non-empty array' });
+    }
+    // A cap, because an unbounded array is a way to hold the database open.
+    // A month is in the hundreds; 5000 is far past any real selection.
+    if (ids.length > 5000) {
+        return res.status(400).json({ error: 'too-many', message: 'at most 5000 tickets per call', count: ids.length });
+    }
+
+    const bad = ids.filter((i) => !/^\d+$/.test(String(i).trim()));
+    if (bad.length) {
+        return res.status(400).json({ error: 'bad-ticket-id', message: 'non-numeric ticket ids', bad: bad.slice(0, 10) });
+    }
+
+    const minutes = parseChargeableMinutes(body.chargeableMinutes);
+    if (minutes === null) {
+        return res.status(400).json({
+            error: 'invalid-value',
+            message: 'chargeableMinutes must be a whole number of minutes, 0 or greater',
+            requested: body.chargeableMinutes
+        });
+    }
+
+    try {
+        const result = await db.query(
+            `INSERT INTO ticket_billing_audit (ticket_id, chargeable_minutes)
+                  SELECT unnest($1::bigint[]), $2::int
+             ON CONFLICT (ticket_id) DO UPDATE
+                     SET chargeable_minutes = EXCLUDED.chargeable_minutes,
+                         audited_at         = now()
+               RETURNING ticket_id`,
+            [ids.map((i) => String(i).trim()), minutes]
+        );
+        res.json({ updated: result.rowCount, chargeableMinutes: minutes });
+    } catch (error) {
+        console.error(`[API] bulk billing audit failed: ${error.message}`);
+        res.status(500).json({ error: 'write-failed' });
+    }
+});
+
 module.exports = router;

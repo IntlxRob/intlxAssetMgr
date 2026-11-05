@@ -1715,7 +1715,15 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
         -- never selected, so no ticket row carried it and no column could show
         -- it. NULL means untiered, which the 'none' filter branch treats the
         -- same as having no organization.
-        o.visualize_tier AS visualize_tier
+        o.visualize_tier AS visualize_tier,
+
+        -- The monthly billing audit's decision. A row means audited;
+        -- chargeable_minutes is what to invoice, 0 meaning nothing. NULL here
+        -- means nobody has looked at the ticket yet - which is a different
+        -- answer from zero, and the reason this is a table rather than a
+        -- nullable column.
+        ba.chargeable_minutes AS chargeable_minutes,
+        ba.audited_at         AS audited_at
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
@@ -1723,6 +1731,7 @@ router.get('/tickets/paginated', cacheMiddleware(60), async (req, res) => {
       -- tier filter has a 'none' branch written for exactly those rows, so
       -- dropping them here would contradict a filter that already ships.
       LEFT JOIN organizations o ON o.id = t.organization_id
+      LEFT JOIN ticket_billing_audit ba ON ba.ticket_id = t.id
       ${whereClause}
       ${sourceClause}
       ORDER BY ${sortBy} ${sortOrder} NULLS LAST, t.id DESC
@@ -1839,7 +1848,15 @@ router.get('/export/tickets', async (req, res) => {
         -- never selected, so no ticket row carried it and no column could show
         -- it. NULL means untiered, which the 'none' filter branch treats the
         -- same as having no organization.
-        o.visualize_tier AS visualize_tier
+        o.visualize_tier AS visualize_tier,
+
+        -- The monthly billing audit's decision. A row means audited;
+        -- chargeable_minutes is what to invoice, 0 meaning nothing. NULL here
+        -- means nobody has looked at the ticket yet - which is a different
+        -- answer from zero, and the reason this is a table rather than a
+        -- nullable column.
+        ba.chargeable_minutes AS chargeable_minutes,
+        ba.audited_at         AS audited_at
 
       FROM tickets_billed t
       LEFT JOIN custom_statuses cs ON cs.id = t.custom_status_id
@@ -1847,6 +1864,7 @@ router.get('/export/tickets', async (req, res) => {
       -- tier filter has a 'none' branch written for exactly those rows, so
       -- dropping them here would contradict a filter that already ships.
       LEFT JOIN organizations o ON o.id = t.organization_id
+      LEFT JOIN ticket_billing_audit ba ON ba.ticket_id = t.id
       ${whereClause}
       ${sourceClause}
       ORDER BY ${sortBy} ${sortOrder} NULLS LAST, t.id DESC
