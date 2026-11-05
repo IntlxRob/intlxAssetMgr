@@ -19,24 +19,6 @@ const BILLABLE_FIELD_ID = process.env.BILLABLE_FIELD_ID
   ? parseInt(process.env.BILLABLE_FIELD_ID, 10)
   : null;
 
-// The monthly billing audit's chargeable-minutes field. Lives here rather than
-// in routes/api.js so the editor and anything else that reads it cannot end up
-// holding different ids - the same reason BILLABLE_FIELD_ID does.
-//
-// No fallback, deliberately. A guessed id does not fail: it writes a real
-// number to the wrong field on a real ticket.
-const CHARGEABLE_MINUTES_FIELD_ID = process.env.CHARGEABLE_MINUTES_FIELD_ID
-  ? parseInt(process.env.CHARGEABLE_MINUTES_FIELD_ID, 10)
-  : null;
-
-if (!CHARGEABLE_MINUTES_FIELD_ID) {
-  console.warn(
-    '[billing] CHARGEABLE_MINUTES_FIELD_ID is not set - the billing audit ' +
-    'cannot record chargeable minutes. Reads return null and writes are ' +
-    'rejected rather than guessed at.'
-  );
-}
-
 // Hardcoded in the legacy extractTicketTime. Overridable but rarely changes.
 const TIME_FIELD_ID = process.env.TIME_FIELD_ID
   ? parseInt(process.env.TIME_FIELD_ID, 10)
@@ -164,7 +146,6 @@ async function refreshDenormalisedNames(pool) {
 
 module.exports = {
   BILLABLE_FIELD_ID,
-  CHARGEABLE_MINUTES_FIELD_ID,
   TIME_FIELD_ID,
   BILLING_LOGIC_VERSION,
   computeBillable,

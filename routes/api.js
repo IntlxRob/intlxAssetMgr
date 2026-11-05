@@ -28,8 +28,7 @@ const {
 // false outright when it is unset — so a hardcoded copy here would diverge
 // silently the day that variable changes, and this editor would write a field
 // the Billable column does not read.
-const { BILLABLE_FIELD_ID, CHARGEABLE_MINUTES_FIELD_ID, computeBillingFields } =
-    require('../services/billing');
+const { BILLABLE_FIELD_ID, computeBillingFields } = require('../services/billing');
 const https = require('https'); // PagerDuty OnCall Calendar Webcal
 const ical = require('ical'); // PagerDuty OnCall Calendar Webcal
 
@@ -2284,10 +2283,8 @@ router.get('/organizations/:id', async (req, res) => {
  * All three are taggers: they accept only their configured values, so the UI
  * wants dropdowns and a bad value comes back as a 422.
  *
- * No longer taggers only. Billable (checkbox) was added 2026-11-02 and
- * Chargeable Minutes (numeric) 2026-11-05, so the `type` on each entry is what
- * decides how a value is validated and written - not an assumption that every
- * entry here has custom_field_options.
+ * Billable (21223282485911, checkbox) is deliberately absent — it exists in
+ * Zendesk but was never used in the old app.
  */
 const EDITABLE_TICKET_FIELDS = {
     requestType:        { id: Number(REQUEST_TYPE_FIELD_ID),        label: 'Request Type',        type: 'tagger' },
@@ -2295,14 +2292,7 @@ const EDITABLE_TICKET_FIELDS = {
     starlingDepartment: { id: Number(STARLING_DEPARTMENT_FIELD_ID), label: 'Starling Department', type: 'tagger' },
     // A checkbox, not a tagger — no custom_field_options, boolean values, and
     // it feeds billed_minutes through the tickets_billed view.
-    billable:           { id: Number(BILLABLE_FIELD_ID),            label: 'Billable',            type: 'checkbox' },
-    // Numeric. The monthly billing audit writes a minute count here.
-    //   empty -> not audited
-    //   0     -> audited, not chargeable
-    //   n     -> audited, charge n minutes
-    // Empty and 0 are different answers, which is why this is one field and
-    // not a checkbox plus a number. See claude/billing-audit.md.
-    chargeableMinutes:  { id: Number(CHARGEABLE_MINUTES_FIELD_ID), label: 'Chargeable Minutes', type: 'numeric' }
+    billable:           { id: Number(BILLABLE_FIELD_ID),            label: 'Billable',            type: 'checkbox' }
 };
 
 /**
@@ -2388,20 +2378,6 @@ router.get('/ticket-fields/editable', async (req, res) => {
                     label: f.label,
                     type: 'checkbox',
                     options: CHECKBOX_OPTIONS
-                };
-            }
-
-            // A numeric field has no options at all - not an empty set, none. Null
-            // says that; an empty array would be indistinguishable from "the options
-            // could not be read", which is the ambiguity the branch above exists to
-            // avoid.
-            if (f.type === 'numeric') {
-                return {
-                    key,
-                    id: String(f.id),
-                    label: f.label,
-                    type: 'numeric',
-                    options: null
                 };
             }
 
@@ -2585,32 +2561,6 @@ router.patch('/tickets/:id', async (req, res) => {
             resolved.push({ key, id: field.id, value: isTrue });
             continue;
         }
-
-            if (field.type === 'numeric') {
-                // Zendesk's Numeric field holds an integer. A decimal or a
-                // non-number is accepted by the API and silently discarded - the
-                // same 200-OK-and-nothing-happened the tagger comment describes - so
-                // it is refused here, before the request leaves the process.
-                //
-                // Zero is a REAL value: audited and not chargeable. isEmptyValue
-                // tests === null / undefined / '' and so lets 0 through, which is
-                // what keeps it distinguishable from an un-audited ticket. An empty
-                // string still clears the field, which is how a ticket is returned
-                // to un-audited.
-                const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
-
-                if (!Number.isInteger(n) || n < 0) {
-                    rejected.push({
-                        key,
-                        requested: raw,
-                        validValues: ['a whole number of minutes, 0 or greater']
-                    });
-                    continue;
-                }
-
-                resolved.push({ key, id: field.id, value: n });
-                continue;
-            }
 
         let options;
         try {
