@@ -443,6 +443,72 @@ router.get('/tickets/by-status', cacheMiddleware(300), async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/reports/review/breakdown
+ *
+ * Tickets and hours per request type, for the review period.
+ *
+ * Query: the standard filters. organizationId and the date range are the ones
+ * that matter; source is handled inline because it is a column condition.
+ *
+ * The FROM clause is copied from /organizations/summary deliberately, join
+ * and all. A breakdown whose rows do not sum to the headline figure on the
+ * same page is worse than no breakdown, because the customer is looking at
+ * both of them at once.
+ *
+ * The tickets_sla join supplies nothing selected here. It is present so that
+ * this query and /organizations/summary cover the same population by
+ * construction: were that join ever not total, dropping it would silently add
+ * tickets the stat row leaves out.
+ */
+router.get('/reports/review/breakdown', cacheMiddleware(300), async (req, res) => {
+    try {
+        const filters = req.query;
+        const { whereClause, params } = buildWhereClause(filters, { asFragment: true });
+
+        const sourceClause =
+          filters.source === 'alarm'  ? `AND ${IS_ALARM}`
+        : filters.source === 'human'  ? `AND NOT ${IS_ALARM}`
+        : '';
+
+        const result = await query(`
+            WITH scoped AS (
+                SELECT
+                    -- NULLIF as well as COALESCE: the field is empty string
+                    -- on some tickets and null on others, and two rows
+                    -- labelled differently for the same absence would read as
+                    -- two categories.
+                    COALESCE(NULLIF(t.request_type_derived, ''), '(not set)') AS request_type,
+                    t.billable_time_minutes,
+                    (t.has_alarmtraq OR t.has_virsae OR t.has_checkmk) AS is_alarm
+                  FROM tickets_billed t
+                  JOIN tickets_sla s ON s.id = t.id
+                 WHERE t.organization_id IS NOT NULL
+                 ${whereClause}
+                 ${sourceClause}
+            )
+            SELECT
+                request_type,
+                COUNT(*)::int                                  AS tickets,
+                COUNT(*) FILTER (WHERE NOT is_alarm)::int      AS human_tickets,
+                ROUND((SUM(billable_time_minutes) / 60.0)::numeric, 1) AS hours,
+                -- COALESCE the numerator: a type with only alarm tickets
+                -- yields null from the FILTER, and null renders as an em dash
+                -- where the honest answer is 0.0.
+                ROUND((COALESCE(SUM(billable_time_minutes) FILTER (WHERE NOT is_alarm), 0)
+                       / 60.0)::numeric, 1)                    AS human_hours
+              FROM scoped
+             GROUP BY 1
+             ORDER BY tickets DESC
+        `, params);
+
+        res.json({ types: result.rows });
+    } catch (error) {
+        console.error(`[analytics] review breakdown failed: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * GET /api/analytics/reports/review/trend
  *
  * Monthly created and solved counts for the customer review.
