@@ -109,6 +109,40 @@ function buildWhereClause(filters = {}, options = {}) {
         }
     }
 
+    // ---------------------------------------------------------------
+    // Deleted tickets, excluded unless explicitly asked for.
+    //
+    // Zendesk's incremental export returns deleted tickets as stubs -
+    // fields nulled, subject SCRUBBED - so the sync stores them and they
+    // have been counted in every query that runs through here. 54 of
+    // 136,221 on 2026-11-06, so the effect on any total is negligible.
+    //
+    // The reason to exclude them is not accuracy, it is that they cannot
+    // be acted on: they do not exist in Zendesk, so every write against
+    // them 404s. Left in, they sit permanently in the
+    // "Request type = not set" worklist that the remaining blanks are
+    // being classified from.
+    //
+    // Conditional, because the status filter is the one place somebody
+    // legitimately wants them. Asking for status=deleted and getting
+    // nothing would be worse than the problem being fixed.
+    //
+    // Note the open-work queries elsewhere in this file already say
+    // NOT IN ('solved','closed','deleted'). Those exclude deleted tickets
+    // as a side effect of wanting open ones, which is why this gap went
+    // unnoticed - it looked handled.
+    // ---------------------------------------------------------------
+    const wantsDeleted = filters.status
+        ? (Array.isArray(filters.status)
+            ? filters.status
+            : String(filters.status).split(',')
+          ).map((s) => String(s).trim()).includes('deleted')
+        : false;
+
+    if (!wantsDeleted) {
+        conditions.push(`t.status <> 'deleted'`);
+    }
+
     // Priority filter
     if (filters.priority) {
         conditions.push(`t.priority = $${paramIndex++}`);
