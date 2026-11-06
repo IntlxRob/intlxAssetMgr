@@ -1,5 +1,6 @@
 // OPSCalendarComponent.jsx
 import React, { useState, useEffect } from 'react';
+import { proxyFetch } from './proxyClient';
 
 const BACKEND_BASE_URL = "https://intlxassetmgr-proxy.onrender.com";
 
@@ -44,7 +45,7 @@ function OPSCalendarComponent({ requester, assets }) {
         endpoint = '/api/ops-calendar/upcoming?days=7';
       }
       
-      const response = await fetch(`${BACKEND_BASE_URL}${endpoint}`);
+      const response = await proxyFetch(`${BACKEND_BASE_URL}${endpoint}`);
       
       if (!response.ok) {
         throw new Error(`Failed to fetch events: ${response.status}`);
@@ -84,7 +85,7 @@ function OPSCalendarComponent({ requester, assets }) {
         }
       }
       
-      const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/events`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/events`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -127,7 +128,7 @@ function OPSCalendarComponent({ requester, assets }) {
     if (!confirm('Are you sure you want to delete this event?')) return;
     
     try {
-      const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/events/${eventId}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/events/${eventId}`, {
         method: 'DELETE'
       });
       

@@ -1,6 +1,6 @@
 // src/api.jsx
 
-import axios from 'axios';
+import { proxyAxios as axios } from './proxyClient';
 
 const ZAFClient = window.ZAFClient;
 

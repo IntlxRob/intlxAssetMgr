@@ -1,6 +1,6 @@
 // src/SearchInput.jsx
 import React, { useState, useEffect, useRef } from "react";
-import axios from "axios";
+import { proxyAxios as axios } from "./proxyClient";
 
 const PROXY = "https://intlxassetmgr-proxy.onrender.com";
 

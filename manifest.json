@@ -5,7 +5,7 @@
     "email": "rob.johnston@intlxsolutions.com"
   },
   "defaultLocale": "en",
-  "version": "2.0.0",
+  "version": "2.4.1",
   "frameworkVersion": "2.0",
   "location": {
     "support": {
@@ -33,5 +33,13 @@
     ".gitignore",
     "package.json",
     "package-lock.json"
+  ],
+  "parameters": [
+    {
+      "name": "shared_secret",
+      "type": "text",
+      "required": true,
+      "secure": true
+    }
   ]
 }

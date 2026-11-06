@@ -1,7 +1,13 @@
 {
   "app": {
     "name": "Intlx Asset Manager",
-    "description": "Asset management for Intlx"
+    "description": "Asset management for Intlx",
+    "installation_instructions": "Enter the shared secret used by the intlx asset-manager proxy (the same value as Ticket IQ's shared_secret setting). The app cannot load data without it.",
+    "parameters": {
+      "shared_secret": {
+        "label": "Shared secret",
+        "helpText": "Same value as Ticket IQ's shared_secret. Used to sign requests to the asset-manager proxy; never exposed to agents' browsers."
+      }
+    }
   }
 }
-

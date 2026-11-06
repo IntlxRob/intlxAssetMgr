@@ -9,6 +9,7 @@ import {
   getOrganization, 
   apiErrorToText 
 } from './api';
+import { proxyFetch } from './proxyClient';
 
 const BACKEND_BASE_URL = "https://intlxassetmgr-proxy.onrender.com";
 
@@ -26,7 +27,7 @@ function OnCallBadge() {
   async function fetchOncallAgent() {
     setOncallLoading(true);
     try {
-      const response = await fetch(`${BACKEND_BASE_URL}/api/pagerduty-oncall`);
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/pagerduty-oncall`);
       if (response.ok) {
         const data = await response.json();
         setOncallAgent(data.oncall);
@@ -3203,7 +3204,7 @@ function OPSCalendarComponent({ requester, assets, requesterOrg }) {
 
   async function fetchCalendarConfig() {
   try {
-    const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/config`);
+    const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/config`);
     if (response.ok) {
       const config = await response.json();
       
@@ -3308,7 +3309,7 @@ function OPSCalendarComponent({ requester, assets, requesterOrg }) {
       `timeMax=${endOfMonth.toISOString()}&` +
       `maxResults=250`;
     
-    const response = await fetch(url);
+    const response = await proxyFetch(url);
     
     if (response.ok) {
       const data = await response.json();
@@ -3373,7 +3374,7 @@ function OPSCalendarComponent({ requester, assets, requesterOrg }) {
         calendarId: calendarId
       };
 
-      const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/events/${editingEvent.id}?calendarId=${encodeURIComponent(calendarId)}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/events/${editingEvent.id}?calendarId=${encodeURIComponent(calendarId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -3414,7 +3415,7 @@ function OPSCalendarComponent({ requester, assets, requesterOrg }) {
         calendarId: calendarId
       };
 
-      const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/events?calendarId=${encodeURIComponent(calendarId)}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/events?calendarId=${encodeURIComponent(calendarId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -3449,7 +3450,7 @@ function OPSCalendarComponent({ requester, assets, requesterOrg }) {
         ? calendarConfig.ptoCalendarId 
         : calendarConfig.opsCalendarId;
 
-      const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/events/${eventToDelete.id}?calendarId=${encodeURIComponent(calendarId)}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/events/${eventToDelete.id}?calendarId=${encodeURIComponent(calendarId)}`, {
         method: 'DELETE'
       });
       
@@ -5008,7 +5009,7 @@ function App() {
   
   try {
     console.log('[Asset Manager] Fetching IT Portal assets for user:', requester.id);
-    const response = await fetch(`${BACKEND_BASE_URL}/api/it-portal-assets?user_id=${requester.id}`, {
+    const response = await proxyFetch(`${BACKEND_BASE_URL}/api/it-portal-assets?user_id=${requester.id}`, {
       headers: {
         'Content-Type': 'application/json'
       }
@@ -5072,7 +5073,7 @@ function App() {
     
     console.log('[Asset Manager] Fetching calendar events for:', selectedCalendar, 'with ID:', calendarId);
     
-    const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/events?calendarId=${encodeURIComponent(calendarId)}`, {
+    const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/events?calendarId=${encodeURIComponent(calendarId)}`, {
       headers: {
         'Content-Type': 'application/json'
       }
@@ -5096,7 +5097,7 @@ function App() {
 
   async function fetchCalendarConfig() {
   try {
-    const response = await fetch(`${BACKEND_BASE_URL}/api/ops-calendar/config`);
+    const response = await proxyFetch(`${BACKEND_BASE_URL}/api/ops-calendar/config`);
     if (response.ok) {
       const config = await response.json();
       
@@ -5363,7 +5364,7 @@ function App() {
                 try {
                   // First try to get ALL assets and filter client-side by organization name
                   console.log('[Asset Manager] *** DEBUG: Fetching ALL assets to debug filtering by organization name...');
-                  const allAssetsResponse = await fetch(`${BACKEND_BASE_URL}/api/assets`);
+                  const allAssetsResponse = await proxyFetch(`${BACKEND_BASE_URL}/api/assets`);
                   
                   if (allAssetsResponse.ok) {
                     const allAssetsData = await allAssetsResponse.json();
@@ -5494,7 +5495,7 @@ function App() {
         console.log('[Asset Manager] User ID:', userId);
 
         try {
-          const response = await fetch(`${BACKEND_BASE_URL}/api/users`);
+          const response = await proxyFetch(`${BACKEND_BASE_URL}/api/users`);
           const userData = await response.json();
           console.log('[Asset Manager] Users data:', userData);
           setUsers(userData.users || []);
@@ -5505,7 +5506,7 @@ function App() {
 
         try {
           console.log('[Asset Manager] Fetching organizations...');
-          const response = await fetch(`${BACKEND_BASE_URL}/api/organizations`);
+          const response = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations`);
           
           if (!response.ok) {
             throw new Error(`Organizations API returned ${response.status}`);
@@ -5688,7 +5689,7 @@ useEffect(() => {
     console.log('[Asset Manager] Creating asset:', assetToCreate);
     
     try {
-      const response = await fetch(`${BACKEND_BASE_URL}/api/assets`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/assets`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
@@ -5773,7 +5774,7 @@ useEffect(() => {
     try {
       const client = window.ZAFClient.init();
       
-      const response = await fetch(`${BACKEND_BASE_URL}/api/assets/${selectedAsset.id}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/assets/${selectedAsset.id}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json'
@@ -5888,7 +5889,7 @@ useEffect(() => {
     }
 
     // Fallback to backend API
-    const response = await fetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
+    const response = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json'
@@ -5981,7 +5982,7 @@ const loadEscalationContext = async (client) => {
 
   try {
     // Restricted escalation assignees: allowed groups with members nested
-    const resp = await fetch(`${BACKEND_BASE_URL}/api/escalation-assignees`).then(r => r.json());
+    const resp = await proxyFetch(`${BACKEND_BASE_URL}/api/escalation-assignees`).then(r => r.json());
     setAssigneeOptions(resp.groups || []);
     console.log('[Escalation] Loaded', (resp.groups || []).length, 'assignee groups');
   } catch (err) {
@@ -5990,7 +5991,7 @@ const loadEscalationContext = async (client) => {
 
   try {
     // Custom ticket statuses for the Status dropdown
-    const statusResp = await fetch(`${BACKEND_BASE_URL}/api/custom-statuses`).then(r => r.json());
+    const statusResp = await proxyFetch(`${BACKEND_BASE_URL}/api/custom-statuses`).then(r => r.json());
     setStatusOptions(statusResp.statuses || []);
     console.log('[Escalation] Loaded', (statusResp.statuses || []).length, 'custom statuses');
   } catch (err) {
@@ -6379,7 +6380,7 @@ const handleSaveKnownIssues = async (updatedIssues) => {
     } catch (zendeskError) {
       console.log('[Asset Manager] Zendesk API failed, trying backend');
       // Fallback to backend API
-      const response = await fetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -6437,7 +6438,7 @@ const fetchStoredCcRules = async (client, orgId) => {
   } catch (zafErr) {
     console.log('[Asset Manager] ZAF org read failed, trying backend', zafErr);
     try {
-      const res = await fetch(`${BACKEND_BASE_URL}/api/organizations/${orgId}`);
+      const res = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations/${orgId}`);
       if (!res.ok) throw new Error(`Backend read failed: ${res.status}`);
       const body = await res.json();
       raw = body?.organization_fields?.auto_cc_rules
@@ -6577,7 +6578,7 @@ const handleSaveAutoCcRules = async (updatedRules) => {
 
     } catch (zendeskError) {
       console.log('[Asset Manager] Zendesk API failed, trying backend');
-      const response = await fetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -6630,7 +6631,7 @@ const handleSaveSuppressions = async (updatedSuppressions) => {
 
     } catch (zendeskError) {
       console.log('[Asset Manager] Zendesk API failed, trying backend');
-      const response = await fetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -6683,7 +6684,7 @@ const handleSaveEscalationContacts = async (updatedContacts) => {
 
     } catch (zendeskError) {
       console.log('[Asset Manager] Zendesk API failed, trying backend');
-      const response = await fetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -6736,7 +6737,7 @@ const handleSaveEscalationProcedure = async (text) => {
 
     } catch (zendeskError) {
       console.log('[Asset Manager] Zendesk API failed, trying backend');
-      const response = await fetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/organizations/${requesterOrg.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -6825,7 +6826,7 @@ const handleSaveEscalationProcedure = async (text) => {
         access_method: itPortalFormData.preferred_access // Fallback field
       };
 
-      const response = await fetch(`${BACKEND_BASE_URL}/api/it-portal-assets/${selectedItPortalAsset.id}`, {
+      const response = await proxyFetch(`${BACKEND_BASE_URL}/api/it-portal-assets/${selectedItPortalAsset.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json'
