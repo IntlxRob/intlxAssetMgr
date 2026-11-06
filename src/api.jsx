@@ -3,7 +3,34 @@
 import axios from 'axios';
 
 const ZAFClient = window.ZAFClient;
-const BASE = 'https://intlxassetmgr-proxy.onrender.com/api';
+
+// Allow proxy to be configured at runtime
+let BASE = 'https://intlxassetmgr-proxy.onrender.com/api';
+
+/**
+ * Set the proxy URL (used by app.jsx)
+ */
+export function setProxy(newUrl) {
+  if (!newUrl) return;
+  BASE = newUrl.replace(/\/+$/, '') + '/api'; // trim trailing slash and add /api
+  console.log('[API] setProxy ->', BASE);
+}
+
+/**
+ * Human-friendly error text for toasts (used by app.jsx)
+ */
+export function apiErrorToText(err) {
+  if (!err) return 'Unknown error';
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  const msg =
+    data?.message ||
+    data?.error ||
+    (typeof data === 'string' ? data : '') ||
+    err?.message ||
+    'Request failed';
+  return status ? `${status}: ${msg}` : msg;
+}
 
 /**
  * Get current ticket info from Zendesk App Framework
@@ -28,13 +55,20 @@ export async function getUserById(id) {
 }
 
 /**
+ * Fetch a single user by ID (alias for app.jsx compatibility)
+ */
+export async function getUser(userId) {
+  return getUserById(userId);
+}
+
+/**
  * Search users by name/email
  */
 export async function searchUsers(query) {
   if (!query || !query.trim()) return [];
   try {
-    const { data } = await axios.get(`${BASE}/users`, {
-      params: { query }
+    const { data } = await axios.get(`${BASE}/users/search`, {
+      params: { q: query }
     });
     return data.users || [];
   } catch (err) {
@@ -57,6 +91,13 @@ export async function getOrganizationById(id) {
 }
 
 /**
+ * Fetch a single organization by ID (alias for app.jsx compatibility)
+ */
+export async function getOrganization(orgId) {
+  return getOrganizationById(orgId);
+}
+
+/**
  * Fetch all organizations
  */
 export async function getOrganizations() {
@@ -74,7 +115,7 @@ export async function getOrganizations() {
  */
 export async function getAssetFields() {
   try {
-    const { data } = await axios.get(`${BASE}/assets/fields`);
+    const { data } = await axios.get(`${BASE}/assets/schema`);
     return data.fields || [];
   } catch (err) {
     console.error('Error fetching asset fields:', err);
@@ -88,7 +129,7 @@ export async function getAssetFields() {
 export async function getAssetSchema() {
   try {
     const { data } = await axios.get(`${BASE}/assets/schema`);
-    return data.schema;
+    return data;
   } catch (err) {
     console.error('Error fetching asset schema:', err);
     return null;
@@ -101,11 +142,47 @@ export async function getAssetSchema() {
 export async function getUserAssets(userId) {
   if (!userId) return [];
   try {
-    const { data } = await axios.get(`${BASE}/assets/user/${userId}`);
+    const { data } = await axios.get(`${BASE}/user-assets`, {
+      params: { user_id: userId }
+    });
     return data.assets || [];
   } catch (err) {
     console.error('Error fetching user assets:', err);
     return [];
+  }
+}
+
+/**
+ * Fetch assets by user ID (alias for app.jsx compatibility)
+ */
+export async function getAssetsByUserId(userId) {
+  return getUserAssets(userId);
+}
+
+/**
+ * Fetch a single asset by ID (for app.jsx)
+ */
+export async function getAssetById(id) {
+  try {
+    const { data } = await axios.get(`${BASE}/assets/${id}`);
+    return data.custom_object_record || data.record || data;
+  } catch (err) {
+    console.error('Error fetching asset by ID:', err);
+    throw err;
+  }
+}
+
+/**
+ * Update an asset's properties (for app.jsx)
+ */
+export async function updateAsset(id, changes) {
+  try {
+    const payload = { properties: { ...(changes || {}) } };
+    const { data } = await axios.patch(`${BASE}/assets/${id}`, payload);
+    return data;
+  } catch (err) {
+    console.error('Error updating asset:', err);
+    throw err;
   }
 }
 

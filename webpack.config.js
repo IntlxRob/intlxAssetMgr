@@ -1,7 +1,7 @@
 const path = require('path');
 
 module.exports = {
-  entry: './src/index.jsx',
+  entry: './src/app.jsx', // Fixed: points to your actual file
   output: {
     path: path.resolve(__dirname, 'assets'),
     filename: 'bundle.js',
@@ -18,11 +18,21 @@ module.exports = {
           loader: 'babel-loader',
           options: {
             sourceType: 'unambiguous',
-            presets: ['@babel/preset-env', '@babel/preset-react'],
+            presets: [
+              ['@babel/preset-env', {
+                targets: {
+                  browsers: ['last 2 versions']
+                }
+              }],
+              ['@babel/preset-react', {
+                runtime: 'automatic'
+              }]
+            ],
           },
         },
       },
     ],
   },
   mode: 'development',
+  devtool: 'source-map', // Added for easier debugging
 };
